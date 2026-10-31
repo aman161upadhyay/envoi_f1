@@ -314,9 +314,11 @@ export class HttpWakeHost {
     if (!Number.isSafeInteger(intervalMs) || intervalMs < 1000 || intervalMs > 900_000) throw new RangeError('Wake polling must run at least every 900 seconds');
     const wake = new AbortController();
     let fatal: unknown;
-    let background: Promise<void> | undefined;
+    let dispatchBackground: Promise<void> | undefined;
+    let claimBackground: Promise<void> | undefined;
     let reschedule: (() => void) | undefined;
-    let backgroundRetryAt = 0;
+    let dispatchRetryAt = 0;
+    let claimRetryAt = 0;
     const transient = (error: unknown) => error instanceof EnvoiError && (error.status !== undefined && error.status >= 500 || ['NETWORK_ERROR', 'TIMEOUT', 'RATE_LIMITED'].includes(error.code ?? ''));
     while (!signal.aborted) {
       const started = this.now();
@@ -329,13 +331,20 @@ export class HttpWakeHost {
             retryAfterMs = error.retryAfterSeconds! * 1000;
         }
         await this.dispatchControls(signal);
-        if (!background && this.now() >= backgroundRetryAt) background = Promise.all([this.dispatchWork(signal), this.claim(signal)]).then(() => {})
+        if (!dispatchBackground && this.now() >= dispatchRetryAt) dispatchBackground = this.dispatchWork(signal)
           .catch(error => {
             if (!signal.aborted && !transient(error)) { fatal = error; wake.abort(); }
             else if (error instanceof EnvoiError && Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds! >= 0)
-              backgroundRetryAt = this.now() + error.retryAfterSeconds! * 1000;
+              dispatchRetryAt = this.now() + error.retryAfterSeconds! * 1000;
           })
-          .finally(() => { background = undefined; reschedule?.(); });
+          .finally(() => { dispatchBackground = undefined; reschedule?.(); });
+        if (!claimBackground && this.now() >= claimRetryAt) claimBackground = this.claim(signal)
+          .catch(error => {
+            if (!signal.aborted && !transient(error)) { fatal = error; wake.abort(); }
+            else if (error instanceof EnvoiError && Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds! >= 0)
+              claimRetryAt = this.now() + error.retryAfterSeconds! * 1000;
+          })
+          .finally(() => { claimBackground = undefined; reschedule?.(); });
       }
       catch (error) {
         if (signal.aborted) return;
@@ -352,7 +361,9 @@ export class HttpWakeHost {
           clearTimeout(timer);
           const hint = this.driver.nextAvailableInMs?.();
           const hintAt = hint !== undefined && Number.isSafeInteger(hint) && hint >= 0 ? this.now() + Math.max(1000, hint) : Infinity;
-          const next = Math.max(retryAt, Math.min(started + intervalMs, Math.max(backgroundRetryAt, hintAt)));
+          const dispatchDue = !dispatchBackground && dispatchRetryAt > this.now() ? dispatchRetryAt : Infinity;
+          const claimDue = !claimBackground && claimRetryAt > this.now() ? claimRetryAt : Infinity;
+          const next = Math.max(retryAt, Math.min(started + intervalMs, hintAt, dispatchDue, claimDue));
           timer = setTimeout(done, Math.max(0, next - this.now()));
         };
         reschedule = arm;

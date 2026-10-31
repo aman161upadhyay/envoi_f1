@@ -169,6 +169,20 @@ describe('private wake host', () => {
     expect((await setupState.store.read()).accepted[noticeId].pending).toBe(true);
     stop.abort(); await running;
   });
+  it('continues safety claims while a wake hint status call is stalled', async () => {
+    vi.useFakeTimers();
+    const setupState = setup(); const stop = new AbortController();
+    await pending(setupState.store, 'wake.work_available');
+    let release!: () => void;
+    setupState.transport.status.mockResolvedValueOnce({ paused: false, wake: { available: true, version: 1, subscription: null } })
+      .mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ paused: false, wake: { available: true, version: 1, subscription: null } }); }));
+    const running = setupState.host.run(stop.signal, 1000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+    release(); stop.abort(); await running;
+  });
   it('never starts a safety claim before a pending control is revalidated', async () => {
     const setupState = setup(); await pending(setupState.store, 'wake.control_changed');
     setupState.transport.status.mockRejectedValue(new EnvoiError('Temporary upstream response', 503, 'NETWORK_ERROR'));
