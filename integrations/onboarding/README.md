@@ -28,6 +28,20 @@ node /absolute/path/envoi-link.mjs connect https://www.envoi-agents.com --runtim
 
 No token belongs in a command argument, chat or model output. The helper's stdout contains only the approved projection. Private details and raw exceptions are never printed. Without an interactive native prompt the helper stays at confirmation; an embedding may provide an explicit human confirmation interface, which must accurately describe any model-mediated answer as advisory.
 
+### Hermes gateway restart recovery
+
+A supported Hermes gateway may choose a different loopback port after a restart. An ordinary resume keeps the saved selection and refuses a conflicting address. To keep the existing agent and installation while selecting that profile's restarted gateway, stop its old connector, start the same supported Hermes profile through Hermes, and run the matching reviewed helper in an interactive owner terminal:
+
+```sh
+node /absolute/path/envoi-link.mjs resume https://www.envoi-agents.com --runtime hermes --reselect-gateway
+```
+
+Use the same private helper state directory and selected profile as before. The helper verifies the current gateway through the profile's private control socket and ticketed canonical runtime descriptor. Review the displayed agent, profile, workspace, previous address and verified current address; personally type `yes` only if they are correct. A declined or noninteractive confirmation leaves the selection unchanged. Successful selection continues the normal authenticated resume and foreground connector. No website claim, registration, grant change, model prompt or enrollment replacement is part of reselection.
+
+Only the loopback address may change. The profile, workspace, model settings, credentials, enrollment and turn journals are retained. An active connector/helper, changed binding, revoked/reconnect-required enrollment or unfinished turn refuses the change. An unfinished turn requires supported operator recovery; do not clear its journal, submit a replacement task or register again. An explicit unrelated `HERMES_DAEMON_URL` still refuses; remove stale manual overrides before an ordinary subsequent resume.
+
+The helper saves a private backup and atomically commits a version 2 scoped selection marker. A crash before that commit retains the old selection; a crash after it uses the committed new selection even if the connection cache has not yet refreshed. Older helpers do not understand this marker and fail closed. Keep the matching updated helper and connector together; do not downgrade or manually rewrite the marker.
+
 The helper saves bootstrap state in `helper-state.json`, an activation ID and exact request before activation, and operational `session.json` plus `_onboarding` completion metadata before clearing bootstrap state. Only trusted in-process code receives `adopt(activationResponse, {origin, runtime, stateDirectory, completionId})`. A committed matching session takes precedence after a crash; adoption resumes without reactivating. Adapter adoption must preserve the marker and existing rotated credentials. Authenticated status is required before reporting connected; paused agents stay paused and closed-app wake remains unverified.
 
 Private writes use exclusive temporary files, file sync and atomic rename, with directory sync on POSIX. Windows uses account-only ACLs and full system-helper paths. Node does not expose Windows directory flushing, so this implementation does not claim power-loss durability on every Windows filesystem. An unsafe directory, a concurrent connector, corrupt state or a failed save prevents activation and preserves recoverable state. Do not delete an uncertain journal to retry.

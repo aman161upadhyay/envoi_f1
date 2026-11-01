@@ -42,6 +42,28 @@ Implementation is grounded in official NousResearch/hermes-agent commit
 
 ## Recovery and cancellation
 
+For an enrolled profile whose gateway restarts on a different loopback port,
+the private helper supports `resume <same-origin> --runtime hermes
+--reselect-gateway`. It takes the existing connector lock, verifies completed
+enrollment bindings, discovers the selected profile through its private control
+socket and rechecks the ticketed canonical descriptor. The owner confirms the
+displayed old/new address in a native interactive prompt. Only the address may
+change; home, workspace, profile, config path and scoped mode stay fixed. Gateway
+discovery sends no session creation, provider prompt or Envoi registration.
+
+Any unfinished scoped journal refuses an address change before confirmation.
+The original journal must go through supported recovery rather than deletion,
+resubmission or a replacement enrollment. Completed legacy journals remain
+deduplication evidence for their exact profile/workspace across a port change.
+New journals use a stable profile/workspace identity independent of the port.
+
+After rechecking the gateway and saved bindings, reselection writes a private
+backup and one atomic version 2 marker with the exact previous and selected
+configuration. Only that exact previous cache may transition to the new marker;
+unrelated caches, explicit conflicts and older clients refuse. Enrollment,
+grants, operational session and journals are never rewritten by reselection.
+Normal resume refreshes the connection cache through the existing adapter path.
+
 FileScopedRunStore saves one bounded record before creation/submission. It keeps
 stable create/input IDs, exact prompt text, returned session/admission IDs,
 provider identity and completion. It never stores Envoi credentials, lease

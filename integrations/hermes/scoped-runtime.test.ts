@@ -12,6 +12,7 @@ import { createHermesBridge } from './runtime';
 import { hermesAdapter } from './adapter';
 import { prepareHermesRun } from './run';
 import { selectScopedHermes } from './scoped-runtime';
+import { currentHermesHost, hermesProfileIdentity } from './scoped-host';
 
 interface Fixture { request?: { path?: string; body?: Record<string, any> }; response?: { status: number; body: Record<string, any> }; steps?: Fixture[] }
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -192,6 +193,22 @@ async function setup() {
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('production Hermes scoped composition with inert authenticated daemon transport', () => {
+  it('discovers the selected private gateway and verifies its ticketed descriptor without creating a session or prompt', async () => {
+    const scenario = await setup();
+    expect(await currentHermesHost(scenario.home, scenario.home, new AbortController().signal)).toEqual({ home: scenario.home, cwd: scenario.home, origin: daemon });
+    expect(scenario.bootstrap.map(entry => entry.verb)).toEqual(['identify', 'identify', 'session-ticket']);
+    expect(scenario.rpcRequests.map(entry => entry.method)).toEqual(['runtime.describe']);
+    expect(scenario.modelText).toEqual([]); expect(scenario.fetcher).not.toHaveBeenCalled();
+    expect(scenario.sockets.every(socket => socket.readyState === 3)).toBe(true);
+  });
+  it.each(['control', 'descriptor'])('refuses a gateway missing canonical %s capabilities before model work', async source => {
+    const scenario = await setup();
+    if (source === 'control') scenario.controlCapabilities([]); else scenario.capabilities([]);
+    await expect(currentHermesHost(scenario.home, scenario.home, new AbortController().signal)).rejects.toThrow();
+    expect(scenario.rpcRequests.every(entry => entry.method === 'runtime.describe')).toBe(true);
+    expect(scenario.modelText).toEqual([]); expect(scenario.fetcher).not.toHaveBeenCalled();
+    expect(scenario.sockets.every(socket => socket.readyState === 3)).toBe(true);
+  });
   it('executes typed tools, separates credentials and deduplicates a completed work after restart', async () => {
     const scenario = await setup();
     scenario.onPrompt(async () => { expect((await scenario.mcp('tools/call', { name: 'envoi_case_reply', arguments: scenario.replyArgs })).result.isError).toBe(false); });
@@ -210,6 +227,18 @@ describe('production Hermes scoped composition with inert authenticated daemon t
     expect(scenario.modelText).toHaveLength(1); expect(scenario.effects.size).toBe(1);
     expect(scenario.bootstrap.filter(entry => entry.verb === 'session-ticket')[0].params.purpose).toBe('interactive');
     expect(scenario.sockets.every(socket => socket.readyState === 3)).toBe(true);
+  });
+  it('retains a completed legacy journal across a gateway address change without resubmission or a second effect', async () => {
+    const scenario = await setup();
+    scenario.onPrompt(async () => { await scenario.mcp('tools/call', { name: 'envoi_case_reply', arguments: scenario.replyArgs }); });
+    const bridge = await scenario.open(); await bridge.connector.scopedWakeWorkDriver().processWorkOnce(); await bridge.close();
+    const runs = new FileScopedRunStore(scenario.directory), completed = (await scenario.journal())!;
+    expect(completed.model).toBe(hermesProfileIdentity({ home: scenario.home, cwd: scenario.home, origin: daemon }));
+    const legacy = { ...completed, model: `hermes-daemon:http://127.0.0.1:18975:${scenario.home}:${scenario.home}` };
+    await runs.save(legacy); const before = await readFile(path.join(scenario.directory, 'scoped-runs', scenario.work.workId + '.json'), 'utf8');
+    scenario.reclaim(); const recovered = await scenario.open(); await recovered.connector.scopedWakeWorkDriver().processWorkOnce();
+    expect(scenario.modelText).toHaveLength(1); expect(scenario.effects.size).toBe(1);
+    expect(await readFile(path.join(scenario.directory, 'scoped-runs', scenario.work.workId + '.json'), 'utf8')).toBe(before);
   });
   it('recovers a lost submit acknowledgement using its durable input identity without a replacement turn', async () => {
     const scenario = await setup(); scenario.loseSubmit();

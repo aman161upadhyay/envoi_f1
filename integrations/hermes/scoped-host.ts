@@ -198,6 +198,38 @@ export async function connectHermesHost(host: HermesScopedHost, signal: AbortSig
   } catch (error) { socket.close(); throw error; }
 }
 
+/** Discover only the canonical listener owned by the selected local profile. */
+export async function currentHermesHost(home: string, cwd: string, signal: AbortSignal): Promise<HermesScopedHost> {
+  const identity = await control(home, 'identify', {}, signal);
+  const host = { home, cwd, origin: identity.api_origin };
+  validateHermesHost(host);
+  const canonical = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+  const matches = Array.isArray(identity.served_profiles) ? identity.served_profiles.filter((entry: unknown) => object(entry)
+    && typeof entry.home === 'string' && canonical(entry.home) === canonical(home)) : [];
+  if (identity.runtime_protocol !== 1 || identity.state !== 'ready' || !Array.isArray(identity.capabilities)
+    || !identity.capabilities.includes('session-authority-v1') || typeof identity.instance_id !== 'string'
+    || matches.length !== 1 || typeof matches[0].profile_id !== 'string') throw failure();
+  // Recheck the ticketed descriptor; identify alone is not runtime readiness.
+  const wire = await connectHermesHost(host, signal);
+  wire.close();
+  return host;
+}
+
+export function hermesProfileIdentity(host: HermesScopedHost): string {
+  validateHermesHost(host);
+  return `hermes-profile:${JSON.stringify([host.home, host.cwd])}`;
+}
+
+export function hermesJournalMatches(record: { model: string; completed: boolean }, host: HermesScopedHost): boolean {
+  if (record.model === hermesProfileIdentity(host) || record.model === `hermes-daemon:${host.origin}:${host.home}:${host.cwd}`) return true;
+  // Completed legacy checkpoints remain dedupe evidence for this exact profile
+  // and workspace. An unfinished legacy turn never changes daemon implicitly.
+  const suffix = `:${host.home}:${host.cwd}`;
+  if (!record.completed || !record.model.startsWith('hermes-daemon:') || !record.model.endsWith(suffix)) return false;
+  const origin = record.model.slice('hermes-daemon:'.length, -suffix.length);
+  try { validateHermesHost({ ...host, origin }); return true; } catch { return false; }
+}
+
 type TurnState = { kind: 'hermes-scoped-v1'; requestId: string; inputId: string; text: string; sessionId?: string; admissionId?: string };
 
 function receipt(value: Record<string, any>, sessionId: string, admissionId?: string) {
@@ -230,14 +262,14 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
   validateHermesHost(host);
   const timeoutMs = options.timeoutMs ?? 120000, pollMs = options.pollMs ?? 250;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 900000 || !Number.isSafeInteger(pollMs) || pollMs < 1 || pollMs > 10000) throw new TypeError('Invalid Hermes deadline');
-  const identity = `hermes-daemon:${host.origin}:${host.home}:${host.cwd}`;
+  const identity = hermesProfileIdentity(host);
   return async (turn: ScopedModelTurn, context: Readonly<{ workId?: string }>) => {
     if (!context.workId) throw failure('SCOPED_HOST_CONTEXT_REQUIRED');
     const workId = context.workId;
     return runs.exclusive(workId, async () => {
       turn.signal.throwIfAborted();
       let record = await runs.load(workId);
-      if (record && (record.model !== identity || record.admission || record.pending.length)) throw failure('SCOPED_MODEL_CHANGED');
+      if (record && (!hermesJournalMatches(record, host) || record.admission || record.pending.length)) throw failure('SCOPED_MODEL_CHANGED');
       if (record?.completed) return;
       const recovered = record !== null;
       if (!record) record = { version: 1, workId, model: identity, providerCalls: 0, completed: false, pending: [], input: [{
