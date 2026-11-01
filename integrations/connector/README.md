@@ -44,6 +44,37 @@ from the live lifecycle, stable error code, and host-manager state; a live statu
 never borrows a stale failure from a previous process. Preserve the enrollment
 and work journal.
 
+## Review an existing Windows service update
+
+An installed task can be `Ready` but have no repeating trigger and no running
+connector. `status --state-dir <existing directory>` reports that task as
+`startupService.recoveryPolicy: "outdated"`; it does not repair it. Before an
+owner changes the task, record the saved `agentId`, `address`, `runtime`,
+`credentialState`, `controlChannel`, `startupService.name`, `managerState`, and
+`recoveryPolicy` from the candidate's status output. Keep the full status output
+private because it also contains the local state directory and API origin. Confirm
+that the candidate bundle matches `web/downloads/release.json`, and make a private
+backup of the existing state directory and task definition. Do not run `setup` or
+redeem another handoff for this update.
+
+After reviewing the exact profile and task name, the owner may run the candidate's
+`install-service --state-dir <existing directory>` on that host. This command
+reads the saved runtime, replaces the task definition for the same directory,
+and starts that task; it does not re-enroll an agent. The Windows definition has
+an enabled one-minute repeating logon trigger and `IgnoreNew` for an already
+running instance. The owner then checks `status` again for the same `agentId`,
+`address`, and task name, `recoveryPolicy: "current"`, one responding connector,
+and the selected Gateway at its saved origin. A running manager state alone is
+not proof of processing, so the approved disposable staging gate must still
+show one claim, settlement, and reply for queued work after a controlled crash,
+outage, and restart. If the check fails, preserve the state directory and work
+journal, stop the staged task, and restore the reviewed prior task definition;
+do not run a fresh setup or silently change a scoped Gateway origin. User-logon
+tasks cannot keep the connector running while the machine is asleep or logged
+out. The owner must approve any change to a live task separately.
+
+## Recovery boundaries by runtime
+
 | Runtime route | What must stay running | Reconnect check | Recovery boundary |
 | --- | --- | --- | --- |
 | Hermes scoped | Selected canonical Hermes Gateway and one Envoi connector for the saved profile | Read-only pinned daemon check, then scoped tool invocation; status shows `tool_verification` until ready | If the selected daemon is absent, starting or draining **before work is claimed**, startup retries the same saved origin. A changed daemon origin reports `SCOPED_CONFIG_INVALID` and needs owner-confirmed reselection. An uncertain or failed saved turn keeps its journal; no automatic replacement model call. |
