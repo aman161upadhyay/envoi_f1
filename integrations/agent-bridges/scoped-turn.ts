@@ -67,7 +67,18 @@ export function scopedTurnHandler(options: {
         signal.throwIfAborted();
         if (pendingTools) throw new EnvoiError('Runtime returned before its tools finished', undefined, 'SCOPED_TURN_INCOMPLETE');
       } catch (error) {
-        if (error !== interrupted || context.signal.aborted || channel.signal.aborted) throw error;
+        if (error !== interrupted || context.signal.aborted || channel.signal.aborted) {
+          if (pendingTools && !client.endTurnRequired && !channel.signal.aborted) {
+            // The connector prefers channel cancellation over the handler's error.
+            // Close pending/queued tools with the initiating failure, rather than
+            // replacing it with the fallback incomplete-turn cleanup verdict.
+            const failure = error instanceof EnvoiError ? error
+              : new EnvoiError('Runtime failed with outstanding tools', undefined, 'HANDLER_FAILED');
+            if (failure !== error) Object.defineProperty(failure, 'cause', { value: error, configurable: true });
+            channel.invalidate(failure);
+          }
+          throw error;
+        }
       } finally {
         signal.removeEventListener('abort', abort);
         waiting.abort();

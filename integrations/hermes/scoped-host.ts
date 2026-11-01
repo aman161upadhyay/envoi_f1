@@ -306,7 +306,8 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
         || state.admissionId !== undefined && (typeof state.admissionId !== 'string' || !state.admissionId || state.admissionId.length > 256)) throw failure();
       if (recovered && !state.sessionId) throw failure('HERMES_CREATION_UNCERTAIN');
       const lifetime = new AbortController();
-      const signal = AbortSignal.any([turn.signal, lifetime.signal, AbortSignal.timeout(timeoutMs)]);
+      const deadline = AbortSignal.timeout(timeoutMs);
+      const signal = AbortSignal.any([turn.signal, lifetime.signal, deadline]);
       const relay = recovered ? null : await startScopedMcpRelay({ ...turn, signal });
       let wire: HermesWire | undefined;
       let subscriptionId: string | undefined;
@@ -348,6 +349,10 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
           if (current.status === 'unknown' || recovered) throw failure('HERMES_EXECUTION_UNCERTAIN');
           await delay(pollMs, undefined, { signal });
         }
+      } catch (error) {
+        if (deadline.aborted && signal.reason === deadline.reason)
+          throw new EnvoiError('Hermes scoped turn timed out; preserve its journal for recovery', undefined, 'TIMEOUT');
+        throw error;
       } finally {
         lifetime.abort();
         await relay?.close();

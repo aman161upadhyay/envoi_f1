@@ -204,6 +204,43 @@ async function setup() {
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('production Hermes scoped composition with inert authenticated daemon transport', () => {
+  it('preserves a native deadline with pending MCP work and recovers only the original interrupted admission', async () => {
+    const scenario = await setup(); scenario.detachedExecution();
+    const deadline = new AbortController();
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => ms === 250 ? deadline.signal : originalTimeout(ms));
+    let ready!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const response = new Promise<void>(resolve => { release = resolve; });
+    scenario.toolTransport(async (request, result) => {
+      if (request.params.name === 'envoi_case_reply') { ready(); await response; }
+      return result;
+    });
+    scenario.onPrompt(async () => { await scenario.mcp('tools/call', { name: 'envoi_case_reply', arguments: scenario.replyArgs }); });
+    const bridge = await scenario.open({}, 250);
+    const processing = expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toMatchObject({ code: 'TIMEOUT' });
+    await started;
+    deadline.abort(new DOMException('Deterministic native deadline', 'TimeoutError'));
+    await processing; await bridge.close(); release();
+    expect(scenario.effects.size).toBe(1);
+    expect(scenario.rpcRequests.filter(x => x.method === 'session.interrupt')).toHaveLength(1);
+    expect(await scenario.journal()).toMatchObject({ completed: false, providerCalls: 1 });
+    const filename = path.join(scenario.directory, 'scoped-runs', scenario.work.workId + '.json');
+    const journal = await readFile(filename, 'utf8');
+    const firstFailure = scenario.fetcher.mock.calls.filter(([url]) => String(url).endsWith('/fail')).at(-1)!;
+    expect(JSON.parse(String(firstFailure[1]?.body))).toMatchObject({ retryable: true, reasonCode: 'HANDLER_FAILED' });
+    scenario.reclaim();
+    const recovered = await scenario.open({}, 10000);
+    await expect(recovered.connector.scopedWakeWorkDriver().processWorkOnce()).resolves.toBe(true);
+    const finalFailure = scenario.fetcher.mock.calls.filter(([url]) => String(url).endsWith('/fail')).at(-1)!;
+    expect(JSON.parse(String(finalFailure[1]?.body))).toMatchObject({ retryable: false, reasonCode: 'HERMES_TURN_NOT_COMPLETED' });
+    expect(await readFile(filename, 'utf8')).toBe(journal);
+    expect(scenario.modelText).toHaveLength(1);
+    expect(scenario.rpcRequests.filter(x => x.method === 'prompt.submit')).toHaveLength(1);
+    expect(scenario.rpcRequests.filter(x => x.method === 'session.create')).toHaveLength(1);
+    expect(scenario.effects.size).toBe(1);
+    expect(scenario.fetcher.mock.calls.some(([url]) => String(url).endsWith('/complete'))).toBe(false);
+  });
   it.each(['completed', 'failed', 'interrupted', 'cancelled', 'rejected'])('reads native terminal %s proof without creating, submitting, cancelling or changing a journal', async outcome => {
     const scenario = await setup(); scenario.setStatus('terminal', outcome);
     const host = { home: scenario.home, cwd: scenario.home, origin: daemon };

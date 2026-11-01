@@ -9318,7 +9318,16 @@ function Oi(e) {
 					}
 				}, Object.freeze({ workId: n.workId }))))]), o.throwIfAborted(), u) throw new I("Runtime returned before its tools finished", void 0, "SCOPED_TURN_INCOMPLETE");
 			} catch (e) {
-				if (e !== l || n.signal.aborted || t.signal.aborted) throw e;
+				if (e !== l || n.signal.aborted || t.signal.aborted) {
+					if (u && !r.endTurnRequired && !t.signal.aborted) {
+						let n = e instanceof I ? e : new I("Runtime failed with outstanding tools", void 0, "HANDLER_FAILED");
+						n !== e && Object.defineProperty(n, "cause", {
+							value: e,
+							configurable: !0
+						}), t.invalidate(n);
+					}
+					throw e;
+				}
 			} finally {
 				o.removeEventListener("abort", f), a.abort(), u && !r.endTurnRequired && t.invalidate(new I("Runtime ended with outstanding tools", void 0, "SCOPED_TURN_INCOMPLETE"));
 			}
