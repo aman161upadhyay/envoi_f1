@@ -101,6 +101,40 @@ export async function readConnection(directory: string): Promise<InstalledConnec
   saved.apiUrl = quickConnectOrigin(saved.apiUrl);
   return saved;
 }
+
+/** Refresh only the installed launcher for a stopped, already enrolled profile. */
+export async function refreshInstalledExecutable(directory: string, source: string) {
+  const unlock = await acquireConnectorLock(directory);
+  try {
+    const saved = await readConnection(directory);
+    const session = await savedSession(directory);
+    if (!session || session.address !== saved.address
+      || (saved.activationSetup?.agentId && session.agentId !== saved.activationSetup.agentId)
+      || (saved.activationSetup?.inboxId && session.inboxId !== saved.activationSetup.inboxId))
+      throw new ConnectorSetupError('STATE_MISMATCH', 'The saved connector identity does not match this installation; preserve the profile and inspect it before updating');
+    const sourceStat = await lstat(source);
+    if (!sourceStat.isFile() || sourceStat.isSymbolicLink())
+      throw new ConnectorSetupError('STATE_INVALID', 'Choose a regular candidate connector bundle');
+    const installed = path.join(directory, 'connector.mjs');
+    const oldStat = await lstat(installed).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (oldStat && (!oldStat.isFile() || oldStat.isSymbolicLink()))
+      throw new ConnectorSetupError('STATE_INVALID', 'The installed connector is not a regular file; preserve the profile and inspect it before updating');
+    const candidateHash = createHash('sha256').update(await readFile(source)).digest('hex');
+    const currentHash = oldStat ? createHash('sha256').update(await readFile(installed)).digest('hex') : null;
+    if (currentHash === candidateHash) return { candidateHash, previousHash: currentHash, changed: false };
+    if (oldStat) {
+      const backup = path.join(directory, 'connector.previous.mjs');
+      const temporaryBackup = path.join(directory, `.connector-backup-${randomUUID()}.tmp`);
+      try {
+        await copyFile(installed, temporaryBackup);
+        if (process.platform !== 'win32') await chmod(temporaryBackup, 0o600);
+        await rename(temporaryBackup, backup);
+      } finally { await rm(temporaryBackup, { force: true }); }
+    }
+    await saveExecutable(directory, source);
+    return { candidateHash, previousHash: currentHash, changed: true };
+  } finally { await unlock(); }
+}
 export async function checkEnvoi(apiUrl: string, fetcher: typeof fetch) {
   let response: Response;
   try { response = await fetcher(`${quickConnectOrigin(apiUrl)}/health`, { signal: AbortSignal.timeout(10_000) }); }

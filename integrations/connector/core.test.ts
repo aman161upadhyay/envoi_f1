@@ -7,7 +7,7 @@ import { EnvoiConnector } from '../../sdk/typescript/src/connector';
 import { FileBridgeStore } from '../agent-bridges/file-store';
 import { validateQuickConnectHandoff, type ConnectorRuntime } from '../../sdk/typescript/src/quick-connect';
 import { ConnectorSetupError, type ConnectorAdapter } from './adapter';
-import { checkEnvoi, connectionDirectory, connectionStatus, doctorConnection, prepareConnection, readConnection, setupConnection, startConnection } from './core';
+import { checkEnvoi, connectionDirectory, connectionStatus, doctorConnection, prepareConnection, readConnection, refreshInstalledExecutable, setupConnection, startConnection } from './core';
 import { startControl, queryControl, queryOwnedControl } from './control';
 import { connectorService } from './service';
 import * as serviceModule from './service';
@@ -87,6 +87,25 @@ describe('shared connector lifecycle', () => {
     await setupConnection(f.handoff, f.resolver, { ...f.options, executableFile: target });
     expect(await readFile(target, 'utf8')).toBe('// upgraded connector');
     expect(f.counts().enrollmentCount).toBe(1);
+  });
+  it('updates a stopped saved connector without changing enrollment or its queued work', async () => {
+    const f = await fixture();
+    const source = path.join(f.directory, 'candidate.mjs');
+    await writeFile(source, '// old connector');
+    await setupConnection(f.handoff, f.resolver, { ...f.options, executableFile: source });
+    const sessionPath = path.join(f.options.stateDir, 'session.json');
+    const originalSession = await readFile(sessionPath, 'utf8');
+    const workPath = path.join(f.options.stateDir, 'work', 'queued.json');
+    await writeFile(workPath, '{"queued":true}');
+    await writeFile(source, '// new connector');
+    const result = await refreshInstalledExecutable(f.options.stateDir, source);
+    expect(result.changed).toBe(true);
+    expect(await readFile(path.join(f.options.stateDir, 'connector.mjs'), 'utf8')).toBe('// new connector');
+    expect(await readFile(path.join(f.options.stateDir, 'connector.previous.mjs'), 'utf8')).toBe('// old connector');
+    expect(await readFile(sessionPath, 'utf8')).toBe(originalSession);
+    expect(await readFile(workPath, 'utf8')).toBe('{"queued":true}');
+    expect(f.counts().enrollmentCount).toBe(1);
+    expect((await refreshInstalledExecutable(f.options.stateDir, source)).changed).toBe(false);
   });
   for (const runtime of ['hermes', 'openclaw', 'grok'] as const) {
     it(`enrolls ${runtime} once, stores local secrets privately, and resumes after handoff expiry`, async () => {

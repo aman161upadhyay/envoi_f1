@@ -44,9 +44,9 @@ from the live lifecycle, stable error code, and host-manager state; a live statu
 never borrows a stale failure from a previous process. Preserve the enrollment
 and work journal.
 
-## Review an existing Windows service update
+## Review an existing local service update
 
-An installed task can be `Ready` but have no repeating trigger and no running
+On Windows, an installed task can be `Ready` but have no repeating trigger and no running
 connector. `status --state-dir <existing directory>` reports that task as
 `startupService.recoveryPolicy: "outdated"`; it does not repair it. Before an
 owner changes the task, record the saved `agentId`, `address`, `runtime`,
@@ -59,8 +59,12 @@ redeem another handoff for this update.
 
 After reviewing the exact profile and task name, the owner may run the candidate's
 `install-service --state-dir <existing directory>` on that host. This command
-reads the saved runtime, replaces the task definition for the same directory,
-and starts that task; it does not re-enroll an agent. The Windows definition has
+checks the saved agent and installation identity, backs up the old executable as
+`connector.previous.mjs`, atomically installs the invoked candidate as
+`connector.mjs`, replaces the task definition for the same directory, and starts
+that task; it does not re-enroll an agent or replace credentials. A running
+connector holds the installation lock and blocks this update. Compare the
+reported candidate SHA256 with the reviewed release metadata. The Windows definition has
 an enabled one-minute repeating logon trigger and `IgnoreNew` for an already
 running instance. The owner then checks `status` again for the same `agentId`,
 `address`, and task name, `recoveryPolicy: "current"`, one responding connector,

@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { CONNECTOR_RUNTIMES, type ConnectorRuntime } from '../../sdk/typescript/src/quick-connect';
 import { adapterFor } from './adapters';
 import { ConnectorSetupError } from './adapter';
-import { connectionStatus, doctorConnection, prepareConnection, readConnection, removeInstalledExecutable, setupConnection, startCommand, startConnection } from './core';
-import { installConnectorService, uninstallConnectorService } from './service';
+import { connectionStatus, doctorConnection, prepareConnection, readConnection, refreshInstalledExecutable, removeInstalledExecutable, setupConnection, startCommand, startConnection } from './core';
+import { checkServiceManager, installConnectorService, uninstallConnectorService } from './service';
 import { queryOwnedControl } from './control';
 import { clearHostedWake, configureHostedWake } from './hosted-wake-config';
 
@@ -75,7 +75,14 @@ export async function connectorMain(args = process.argv.slice(2)) {
   }
   if (command === 'status') { process.stdout.write(`${JSON.stringify(await connectionStatus(directory))}\n`); return; }
   if (command === 'doctor') { process.stdout.write(`${JSON.stringify(await doctorConnection(directory, adapterFor))}\n`); return; }
-  if (command === 'install-service') { const saved = await readConnection(directory); process.stdout.write(`${JSON.stringify({ startupService: await installConnectorService(directory, saved.runtime), startsAt: 'user login' })}\n`); return; }
+  if (command === 'install-service') {
+    const saved = await readConnection(directory);
+    await checkServiceManager();
+    const executable = await refreshInstalledExecutable(directory, fileURLToPath(import.meta.url));
+    const startupService = await installConnectorService(directory, saved.runtime);
+    process.stdout.write(`${JSON.stringify({ startupService, startsAt: 'user login', executable })}\n`);
+    return;
+  }
   if (command === 'stop') {
     const saved = await readConnection(directory);
     await queryOwnedControl(directory, 'stop', saved).catch(error => {
