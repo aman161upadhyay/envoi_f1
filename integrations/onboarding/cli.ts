@@ -49,6 +49,7 @@ export async function runLocalLink(args: string[], signal: AbortSignal, options:
   const runtimeIndex = args.indexOf('--runtime');
   const explicit = runtimeIndex < 0 ? undefined : args[runtimeIndex + 1];
   let retryId: string | undefined;
+  let requestedPermissions: string[] | undefined;
   // Reject unknown/token-bearing args before runtime discovery or credential work.
   for (let index = 2; index < args.length; index++) {
     if (args[index] === '--runtime' && ['hermes', 'openclaw'].includes(args[index + 1])) {
@@ -56,6 +57,16 @@ export async function runLocalLink(args: string[], signal: AbortSignal, options:
       index++; continue;
     }
     if (command === 'task' && args[index] === '--retry' && !retryId && validTaskId(args[index + 1])) { retryId = args[++index]; continue; }
+    if (command === 'connect' && args[index] === '--permissions' && requestedPermissions === undefined) {
+      const value = args[++index];
+      const permissions = typeof value === 'string' && value.length <= 128 ? value.split(',') : [];
+      if (!permissions.length || permissions.length > 4 || new Set(permissions).size !== permissions.length
+        || !permissions.includes('receive_agent_messages')
+        || permissions.some(permission => !Object.hasOwn(contract['x-permission-labels'], permission))) {
+        throw new Error('Choose a supported permission list that includes receiving messages.');
+      }
+      requestedPermissions = permissions; continue;
+    }
     if (command !== 'task' && ['--show-code', '--new'].includes(args[index])) continue;
     throw new Error('Use the documented local helper options.');
   }
@@ -77,6 +88,7 @@ export async function runLocalLink(args: string[], signal: AbortSignal, options:
     { retryId, prompt: options.taskPrompt, write: options.write });
   const dependencies: HelperDependencies = {
     ...options.helperDependencies, contract, directory, runtime: { type: runtime, version: 'unknown' }, ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(requestedPermissions ? { requestedPermissions } : {}),
     operationalStatus: options.helperDependencies?.operationalStatus ?? ((context: OperationalStatusContext) => operationalConnectionStatus(context, { fetch: options.fetch })),
     adopt: async (activation, context) => {
       await (options.adopt ?? adoptActivatedConnection)(origin, runtime, activation, resolver, {
@@ -87,7 +99,8 @@ export async function runLocalLink(args: string[], signal: AbortSignal, options:
     }
   };
   const call = options.helperCli ?? runCli;
-  const effectiveArgs = [command, origin, '--runtime', runtime, ...args.slice(2).filter((value, index, rest) => value !== '--runtime' && rest[index - 1] !== '--runtime')];
+  const effectiveArgs = [command, origin, '--runtime', runtime, ...args.slice(2).filter((value, index, rest) =>
+    !['--runtime', '--permissions'].includes(value) && !['--runtime', '--permissions'].includes(rest[index - 1]))];
   let result = await call(effectiveArgs, dependencies);
   options.write?.(result);
   while (['connect', 'resume'].includes(command) && result.state === 'pending_approval' && !signal.aborted) {

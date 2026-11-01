@@ -1,6 +1,7 @@
 export interface HelperDependencies {
   adopt?: (activation: any, context: any) => Promise<unknown>;
   runtime?: { type: string; version: string | null };
+  requestedPermissions?: string[];
   directory?: string; contract?: any;
   fetch?: typeof fetch; confirm?: any; now?: () => number; sleep?: (ms: number) => Promise<void>;
   [key: string]: any;

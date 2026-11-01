@@ -51,6 +51,43 @@ it('refuses token-bearing/unknown arguments before discovering or contacting any
   await expect(runLocalLink(['connect', origin, '--token', 'private-never-output'], new AbortController().signal, { resolveAdapter: discover })).rejects.toThrow();
   expect(discover).not.toHaveBeenCalled();
 });
+
+it.each(['hermes', 'openclaw'])('passes explicitly selected permissions to the existing %s registration engine', async runtime => {
+  const permissions = ['send_agent_messages', 'receive_agent_messages', 'execute_cases', 'create_assets'];
+  const helper = vi.fn().mockResolvedValue({ state: 'confirm_approval' });
+  const start = vi.fn();
+  await runLocalLink(['connect', origin, '--runtime', runtime, '--permissions', permissions.join(','), '--show-code'],
+    new AbortController().signal, { resolveAdapter: resolver, helperCli: helper, start });
+  expect(helper.mock.calls[0][0]).toEqual(['connect', origin, '--runtime', runtime, '--show-code']);
+  expect(helper.mock.calls[0][1].requestedPermissions).toEqual(permissions);
+  expect(start).not.toHaveBeenCalled();
+});
+
+it('leaves the existing default permission request with the helper when no selection is supplied', async () => {
+  const helper = vi.fn().mockResolvedValue({ state: 'confirm_approval' });
+  await runLocalLink(['connect', origin, '--runtime', 'hermes'], new AbortController().signal,
+    { resolveAdapter: resolver, helperCli: helper });
+  expect(helper.mock.calls[0][1].requestedPermissions).toBeUndefined();
+});
+
+it.each([
+  ['connect', ''], ['connect', 'send_agent_messages'], ['connect', 'receive_agent_messages,'],
+  ['connect', 'receive_agent_messages,receive_agent_messages'], ['connect', 'receive_agent_messages,__proto__'],
+  ['connect', 'receive_agent_messages,envoi_agent_access_DO_NOT_PRINT'],
+  ['resume', 'receive_agent_messages'], ['status', 'receive_agent_messages'], ['task', 'receive_agent_messages']
+])('refuses invalid or misplaced permission selection before discovery (%s)', async (command, value) => {
+  const discover = vi.fn();
+  await expect(runLocalLink([command, origin, '--permissions', value], new AbortController().signal,
+    { resolveAdapter: discover })).rejects.toThrow(/supported permission list|documented local helper options/);
+  expect(discover).not.toHaveBeenCalled();
+});
+
+it('refuses a repeated permission option before discovery', async () => {
+  const discover = vi.fn();
+  await expect(runLocalLink(['connect', origin, '--permissions', 'receive_agent_messages', '--permissions', 'receive_agent_messages'],
+    new AbortController().signal, { resolveAdapter: discover })).rejects.toThrow('documented local helper options');
+  expect(discover).not.toHaveBeenCalled();
+});
 it('does not start stale runtime configuration after a mismatched installation completion', async () => {
   vi.spyOn(FileBridgeStore.prototype, 'load').mockResolvedValue({ ...session(), _onboarding: { completionId: 'other', installation: { id: 'installation_example' } } });
   const start = vi.fn();

@@ -64,6 +64,108 @@ test('actual helper creates only an offered route and saves bootstrap before saf
   assert.doesNotMatch(JSON.stringify(h.initial), /envoi_reg_|registration_example|private-test-directory/);
 });
 
+const fullPermissions = ['send_agent_messages', 'receive_agent_messages', 'execute_cases', 'create_assets'];
+async function startedWithPermissions(permissions, extra = {}, suffix = []) {
+  const created = await fixture('registration-created');
+  delete created.request.body.requestedLocalPart;
+  created.request.body.requestedName = 'Envoi agent';
+  created.request.body.requestedPermissions = clone(permissions);
+  const h = await harness(['routes-available', created, ...suffix], { ...extra, requestedPermissions: permissions });
+  assert.equal((await h.helper.connect()).state, 'pending_approval'); h.tick(5000); return h;
+}
+
+test('explicit permissions reach canonical registration while the owner may narrow the effective grant', async () => {
+  let prompted = false;
+  const h = await startedWithPermissions(fullPermissions, { confirm: async details => {
+    prompted = true;
+    assert.deepEqual(details.permissionSummary, ['send agent messages', 'receive agent messages']); return true;
+  } }, ['registration-approved', 'activation-created', 'agent-status-installation']);
+  assert.deepEqual(h.calls[1].body.requestedPermissions, fullPermissions);
+  assert.equal((await h.helper.resume()).state, 'connected'); assert.equal(prompted, true);
+  assert.deepEqual((await h.store.read('helper-state.json')).requestedPermissions, fullPermissions);
+  assert.deepEqual((await h.store.read('session.json'))._onboarding.effectivePermissions, ['send_agent_messages', 'receive_agent_messages']);
+  assert.deepEqual(h.calls.filter(call => call.path.includes('/activate')).map(call => call.body), [(await fixture('activation-created')).request.body]);
+});
+
+test('all four approved permissions require native confirmation and survive activation and restart', async () => {
+  const approved = await fixture('registration-approved');
+  const activated = await fixture('activation-created');
+  approved.response.body.effectivePermissions = clone(fullPermissions);
+  activated.response.body.effectivePermissions = clone(fullPermissions);
+  let confirmed = false;
+  const h = await startedWithPermissions(fullPermissions, { confirm: async details => {
+    assert.deepEqual(details.permissionSummary, fullPermissions.map(permission => contract['x-permission-labels'][permission]));
+    assert.equal(h.calls.some(call => call.path.endsWith('/activate')), false);
+    confirmed = true; return true;
+  } }, [approved, activated, 'agent-status-installation']);
+  assert.equal((await h.helper.resume()).state, 'connected');
+  assert.equal(confirmed, true);
+  assert.deepEqual(h.adopted[0].activation.effectivePermissions, fullPermissions);
+  assert.deepEqual((await h.store.read('session.json'))._onboarding.effectivePermissions, fullPermissions);
+  const restart = await harness(['agent-status-installation'], { store: h.store, now: h.options.now });
+  assert.equal((await restart.helper.resume()).state, 'connected');
+  assert.equal(restart.calls.length, 1); assert.equal(restart.calls[0].method, 'GET');
+  assert.deepEqual((await h.store.read('helper-state.json')).requestedPermissions, fullPermissions);
+});
+
+test('an expired request may change permissions only with the explicit fresh-registration operation', async () => {
+  const h = await started({}, ['registration-expired']);
+  assert.equal((await h.helper.resume()).state, 'registration_ended');
+  const created = await fixture('registration-created');
+  delete created.request.body.requestedLocalPart;
+  created.request.body.requestedName = 'Envoi agent';
+  created.request.body.requestedPermissions = clone(fullPermissions);
+  const retry = await harness(['routes-available', created], { store: h.store, now: h.options.now, requestedPermissions: fullPermissions });
+  assert.equal((await retry.helper.connect({ fresh: true })).state, 'pending_approval');
+  assert.deepEqual(retry.calls[1].body.requestedPermissions, fullPermissions);
+  assert.deepEqual((await h.store.read('helper-state.json')).requestedPermissions, fullPermissions);
+});
+
+test('changed permissions cannot replace a pending request or contact the server', async () => {
+  const h = await started(); const before = await h.store.read('helper-state.json');
+  const retry = await harness([], { store: h.store, now: h.options.now, requestedPermissions: fullPermissions });
+  assert.equal((await retry.helper.connect({ fresh: true })).state, 'needs_help');
+  assert.deepEqual(await h.store.read('helper-state.json'), before);
+  assert.equal(retry.calls.length, 0); assert.equal(retry.adopted.length, 0);
+});
+
+test('a reordered identical request resumes the same registration without another POST', async () => {
+  const h = await startedWithPermissions(fullPermissions);
+  const before = await h.store.read('helper-state.json');
+  const retry = await harness(['registration-pending'], { store: h.store, now: h.options.now, requestedPermissions: [...fullPermissions].reverse() });
+  assert.equal((await retry.helper.connect()).state, 'pending_approval');
+  assert.equal(retry.calls.length, 1); assert.equal(retry.calls[0].method, 'GET');
+  assert.equal((await h.store.read('helper-state.json')).registrationId, before.registrationId);
+  assert.deepEqual((await h.store.read('helper-state.json')).requestedPermissions, fullPermissions);
+});
+
+test('legacy saved requests remain resumable and cannot be silently assigned new permissions', async () => {
+  const h = await started(); const legacy = await h.store.read('helper-state.json');
+  delete legacy.requestedPermissions; await h.store.write('helper-state.json', legacy);
+  const retry = await harness(['registration-pending'], { store: h.store, now: h.options.now });
+  assert.equal((await retry.helper.resume()).state, 'pending_approval');
+  const before = await h.store.read('helper-state.json');
+  const changed = await harness([], { store: h.store, now: h.options.now, requestedPermissions: fullPermissions });
+  assert.equal((await changed.helper.connect()).state, 'needs_help');
+  assert.deepEqual(await h.store.read('helper-state.json'), before); assert.equal(changed.calls.length, 0);
+});
+
+test('completed grants and unresolved activation requests cannot be expanded by connect flags', async () => {
+  for (const fault of [undefined, async stage => { if (stage === 'activation_saved') throw new Error('simulated interruption'); }]) {
+    const h = await started({ ...(fault ? { fault } : {}) }, ['registration-approved', ...(!fault ? ['activation-created', 'agent-status-installation'] : [])]);
+    await h.helper.resume(); const before = await h.store.read('helper-state.json');
+    const changed = await harness([], { store: h.store, now: h.options.now, requestedPermissions: fullPermissions });
+    assert.equal((await changed.helper.connect({ fresh: true })).state, 'needs_help');
+    assert.deepEqual(await h.store.read('helper-state.json'), before); assert.equal(changed.calls.length, 0);
+  }
+});
+
+test('malformed permission lists fail before network work', async () => {
+  for (const permissions of [[], ['send_agent_messages'], ['receive_agent_messages', 'receive_agent_messages'], ['receive_agent_messages', '__proto__']]) {
+    await assert.rejects(harness([], { requestedPermissions: permissions }), /PERMISSIONS_REQUIRED/);
+  }
+});
+
 test('approval prompts with canonical approver, workspace and permissions before activation, then verifies status', async () => {
   let prompted = false;
   const h = await started({ confirm: async details => {

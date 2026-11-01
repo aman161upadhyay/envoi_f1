@@ -35,6 +35,12 @@ export async function createHelper(options) {
   const origin = validateOrigin(options.origin);
   const runtime = options.runtime;
   const route = options.connectionRoute ?? 'local_helper';
+  const validPermissions = value => Array.isArray(value) && value.length > 0 && value.length <= 4
+    && new Set(value).size === value.length && value.includes('receive_agent_messages')
+    && value.every(permission => typeof permission === 'string' && Object.hasOwn(contract['x-permission-labels'], permission));
+  if (options.requestedPermissions !== undefined && !validPermissions(options.requestedPermissions)) throw new Error('PERMISSIONS_REQUIRED');
+  const requestedPermissions = [...(options.requestedPermissions ?? ['send_agent_messages', 'receive_agent_messages'])];
+  const permissionMetadata = state => state?.requestedPermissions === undefined ? {} : { requestedPermissions: [...state.requestedPermissions] };
   if (!['local_helper', 'authenticated_rest'].includes(route)) throw new Error('ROUTE_REQUIRED');
   if (!runtime || (route === 'local_helper' ? !['hermes', 'openclaw'].includes(runtime.type) : !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(runtime.type))
     || typeof runtime.version !== 'string' || (route === 'local_helper'
@@ -61,6 +67,7 @@ export async function createHelper(options) {
     if (!state || state.version !== 1 || state.origin !== origin || state.runtime?.type !== runtime.type
       || (state.connectionRoute ?? 'local_helper') !== route
       || !['pending', 'confirming', 'activating', 'completed', 'ended', 'cooldown'].includes(state.phase)) throw new Error('STATE_INVALID');
+    if (state.requestedPermissions !== undefined && !validPermissions(state.requestedPermissions)) throw new Error('STATE_INVALID');
     if (['pending', 'confirming', 'activating'].includes(state.phase)
       && (!identifier(state.registrationId) || typeof state.bootstrapToken !== 'string' || !state.bootstrapToken.startsWith('envoi_reg_') || !validDate(state.expiresAt))) throw new Error('STATE_INVALID');
     if (state.phase === 'activating' && (!identifier(state.activationId) || !validDate(state.attemptStartedAt)
@@ -87,7 +94,7 @@ export async function createHelper(options) {
       nextAction: 'Confirm the approver, workspace, agent and permissions in the private host prompt. Never answer for the human.' }, state);
   }
   async function end(state, status, guidance) {
-    await save({ ...base, phase: 'ended', status, guidance });
+    await save({ ...base, ...permissionMetadata(state), phase: 'ended', status, guidance });
     return project({ state: status === 'revoked' ? 'revoked' : status === 'needs_reconnect' ? 'needs_reconnect' : 'registration_ended', guidance,
       ...(statuses.includes(status) ? { registrationStatus: status } : {}), nextAction: guidance === 'check_owner_agents'
         ? 'Ask the owner whether the agent appears in Envoi. Reconnect it if it does; register again only if the owner confirms it does not.'
@@ -128,9 +135,10 @@ export async function createHelper(options) {
       || session.agentId !== marker.agent.id || session.address !== marker.agent.address) throw new Error('STATE_INVALID');
     const activation = validActivation({ ...marker, ...session, agent: marker.agent, installation: marker.installation });
     if (typeof options.adopt !== 'function') return failureOutput(contract, 'needs_help', 'update_helper');
+    const requestMetadata = permissionMetadata(await store.read('helper-state.json'));
     // No bootstrap or raw response ever crosses a subprocess/model boundary.
     await options.adopt(activation, { origin, runtime, stateDirectory: store.directory ?? options.directory, completionId: marker.completionId });
-    await save({ ...base, phase: 'completed', completionId: marker.completionId });
+    await save({ ...base, ...requestMetadata, phase: 'completed', completionId: marker.completionId });
     return authenticatedStatus(await store.read('session.json') ?? session);
   }
   async function authenticatedStatus(session) {
@@ -233,6 +241,14 @@ export async function createHelper(options) {
       try {
         state = await store.read('helper-state.json');
         if (state) ensureState(state);
+        // Explicit selection cannot rewrite a pending or completed request. Old
+        // saved setups remain resumable without a new permission-selection flag.
+        if (command === 'connect' && options.requestedPermissions !== undefined && state
+          && state.phase !== 'cooldown' && !(state.phase === 'ended' && fresh)
+          && (!state.requestedPermissions || state.requestedPermissions.length !== requestedPermissions.length
+            || requestedPermissions.some(permission => !state.requestedPermissions.includes(permission)))) {
+          return project({ state: 'needs_help', nextAction: 'The requested permissions differ from this saved setup. Resume it unchanged, or ask the owner to review a new registration.' }, state);
+        }
         const session = await store.read('session.json');
         let previousCompletionId, previousBinding;
         if (command === 'doctor') return project({ state: session?._onboarding ? 'needs_help' : state?.phase === 'pending' ? 'pending_approval' : 'needs_help',
@@ -259,7 +275,7 @@ export async function createHelper(options) {
           if (typeof options.adopt !== 'function') return failureOutput(contract, 'needs_help', 'update_helper');
           if (!offered(await request('GET', '/api/onboarding/routes'), route)) return project({ state: 'needs_help', guidance: 'route_unavailable', nextAction: 'This server does not currently offer the requested connection route.' });
           await options.preflight?.({ origin, runtime, stateDirectory: store.directory ?? options.directory });
-          const permissions = options.requestedPermissions ?? ['send_agent_messages', 'receive_agent_messages'];
+          const permissions = requestedPermissions;
           const body = await request('POST', '/api/agent-registrations', { body: {
             requestedName: options.requestedName ?? 'Envoi agent', requestedPermissions: permissions, connectionRoute: route, runtime,
             deliveryCapabilities: capabilities,
@@ -267,7 +283,7 @@ export async function createHelper(options) {
           if (!identifier(body.registrationId) || body.status !== 'pending_claim' || typeof body.bootstrapToken !== 'string' || !body.bootstrapToken.startsWith('envoi_reg_')
             || body.claim?.url !== `${origin}/claim` || !/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/.test(body.claim?.verificationCode)
             || !validDate(body.expiresAt) || body.claim.expiresAt !== body.expiresAt || !Number.isFinite(body.pollAfterSeconds) || body.pollAfterSeconds < limits.pollMinIntervalSeconds) throw new ProtocolError('INVALID_RESPONSE');
-          state = { ...base, phase: 'pending', ...(previousCompletionId ? previousBinding : {}), registrationId: body.registrationId, bootstrapToken: body.bootstrapToken, claim: body.claim,
+          state = { ...base, phase: 'pending', requestedPermissions: [...permissions], ...(previousCompletionId ? previousBinding : {}), registrationId: body.registrationId, bootstrapToken: body.bootstrapToken, claim: body.claim,
             expiresAt: body.expiresAt, nextPollAt: now() + body.pollAfterSeconds * 1000 };
           await save(state);
           return pendingOutput(state, true);
