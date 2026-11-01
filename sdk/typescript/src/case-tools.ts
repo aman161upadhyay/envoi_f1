@@ -3,6 +3,7 @@ import addFormats from 'ajv-formats';
 import schema from './case-tools-schema.json';
 import { CaseSessionChannel } from './case-session';
 import { EnvoiError } from './index';
+import { retryDelay } from './lifecycle';
 
 export type CaseToolName = 'envoi_case_snapshot' | 'envoi_case_reply' | 'envoi_case_propose' | 'envoi_case_decide'
   | 'envoi_authority_check' | 'envoi_request_human' | 'envoi_case_list_assets' | 'envoi_case_share_asset' | 'envoi_case_complete';
@@ -100,6 +101,15 @@ export class CaseToolError extends EnvoiError {
   }
 }
 
+function waitForToolRetry(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 export class CaseToolsClient {
   #channel: CaseSessionChannel;
   #sequence = 0;
@@ -142,11 +152,23 @@ export class CaseToolsClient {
   complete(input: CaseToolInputs['envoi_case_complete']) { return this.call('envoi_case_complete', input); }
 
   async #perform<Name extends CaseToolName>(name: Name, input: CaseToolInputs[Name]): Promise<Readonly<CaseToolResults[Name]>> {
+    const id = ++this.#sequence;
+    const body = JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: input } });
+    let failures = 0;
+    while (true) {
+      try { return await this.#request(name, input, id, body); }
+      catch (error) {
+        if (!(error instanceof CaseToolError && error.code === 'TOOL_BUSY' && error.retryable) || ++failures > 3) throw error;
+        await waitForToolRetry(retryDelay(failures), this.signal);
+      }
+    }
+  }
+
+  async #request<Name extends CaseToolName>(name: Name, input: CaseToolInputs[Name], id: number, body: string): Promise<Readonly<CaseToolResults[Name]>> {
     this.signal.throwIfAborted();
     const context = this.#channel.modelContext();
     if (!context.allowedTools.includes(name)) throw new EnvoiError('Tool is not in this case session', undefined, 'TOOL_NOT_IN_SESSION');
-    const id = ++this.#sequence;
-    const response = await this.#channel.forward(JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: input } }));
+    const response = await this.#channel.forward(body);
     this.signal.throwIfAborted();
     let payload: unknown;
     try { payload = await response.json(); } catch { throw invalidResponse(); }

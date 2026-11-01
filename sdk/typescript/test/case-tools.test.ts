@@ -68,8 +68,40 @@ describe('typed case tools under private session custody', () => {
     const test = harness(fixture);
     const expected = JSON.parse(fixture.response.body.result.content[0].text);
     const request = fixture.request.body.params;
-    await expect(test.client.call(request.name, request.arguments)).rejects.toMatchObject({ code: expected.code, retryable: expected.retryable });
-    expect(test.requests.map(request => request.params.name)).toEqual(['envoi_case_snapshot', request.name]);
+    const rejected = expect(test.client.call(request.name, request.arguments)).rejects.toMatchObject({ code: expected.code, retryable: expected.retryable });
+    if (expected.code === 'TOOL_BUSY') await vi.advanceTimersByTimeAsync(10_000);
+    await rejected;
+    expect(test.requests.map(request => request.params.name)).toEqual(['envoi_case_snapshot', ...Array(expected.code === 'TOOL_BUSY' ? 4 : 1).fill(request.name)]);
+    if (expected.code === 'TOOL_BUSY') expect(new Set(test.requests.slice(1).map(request => JSON.stringify(request))).size).toBe(1);
+  });
+
+  it('retries an initially busy snapshot with backoff and an identical request before returning canonical context', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    let attempts = 0;
+    const test = harness(toolFixture('snapshot-agent-work'), (body, request) => {
+      if (++attempts > 2) return;
+      body.result = structuredClone(toolFixture('reply-tool-busy').response.body.result);
+      const envelope = JSON.parse(body.result.content[0].text); envelope.tool = request.params.name;
+      body.result.content[0].text = JSON.stringify(envelope);
+    });
+    const pending = test.client.snapshot();
+    await vi.advanceTimersByTimeAsync(0); expect(test.requests).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(499); expect(test.requests).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1); expect(test.requests).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(999); expect(test.requests).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual(JSON.parse(toolFixture('snapshot-agent-work').response.body.result.content[0].text).result);
+    expect(test.requests).toHaveLength(3);
+    expect(new Set(test.requests.map(request => JSON.stringify(request))).size).toBe(1);
+  });
+
+  it('cancels a busy-tool backoff immediately when its scoped channel ends', async () => {
+    const test = harness(toolFixture('reply-tool-busy'));
+    const rejected = expect(test.client.reply(toolFixture('reply-tool-busy').request.body.params.arguments)).rejects.toBeDefined();
+    await vi.advanceTimersByTimeAsync(0); expect(test.requests).toHaveLength(2);
+    test.channel.invalidate(); await rejected;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(test.requests).toHaveLength(2); expect(vi.getTimerCount()).toBe(0);
   });
 
   it('freezes snapshots so a caller cannot rewrite allowed actions or cached authority', async () => {
