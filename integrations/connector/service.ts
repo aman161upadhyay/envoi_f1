@@ -72,7 +72,7 @@ export async function inspectConnectorService(directory: string, runtime: string
   const command = platform === 'linux' ? { executable: 'systemctl', args: ['--user', 'show', '-p', 'LoadState', '-p', 'UnitFileState', '-p', 'ActiveState', `${service.name}.service`] }
     : platform === 'darwin' ? { executable: 'launchctl', args: ['list'] }
     : { executable: windowsExecutable('powershell.exe', options.env), args: ['-NoProfile', '-NonInteractive', '-Command',
-      `(Get-ScheduledTask -TaskName '${service.name}' -TaskPath '\\' -ErrorAction Stop).State.ToString()`] };
+      `$task = Get-ScheduledTask -TaskName '${service.name}' -TaskPath '\\' -ErrorAction Stop; $repeats = @($task.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and $_.Enabled -and [string]$_.Repetition.Interval -eq 'PT1M' -and -not $_.Repetition.Duration }).Count -gt 0; Write-Output "$($task.State)|$repeats"`] };
   try {
     const output = options.run ? await options.run(command.executable, command.args)
       : (await execute(command.executable, command.args, { timeout: 15_000, windowsHide: true })).stdout;
@@ -85,10 +85,13 @@ export async function inspectConnectorService(directory: string, runtime: string
       return { name: service.name, registration: 'registered' as ServiceRegistration, enabled, managerState };
     }
     if (platform === 'win32' && typeof output === 'string') {
-      const state = output.trim();
+      const match = /^(Running|Ready|Disabled|Queued|Unknown)\|(True|False)$/i.exec(output.trim());
+      if (!match) return { name: service.name, registration: 'unverified' as ServiceRegistration };
+      const state = match[1];
       if (!['Running', 'Ready', 'Disabled', 'Queued', 'Unknown'].includes(state)) return { name: service.name, registration: 'unverified' as ServiceRegistration };
       return { name: service.name, registration: 'registered' as ServiceRegistration, enabled: state !== 'Disabled',
-        managerState: (state === 'Running' ? 'running' : state === 'Ready' || state === 'Disabled' ? 'stopped' : 'unknown') as ServiceManagerState };
+        managerState: (state === 'Running' ? 'running' : state === 'Ready' || state === 'Disabled' ? 'stopped' : 'unknown') as ServiceManagerState,
+        recoveryPolicy: match[2].toLowerCase() === 'true' ? 'current' as const : 'outdated' as const };
     }
     if (platform === 'darwin' && typeof output === 'string') {
       // launchctl list uses PID, last exit status, and label columns. Match the

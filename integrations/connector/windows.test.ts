@@ -40,7 +40,7 @@ describe('native Windows helpers', () => {
           .toMatchObject({ registration: 'not_installed' });
         await mkdir(path.dirname(service.filename), { recursive: true }); await writeFile(service.filename, service.contents);
         let command: [string, string[]] | undefined;
-        const output = platform === 'win32' ? 'Running\r\n' : platform === 'linux'
+        const output = platform === 'win32' ? 'Running|True\r\n' : platform === 'linux'
           ? 'LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n'
           : `PID\tStatus\tLabel\n123\t0\t${service.name}\n`;
         const observed = await inspectConnectorService(directory, 'hermes', { ...options, run: async (executable, args) => { command = [executable, args]; return output; } });
@@ -50,7 +50,8 @@ describe('native Windows helpers', () => {
         if (platform === 'win32') expect(command).toMatchObject([expect.stringContaining('powershell.exe'),
           expect.arrayContaining(['-NoProfile', '-NonInteractive', '-Command'])]);
         if (platform === 'linux') expect(command?.[1]).toContain('ActiveState');
-        if (platform !== 'darwin') expect(observed).toMatchObject({ enabled: true, managerState: 'running' });
+        if (platform !== 'darwin') expect(observed).toMatchObject({ enabled: true, managerState: 'running',
+          ...(platform === 'win32' ? { recoveryPolicy: 'current' } : {}) });
         else expect(observed).toMatchObject({ managerState: 'running' });
         expect(await inspectConnectorService(directory, 'hermes', { ...options, run: async () => { throw new Error('manager unavailable'); } }))
           .toMatchObject({ registration: 'unverified' });
@@ -65,7 +66,7 @@ describe('native Windows helpers', () => {
         const options = { platform, home: root, env: { SystemRoot: 'C:\\Windows' } };
         const service = connectorService(directory, { ...options, runtime: 'hermes', user: 'S-1-5-123' });
         await mkdir(path.dirname(service.filename), { recursive: true }); await writeFile(service.filename, service.contents);
-        expect(await inspectConnectorService(directory, 'hermes', { ...options, run: async () => platform === 'win32' ? 'Disabled\r\n'
+        expect(await inspectConnectorService(directory, 'hermes', { ...options, run: async () => platform === 'win32' ? 'Disabled|True\r\n'
           : platform === 'linux' ? 'LoadState=loaded\nUnitFileState=disabled\nActiveState=failed\n'
           : `PID\tStatus\tLabel\n-\t1\t${service.name}\n` })).toMatchObject(platform === 'darwin'
           ? { registration: 'registered', managerState: 'failed' }
@@ -79,6 +80,8 @@ describe('native Windows helpers', () => {
             .toMatchObject({ registration: 'unverified' });
         }
       }
+      expect(await inspectConnectorService(directory, 'hermes', { platform: 'win32', home: root, env: { SystemRoot: 'C:\\Windows' }, run: async () => 'Ready|False\r\n' }))
+        .toMatchObject({ registration: 'registered', managerState: 'stopped', recoveryPolicy: 'outdated' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.skipIf(process.platform !== 'win32')('protects credentials despite Git-style PATH shadows', async () => {

@@ -11382,7 +11382,7 @@ async function eo(e, t, r = {}) {
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			`(Get-ScheduledTask -TaskName '${a.name}' -TaskPath '\\' -ErrorAction Stop).State.ToString()`
+			`$task = Get-ScheduledTask -TaskName '${a.name}' -TaskPath '\\' -ErrorAction Stop; $repeats = @($task.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and $_.Enabled -and [string]$_.Repetition.Interval -eq 'PT1M' -and -not $_.Repetition.Duration }).Count -gt 0; Write-Output "$($task.State)|$repeats"`
 		]
 	};
 	try {
@@ -11405,18 +11405,24 @@ async function eo(e, t, r = {}) {
 			};
 		}
 		if (i === "win32" && typeof e == "string") {
-			let t = e.trim();
+			let t = /^(Running|Ready|Disabled|Queued|Unknown)\|(True|False)$/i.exec(e.trim());
+			if (!t) return {
+				name: a.name,
+				registration: "unverified"
+			};
+			let n = t[1];
 			return [
 				"Running",
 				"Ready",
 				"Disabled",
 				"Queued",
 				"Unknown"
-			].includes(t) ? {
+			].includes(n) ? {
 				name: a.name,
 				registration: "registered",
-				enabled: t !== "Disabled",
-				managerState: t === "Running" ? "running" : t === "Ready" || t === "Disabled" ? "stopped" : "unknown"
+				enabled: n !== "Disabled",
+				managerState: n === "Running" ? "running" : n === "Ready" || n === "Disabled" ? "stopped" : "unknown",
+				recoveryPolicy: t[2].toLowerCase() === "true" ? "current" : "outdated"
 			} : {
 				name: a.name,
 				registration: "unverified"
@@ -12241,7 +12247,7 @@ async function Wo(e) {
 		"HERMES_EXECUTION_UNCERTAIN",
 		"HERMES_CREATION_UNCERTAIN",
 		"SCOPED_MODEL_CHANGED"
-	].includes(v ?? "") ? "Preserve the turn journal and use the supported settlement recovery procedure." : "enabled" in m && m.enabled === !1 ? "Ask the owner to enable the existing startup service." : "managerState" in m && m.managerState === "failed" ? "Inspect the startup service failure; preserve enrollment and credentials." : v === "GATEWAY_UNREACHABLE" ? "Restore the selected Gateway; the connector will retry its saved connection." : y === "failed" ? "Inspect the saved runtime error code and repair the selected runtime before restarting." : g === "stopped" && m.registration === "not_installed" ? "Start the existing connector or ask the owner to install its startup service." : g === "stopped" ? "Restart the existing connector using its saved state directory." : g === "waiting" ? "Wait for the saved retry, then verify a real agent exchange." : void 0 : "Preserve the connection directory and ask the owner to recover its missing credentials.";
+	].includes(v ?? "") ? "Preserve the turn journal and use the supported settlement recovery procedure." : "enabled" in m && m.enabled === !1 ? "Ask the owner to enable the existing startup service." : "managerState" in m && m.managerState === "failed" ? "Inspect the startup service failure; preserve enrollment and credentials." : v === "GATEWAY_UNREACHABLE" ? "Restore the selected Gateway; the connector will retry its saved connection." : y === "failed" ? "Inspect the saved runtime error code and repair the selected runtime before restarting." : "recoveryPolicy" in m && m.recoveryPolicy === "outdated" ? "Ask the owner to reinstall the existing connector startup service with this build; preserve its saved profile and enrollment." : g === "stopped" && m.registration === "not_installed" ? "Start the existing connector or ask the owner to install its startup service." : g === "stopped" ? "Restart the existing connector using its saved state directory." : g === "waiting" ? "Wait for the saved retry, then verify a real agent exchange." : void 0 : "Preserve the connection directory and ask the owner to recover its missing credentials.";
 	return {
 		runtime: n.runtime,
 		address: n.address,

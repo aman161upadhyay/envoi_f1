@@ -321,6 +321,16 @@ describe('authenticated local management', () => {
         startupService: { managerState: 'running' }, nextAction: expect.stringContaining('inspect that process') });
     } finally { inspect.mockRestore(); }
   });
+  it('identifies an installed Windows startup task without durable repetition', async () => {
+    const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
+    const inspect = vi.spyOn(serviceModule, 'inspectConnectorService').mockResolvedValue({
+      name: 'envoi-existing', registration: 'registered', enabled: true, managerState: 'stopped', recoveryPolicy: 'outdated'
+    });
+    try {
+      expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'stopped',
+        startupService: { recoveryPolicy: 'outdated' }, nextAction: expect.stringContaining('reinstall the existing connector startup service') });
+    } finally { inspect.mockRestore(); }
+  });
   it('holds the per-connection lock through supervised startup and releases it after shutdown', async () => {
     const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
     const original = f.adapter.createBridge;

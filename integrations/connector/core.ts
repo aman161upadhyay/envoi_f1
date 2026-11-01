@@ -551,6 +551,7 @@ export async function connectionStatus(stateDir: string) {
     : 'managerState' in startupService && startupService.managerState === 'failed' ? 'Inspect the startup service failure; preserve enrollment and credentials.'
     : errorCode === 'GATEWAY_UNREACHABLE' ? 'Restore the selected Gateway; the connector will retry its saved connection.'
     : phase === 'failed' ? 'Inspect the saved runtime error code and repair the selected runtime before restarting.'
+    : 'recoveryPolicy' in startupService && startupService.recoveryPolicy === 'outdated' ? 'Ask the owner to reinstall the existing connector startup service with this build; preserve its saved profile and enrollment.'
     : status === 'stopped' && startupService.registration === 'not_installed' ? 'Start the existing connector or ask the owner to install its startup service.'
     : status === 'stopped' ? 'Restart the existing connector using its saved state directory.'
     : status === 'waiting' ? 'Wait for the saved retry, then verify a real agent exchange.'
