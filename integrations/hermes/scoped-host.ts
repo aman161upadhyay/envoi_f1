@@ -7,7 +7,7 @@ import { ConnectorSetupError } from '../connector/adapter';
 import { EnvoiError } from '../../sdk/typescript/src/index';
 import { PermanentWorkError } from '../../sdk/typescript/src/connector';
 import type { ScopedModelTurn } from '../agent-bridges/scoped-turn';
-import type { ScopedRunStore } from '../grok/scoped-store';
+import type { ScopedRunRecord, ScopedRunStore } from '../grok/scoped-store';
 import { startScopedMcpRelay } from './scoped-relay';
 
 const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -252,6 +252,29 @@ async function cancelAdmission(wire: HermesWire, sessionId: string, admissionId:
   while (current.status !== 'terminal' && current.status !== 'unknown') {
     await delay(50, undefined, { signal });
     current = receipt(await wire.rpc('prompt.receipt', { session_id: sessionId, admission_id: admissionId }, signal), sessionId, admissionId);
+  }
+}
+
+/** Read the original admission only. This never submits, interrupts or repairs a turn. */
+export async function inspectHermesTerminalTurn(host: HermesScopedHost, run: ScopedRunRecord, signal: AbortSignal): Promise<string> {
+  const state = run.input[0];
+  if (!hermesJournalMatches(run, host) || run.input.length !== 1 || state?.kind !== 'hermes-scoped-v1'
+    || run.pending.length || run.admission || typeof state.sessionId !== 'string' || !state.sessionId || state.sessionId.length > 256
+    || typeof state.admissionId !== 'string' || !state.admissionId || state.admissionId.length > 256) throw failure('HERMES_TURN_RECOVERY_REQUIRED');
+  const bounded = AbortSignal.any([signal, AbortSignal.timeout(10000)]);
+  const wire = await connectHermesHost(host, bounded);
+  let subscription: string | undefined;
+  try {
+    const attached = await wire.rpc('session.resume', { session_id: state.sessionId, omit_messages: true }, bounded);
+    if (attached.session_id !== state.sessionId || typeof attached.subscription_id !== 'string') throw failure();
+    subscription = attached.subscription_id;
+    const current = receipt(await wire.rpc('prompt.receipt', { session_id: state.sessionId, admission_id: state.admissionId }, bounded), state.sessionId, state.admissionId);
+    if (current.status !== 'terminal' || !['completed', 'failed', 'interrupted', 'cancelled', 'rejected'].includes(current.outcome))
+      throw failure('HERMES_TURN_RECOVERY_REQUIRED');
+    return current.outcome;
+  } finally {
+    if (subscription) await wire.rpc('session.detach', { session_id: state.sessionId, subscription_id: subscription }, AbortSignal.timeout(1000)).catch(() => {});
+    wire.close();
   }
 }
 

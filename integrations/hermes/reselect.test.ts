@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { acquireConnectorLock, privateJson } from '../connector/store';
 import { FileScopedRunStore, type ScopedRunRecord } from '../grok/scoped-store';
-import { hermesJournalMatches, hermesProfileIdentity } from './scoped-host';
+import { hermesJournalMatches, hermesProfileIdentity, inspectHermesTerminalTurn } from './scoped-host';
 import { nativeGatewayReselection, reselectHermesGateway } from './reselect';
 import { hermesHost, readHermesSelection, saveHermesScopedMode, selectScopedHermes, type HermesRuntimeConfiguration } from './scoped-runtime';
 
@@ -86,6 +86,37 @@ it('does not prompt or rewrite an already current selection', async () => {
   f.discoverGateway.mockResolvedValue({ home: f.home, cwd: f.cwd, origin: previousOrigin });
   expect(await reselectHermesGateway(f.directory, origin, signal(), f.options)).toEqual(f.config);
   expect(f.confirmGateway).not.toHaveBeenCalled(); expect(await f.selection()).toBe(selection);
+});
+
+it.each(['completed', 'failed', 'interrupted', 'cancelled', 'rejected'])('preserves an unfinished journal with verified native %s proof during owner-confirmed reselection', async outcome => {
+  const f = await fixture();
+  await f.runs.save({ ...f.run, model: hermesProfileIdentity(hermesHost(f.config)), completed: false });
+  const before = await f.preserved();
+  const inspectTerminalTurn = vi.fn<typeof inspectHermesTerminalTurn>(async () => outcome);
+  await expect(reselectHermesGateway(f.directory, origin, signal(), { ...f.options, inspectTerminalTurn })).resolves.toMatchObject({ daemonOrigin: nextOrigin });
+  expect(inspectTerminalTurn).toHaveBeenCalledTimes(2);
+  expect(inspectTerminalTurn.mock.calls[0]).toMatchObject([{ home: f.home, cwd: f.cwd, origin: nextOrigin }, { completed: false, workId: f.run.workId }, expect.any(AbortSignal)]);
+  expect(f.confirmGateway).toHaveBeenCalledWith(expect.objectContaining({ retainedTerminalTurns: 1 }), expect.any(AbortSignal));
+  expect(await f.preserved()).toEqual(before);
+  expect(await f.runs.load(f.run.workId)).toMatchObject({ completed: false });
+});
+
+it.each(['unknown', 'unavailable', 'changed-outcome', 'changed-journal', 'decline'])('makes no selection commit for terminal recovery %s', async variant => {
+  const f = await fixture();
+  const run = { ...f.run, model: hermesProfileIdentity(hermesHost(f.config)), completed: false };
+  await f.runs.save(run);
+  const selection = await f.selection();
+  const inspectTerminalTurn = vi.fn<typeof inspectHermesTerminalTurn>(async () => 'interrupted');
+  if (variant === 'unknown') inspectTerminalTurn.mockResolvedValue('unknown');
+  if (variant === 'unavailable') inspectTerminalTurn.mockRejectedValue(new Error('Unavailable native proof'));
+  if (variant === 'changed-outcome') inspectTerminalTurn.mockResolvedValueOnce('interrupted').mockResolvedValue('completed');
+  if (variant === 'changed-journal') f.confirmGateway.mockImplementation(async () => { await f.runs.save({ ...run, providerCalls: 2 }); return true; });
+  if (variant === 'decline') f.confirmGateway.mockResolvedValue(false);
+  const operation = reselectHermesGateway(f.directory, origin, signal(), { ...f.options, inspectTerminalTurn });
+  if (variant === 'decline') await expect(operation).resolves.toBeNull();
+  else await expect(operation).rejects.toThrow();
+  expect(await f.selection()).toBe(selection);
+  expect((await readdir(f.directory)).some(name => name.startsWith('hermes-scoped-before-'))).toBe(false);
 });
 
 it.each(['connector', 'helper'])('refuses an active %s owner before gateway discovery', async owner => {

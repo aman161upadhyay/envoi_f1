@@ -12,7 +12,7 @@ import { createHermesBridge } from './runtime';
 import { hermesAdapter } from './adapter';
 import { prepareHermesRun } from './run';
 import { selectScopedHermes } from './scoped-runtime';
-import { currentHermesHost, hermesProfileIdentity } from './scoped-host';
+import { currentHermesHost, hermesProfileIdentity, inspectHermesTerminalTurn } from './scoped-host';
 
 interface Fixture { request?: { path?: string; body?: Record<string, any> }; response?: { status: number; body: Record<string, any> }; steps?: Fixture[] }
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -58,6 +58,9 @@ async function setup() {
   const extra = new Map<string, Fixture>(), effects = new Set<string>();
   let claimable = true, currentStatus = 'terminal', outcome = 'completed', admissionId = 'admission_fixture';
   let serverSpec: Record<string, any> | undefined, onPrompt: () => Promise<void> = async () => {};
+  let detachedExecution = false;
+  let renewalFailure = false;
+  let toolTransport: (request: Record<string, any>, response: Response) => Promise<Response> = async (_request, response) => response;
   let mcpConnectionId = '1'.repeat(32);
   const inputs = new Set<string>();
   let lostSubmit = false, loseReceipt = false, sourceCapabilities = ['acp-editor-policy-v1', 'acp-session-mcp-v1'];
@@ -124,7 +127,10 @@ async function setup() {
           const initialized = await mcp('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'inert-daemon', version: '1' } });
           expect(initialized.error).toBeUndefined();
           await mcp('notifications/initialized'); await mcp('tools/list');
-          await onPrompt();
+          if (detachedExecution) {
+            currentStatus = 'started';
+            void onPrompt().then(() => { if (currentStatus === 'started') currentStatus = 'terminal'; }).catch(() => {});
+          } else await onPrompt();
         }
         if (lostSubmit) { lostSubmit = false; this.close(); return; }
         return receipt();
@@ -156,7 +162,7 @@ async function setup() {
       const value = name === 'envoi_case_snapshot' ? { response: snapshot } : extra.get(name) ?? reply;
       if (name !== 'envoi_case_snapshot') expect(body.params.arguments).toEqual(value.request!.body!.params.arguments);
       if (name === 'envoi_case_reply' && value.response!.status < 400) effects.add(body.params.arguments.idempotencyKey);
-      return Response.json({ ...structuredClone(value.response!.body), id: body.id }, { status: value.response!.status });
+      return toolTransport(body, Response.json({ ...structuredClone(value.response!.body), id: body.id }, { status: value.response!.status }));
     }
     expect(authorization).toBe('Bearer ' + access);
     if (url.pathname === '/api/agent/status') return Response.json(status.body);
@@ -166,7 +172,9 @@ async function setup() {
     const prefix = '/api/agent/work/' + work.workId;
     if (url.pathname === prefix + '/session') return Response.json(minted.body, { status: minted.status });
     if (url.pathname === prefix + '/session/end') return Response.json(ended.body);
-    if (url.pathname === prefix + '/renew') return Response.json({ workId: work.workId, leaseToken: work.leaseToken, leaseExpiresAt: work.leaseExpiresAt });
+    if (url.pathname === prefix + '/renew') return renewalFailure
+      ? Response.json({ code: 'INTERNAL_SERVER_ERROR', message: 'Offline renewal refusal' }, { status: 500 })
+      : Response.json({ workId: work.workId, leaseToken: work.leaseToken, leaseExpiresAt: work.leaseExpiresAt });
     const operation = url.pathname.slice(prefix.length + 1); expect(['acknowledge', 'complete', 'fail']).toContain(operation);
     const state = operation === 'acknowledge' ? 'acknowledged' : operation === 'complete' ? 'processed' : 'failed';
     return Response.json({ workId: work.workId, status: state, receipt: { messageId: work.workId, state } });
@@ -180,6 +188,9 @@ async function setup() {
     effects, open, mcp, replyArgs: reply.request!.body!.params.arguments,
     snapshot: snapshot.body,
     onPrompt: (action: typeof onPrompt) => { onPrompt = action; },
+    detachedExecution: () => { detachedExecution = true; },
+    failRenewal: () => { renewalFailure = true; },
+    toolTransport: (transport: typeof toolTransport) => { toolTransport = transport; },
     addTool: (value: Fixture) => { extra.set(value.request!.body!.params.name, value); },
     setStatus: (status: string, result = 'completed') => { currentStatus = status; outcome = result; },
     loseSubmit: () => { lostSubmit = true; }, loseReceipt: () => { loseReceipt = true; },
@@ -193,6 +204,28 @@ async function setup() {
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('production Hermes scoped composition with inert authenticated daemon transport', () => {
+  it.each(['completed', 'failed', 'interrupted', 'cancelled', 'rejected'])('reads native terminal %s proof without creating, submitting, cancelling or changing a journal', async outcome => {
+    const scenario = await setup(); scenario.setStatus('terminal', outcome);
+    const host = { home: scenario.home, cwd: scenario.home, origin: daemon };
+    const run = { version: 1 as const, workId: scenario.work.workId, model: hermesProfileIdentity(host), completed: false,
+      input: [{ kind: 'hermes-scoped-v1', sessionId: 'hermes_session_fixture', admissionId: 'admission_fixture' }], pending: [], providerCalls: 1 };
+    const before = JSON.stringify(run);
+    await expect(inspectHermesTerminalTurn(host, run, new AbortController().signal)).resolves.toBe(outcome);
+    expect(JSON.stringify(run)).toBe(before);
+    expect(scenario.rpcRequests.map(request => request.method)).toEqual(['runtime.describe', 'session.resume', 'prompt.receipt', 'session.detach']);
+    expect(scenario.modelText).toEqual([]); expect(scenario.fetcher).not.toHaveBeenCalled();
+    expect(scenario.sockets.every(socket => socket.readyState === 3)).toBe(true);
+  });
+  it.each(['started', 'queued', 'unknown', 'unexpected-terminal', 'wrong-admission'])('refuses %s native proof without mutation', async variant => {
+    const scenario = await setup(); scenario.setStatus(variant === 'unexpected-terminal' || variant === 'wrong-admission' ? 'terminal' : variant, variant === 'unexpected-terminal' ? 'unexpected' : 'completed');
+    const host = { home: scenario.home, cwd: scenario.home, origin: daemon };
+    const run = { version: 1 as const, workId: scenario.work.workId, model: hermesProfileIdentity(host), completed: false,
+      input: [{ kind: 'hermes-scoped-v1', sessionId: 'hermes_session_fixture', admissionId: variant === 'wrong-admission' ? 'admission_other' : 'admission_fixture' }], pending: [], providerCalls: 1 };
+    await expect(inspectHermesTerminalTurn(host, run, new AbortController().signal)).rejects.toThrow();
+    expect(scenario.rpcRequests.every(request => ['runtime.describe', 'session.resume', 'prompt.receipt', 'session.detach'].includes(request.method))).toBe(true);
+    expect(scenario.modelText).toEqual([]); expect(scenario.fetcher).not.toHaveBeenCalled();
+    expect(scenario.sockets.every(socket => socket.readyState === 3)).toBe(true);
+  });
   it('discovers the selected private gateway and verifies its ticketed descriptor without creating a session or prompt', async () => {
     const scenario = await setup();
     expect(await currentHermesHost(scenario.home, scenario.home, new AbortController().signal)).toEqual({ home: scenario.home, cwd: scenario.home, origin: daemon });
@@ -227,6 +260,77 @@ describe('production Hermes scoped composition with inert authenticated daemon t
     expect(scenario.modelText).toHaveLength(1); expect(scenario.effects.size).toBe(1);
     expect(scenario.bootstrap.filter(entry => entry.verb === 'session-ticket')[0].params.purpose).toBe('interactive');
     expect(scenario.sockets.every(socket => socket.readyState === 3)).toBe(true);
+  });
+  it('finishes the same native admission after reply commit, lost response and two busy identical replays', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const scenario = await setup(); scenario.detachedExecution();
+    let replies = 0;
+    scenario.toolTransport(async (request, response) => {
+      if (request.params.name !== 'envoi_case_reply') return response;
+      if (++replies === 1) {
+        await response.arrayBuffer();
+        throw new TypeError('Actual committed response lost in offline transport');
+      }
+      if (replies <= 3) {
+        const busy = fixture('case-tools/reply-tool-busy').response!.body;
+        return Response.json({ ...busy, id: request.id });
+      }
+      const body = await response.json();
+      const envelope = JSON.parse(body.result.content[0].text); envelope.result.replayed = true;
+      body.result.content[0].text = JSON.stringify(envelope);
+      return Response.json(body);
+    });
+    scenario.onPrompt(async () => {
+      const result = await scenario.mcp('tools/call', { name: 'envoi_case_reply', arguments: scenario.replyArgs });
+      expect(result.result.isError).toBe(false);
+      expect(JSON.parse(result.result.content[0].text).result.replayed).toBe(true);
+    });
+    const bridge = await scenario.open({}, 10000);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).resolves.toBe(true);
+    expect(replies).toBe(4);
+    const calls = scenario.toolRequests.filter(request => request.params.name === 'envoi_case_reply');
+    expect(new Set(calls.map(request => JSON.stringify(request))).size).toBe(1);
+    expect(scenario.effects.size).toBe(1);
+    expect(scenario.modelText).toHaveLength(1);
+    expect(scenario.rpcRequests.filter(request => request.method === 'prompt.submit')).toHaveLength(1);
+    expect(scenario.rpcRequests.some(request => request.method === 'session.interrupt')).toBe(false);
+    expect(await scenario.journal()).toMatchObject({ completed: true, providerCalls: 1 });
+    expect(scenario.fetcher.mock.calls.filter(([url]) => String(url).endsWith('/complete'))).toHaveLength(1);
+    expect(scenario.fetcher.mock.calls.some(([url]) => String(url).endsWith('/fail'))).toBe(false);
+  });
+  it('retains the committed effect and failed native proof when lease renewal fails during lost-response replay', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const scenario = await setup(); scenario.detachedExecution();
+    scenario.work.leaseExpiresAt = new Date(Date.now() + 2000).toISOString();
+    scenario.minted.body.lease.leaseExpiresAt = scenario.work.leaseExpiresAt;
+    let replies = 0;
+    scenario.toolTransport(async (request, response) => {
+      if (request.params.name !== 'envoi_case_reply') return response;
+      if (++replies === 1) {
+        await response.arrayBuffer();
+        scenario.failRenewal();
+        throw new TypeError('Response lost before lease renewal fails');
+      }
+      const busy = fixture('case-tools/reply-tool-busy').response!.body;
+      return Response.json({ ...busy, id: request.id });
+    });
+    scenario.onPrompt(async () => { await scenario.mcp('tools/call', { name: 'envoi_case_reply', arguments: scenario.replyArgs }); });
+    const bridge = await scenario.open({}, 10000);
+    await expect(bridge.connector.processWorkOnce()).rejects.toMatchObject({ code: 'INTERNAL_SERVER_ERROR' });
+    await bridge.close();
+    expect(replies).toBeGreaterThanOrEqual(1); expect(replies).toBeLessThanOrEqual(2); expect(scenario.effects.size).toBe(1);
+    expect(scenario.rpcRequests.filter(request => request.method === 'session.interrupt')).toHaveLength(1);
+    expect(await scenario.journal()).toMatchObject({ completed: false, providerCalls: 1 });
+    const journal = await readFile(path.join(scenario.directory, 'scoped-runs', scenario.work.workId + '.json'), 'utf8');
+    scenario.work.leaseExpiresAt = new Date(Date.now() + 120000).toISOString();
+    scenario.minted.body.lease.leaseExpiresAt = scenario.work.leaseExpiresAt;
+    scenario.reclaim(); const recovered = await scenario.open({}, 10000);
+    await expect(recovered.connector.scopedWakeWorkDriver().processWorkOnce()).resolves.toBe(true);
+    expect(scenario.modelText).toHaveLength(1); expect(scenario.effects.size).toBe(1);
+    expect(await readFile(path.join(scenario.directory, 'scoped-runs', scenario.work.workId + '.json'), 'utf8')).toBe(journal);
+    const failure = scenario.fetcher.mock.calls.filter(([url]) => String(url).endsWith('/fail')).at(-1)!;
+    expect(JSON.parse(String(failure[1]?.body))).toMatchObject({ retryable: false, reasonCode: 'HERMES_TURN_NOT_COMPLETED' });
+    expect(scenario.fetcher.mock.calls.some(([url]) => String(url).endsWith('/complete'))).toBe(false);
   });
   it('retains a completed legacy journal across a gateway address change without resubmission or a second effect', async () => {
     const scenario = await setup();
