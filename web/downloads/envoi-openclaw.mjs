@@ -2843,45 +2843,45 @@ var jt = class {
 	}
 	async run(e, t = 6e4) {
 		if (!Number.isSafeInteger(t) || t < 1e3 || t > 9e5) throw RangeError("Wake polling must run at least every 900 seconds");
-		let n = new AbortController(), r, i, a, o, s = 0, c = 0, l = (e) => e instanceof I && (e.status !== void 0 && e.status >= 500 || [
+		let n = new AbortController(), r, i, a, o, s = 0, c = 0, l = 0, u = (e) => e instanceof I && (e.status !== void 0 && e.status >= 500 || [
 			"NETWORK_ERROR",
 			"TIMEOUT",
 			"RATE_LIMITED"
 		].includes(e.code ?? ""));
 		for (; !e.aborted;) {
-			let u = this.now(), d = 0;
+			let d = this.now(), f = 0;
 			try {
-				try {
+				if (this.now() >= l) try {
 					await this.maintain(e);
 				} catch (e) {
-					if (!l(e)) throw e;
-					e instanceof I && Number.isSafeInteger(e.retryAfterSeconds) && e.retryAfterSeconds >= 0 && (d = e.retryAfterSeconds * 1e3);
+					if (!u(e)) throw e;
+					l = this.now() + (e instanceof I && Number.isSafeInteger(e.retryAfterSeconds) && e.retryAfterSeconds >= 0 ? e.retryAfterSeconds * 1e3 : t);
 				}
 				await this.dispatchControls(e), !i && this.now() >= s && (i = this.dispatchWork(e).catch((t) => {
-					!e.aborted && !l(t) ? (r = t, n.abort()) : t instanceof I && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (s = this.now() + t.retryAfterSeconds * 1e3);
+					!e.aborted && !u(t) ? (r = t, n.abort()) : t instanceof I && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (s = this.now() + t.retryAfterSeconds * 1e3);
 				}).finally(() => {
 					i = void 0, o?.();
 				})), !a && this.now() >= c && (a = this.claim(e).catch((t) => {
-					!e.aborted && !l(t) ? (r = t, n.abort()) : t instanceof I && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (c = this.now() + t.retryAfterSeconds * 1e3);
+					!e.aborted && !u(t) ? (r = t, n.abort()) : t instanceof I && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (c = this.now() + t.retryAfterSeconds * 1e3);
 				}).finally(() => {
 					a = void 0, o?.();
 				}));
 			} catch (t) {
 				if (e.aborted) return;
-				if (!l(t)) throw t;
-				t instanceof I && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (d = t.retryAfterSeconds * 1e3);
+				if (!u(t)) throw t;
+				t instanceof I && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (f = t.retryAfterSeconds * 1e3);
 			}
 			if (r) throw r;
 			if (e.aborted) return;
 			if (await new Promise((r) => {
-				let l, f = this.now() + d, p = () => {
-					clearTimeout(l), o = void 0, e.removeEventListener("abort", p), n.signal.removeEventListener("abort", p), r();
-				}, m = () => {
-					clearTimeout(l);
-					let e = this.driver.nextAvailableInMs?.(), n = e !== void 0 && Number.isSafeInteger(e) && e >= 0 ? this.now() + Math.max(1e3, e) : Infinity, r = !i && s > this.now() ? s : Infinity, o = !a && c > this.now() ? c : Infinity, d = Math.max(f, Math.min(u + t, n, r, o));
-					l = setTimeout(p, Math.max(0, d - this.now()));
+				let u, p = this.now() + f, m = () => {
+					clearTimeout(u), o = void 0, e.removeEventListener("abort", m), n.signal.removeEventListener("abort", m), r();
+				}, h = () => {
+					clearTimeout(u);
+					let e = this.driver.nextAvailableInMs?.(), n = e !== void 0 && Number.isSafeInteger(e) && e >= 0 ? this.now() + Math.max(1e3, e) : Infinity, r = !i && s > this.now() ? s : Infinity, o = !a && c > this.now() ? c : Infinity, f = l > this.now() ? l : Infinity, h = Math.max(p, Math.min(d + t, n, r, o, f));
+					u = setTimeout(m, Math.max(0, h - this.now()));
 				};
-				o = m, m(), e.addEventListener("abort", p, { once: !0 }), n.signal.addEventListener("abort", p, { once: !0 }), (e.aborted || n.signal.aborted) && p();
+				o = h, h(), e.addEventListener("abort", m, { once: !0 }), n.signal.addEventListener("abort", m, { once: !0 }), (e.aborted || n.signal.aborted) && m();
 			}), r) throw r;
 		}
 	}

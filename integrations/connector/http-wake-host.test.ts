@@ -136,10 +136,11 @@ describe('private wake host', () => {
     expect(setupState.transport.create).not.toHaveBeenCalled(); expect(setupState.driver.processWorkOnce).not.toHaveBeenCalled();
   });
   it('keeps the hosted worker alive through a temporary upstream status failure', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers(); vi.setSystemTime(now);
     const setupState = setup(); const stop = new AbortController();
+    const host = new HttpWakeHost(setupState.transport, setupState.store, setupState.driver, receiverUrl, Date.now);
     setupState.transport.status.mockRejectedValueOnce(new EnvoiError('Temporary upstream response', 503, 'NETWORK_ERROR'));
-    const running = setupState.host.run(stop.signal, 1000);
+    const running = host.run(stop.signal, 1000);
     await vi.advanceTimersByTimeAsync(0);
     expect(setupState.transport.status).toHaveBeenCalledTimes(1);
     expect(setupState.driver.processWorkOnce).toHaveBeenCalledOnce();
@@ -149,12 +150,24 @@ describe('private wake host', () => {
     stop.abort(); await running;
   });
   it('keeps checking the canonical queue while subscription status is unavailable', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers(); vi.setSystemTime(now);
     const setupState = setup(); const stop = new AbortController();
+    const host = new HttpWakeHost(setupState.transport, setupState.store, setupState.driver, receiverUrl, Date.now);
     setupState.transport.status.mockRejectedValue(new EnvoiError('Temporary upstream response', 503, 'NETWORK_ERROR'));
-    const running = setupState.host.run(stop.signal, 1000);
+    const running = host.run(stop.signal, 1000);
     await vi.advanceTimersByTimeAsync(3000);
     expect(setupState.transport.status).toHaveBeenCalledTimes(4);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledTimes(4);
+    stop.abort(); await running;
+  });
+  it('keeps claiming while wake maintenance honors Retry-After', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now);
+    const setupState = setup(); const stop = new AbortController();
+    const host = new HttpWakeHost(setupState.transport, setupState.store, setupState.driver, receiverUrl, Date.now);
+    setupState.transport.status.mockRejectedValueOnce(new EnvoiError('Wake status throttled', 429, 'RATE_LIMITED', { retryAfterSeconds: 60 }));
+    const running = host.run(stop.signal, 1000);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(setupState.transport.status).toHaveBeenCalledOnce();
     expect(setupState.driver.processWorkOnce).toHaveBeenCalledTimes(4);
     stop.abort(); await running;
   });

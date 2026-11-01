@@ -319,16 +319,19 @@ export class HttpWakeHost {
     let reschedule: (() => void) | undefined;
     let dispatchRetryAt = 0;
     let claimRetryAt = 0;
+    let maintainRetryAt = 0;
     const transient = (error: unknown) => error instanceof EnvoiError && (error.status !== undefined && error.status >= 500 || ['NETWORK_ERROR', 'TIMEOUT', 'RATE_LIMITED'].includes(error.code ?? ''));
     while (!signal.aborted) {
       const started = this.now();
       let retryAfterMs = 0;
       try {
-        try { await this.maintain(signal); }
-        catch (error) {
-          if (!transient(error)) throw error;
-          if (error instanceof EnvoiError && Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds! >= 0)
-            retryAfterMs = error.retryAfterSeconds! * 1000;
+        if (this.now() >= maintainRetryAt) {
+          try { await this.maintain(signal); }
+          catch (error) {
+            if (!transient(error)) throw error;
+            maintainRetryAt = this.now() + (error instanceof EnvoiError && Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds! >= 0
+              ? error.retryAfterSeconds! * 1000 : intervalMs);
+          }
         }
         await this.dispatchControls(signal);
         if (!dispatchBackground && this.now() >= dispatchRetryAt) dispatchBackground = this.dispatchWork(signal)
@@ -363,7 +366,8 @@ export class HttpWakeHost {
           const hintAt = hint !== undefined && Number.isSafeInteger(hint) && hint >= 0 ? this.now() + Math.max(1000, hint) : Infinity;
           const dispatchDue = !dispatchBackground && dispatchRetryAt > this.now() ? dispatchRetryAt : Infinity;
           const claimDue = !claimBackground && claimRetryAt > this.now() ? claimRetryAt : Infinity;
-          const next = Math.max(retryAt, Math.min(started + intervalMs, hintAt, dispatchDue, claimDue));
+          const maintainDue = maintainRetryAt > this.now() ? maintainRetryAt : Infinity;
+          const next = Math.max(retryAt, Math.min(started + intervalMs, hintAt, dispatchDue, claimDue, maintainDue));
           timer = setTimeout(done, Math.max(0, next - this.now()));
         };
         reschedule = arm;
