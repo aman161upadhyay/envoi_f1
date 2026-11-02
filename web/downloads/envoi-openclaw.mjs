@@ -9604,7 +9604,27 @@ function Li(e) {
 		})
 	});
 }
-async function Ri(e, t = {}) {
+function Ri(e, t, n) {
+	if (!e) return Promise.resolve();
+	if (!t) throw Error("Trusted scoped work identity required");
+	return zi(async () => e(t, n), {
+		workId: t,
+		sessionId: "pre-native-only",
+		deadlineUnixMs: 0
+	}, n);
+}
+async function zi(e, t, n) {
+	if (n.throwIfAborted(), !e) return;
+	let r = () => {};
+	try {
+		await Promise.race([Promise.resolve().then(() => e(t, n)), new Promise((e, t) => {
+			r = () => t(n.reason), n.addEventListener("abort", r, { once: !0 });
+		})]), n.throwIfAborted();
+	} finally {
+		n.removeEventListener("abort", r);
+	}
+}
+async function Bi(e, t = {}) {
 	let n = await Vr(e.stateDir, t.env ?? process.env, e);
 	if (n.ENVOI_SCOPED_TOOLS === "true") {
 		let r = new zr(e.stateDir);
@@ -9617,13 +9637,13 @@ async function Ri(e, t = {}) {
 				...t.pollIntervalMs ? { pollIntervalMs: t.pollIntervalMs } : {},
 				caseSessionHandler: ki({
 					admit: (e) => r.admit(e),
-					run: Li({
+					run: async (n, r) => (await Ri(t.beforeScopedTurn, r.workId, n.signal), Li({
 						gatewayUrl: e.gatewayUrl,
 						gatewayToken: e.gatewayToken,
 						agentId: e.agentId,
 						store: i,
 						fetch: t.fetch
-					}),
+					})(n, r)),
 					async beforeEndTurn(e) {
 						if (!e.workId) throw Error("Scoped runtime needs trusted work identity");
 						let t = await i.load(e.workId);
@@ -9696,11 +9716,11 @@ async function Ri(e, t = {}) {
 		}
 	};
 }
-function zi(e, t, n = {}) {
+function Vi(e, t, n = {}) {
 	let r = n.env ?? process.env, i = n.home ?? d(), a = n.platform ?? process.platform, o = h("sha256").update(`${fe(e)}\n${t.toLowerCase()}`).digest("hex").slice(0, 24), s = a === "win32" ? r.LOCALAPPDATA || f.join(i, "AppData", "Local") : a === "darwin" ? f.join(i, "Library", "Application Support") : r.XDG_STATE_HOME && f.isAbsolute(r.XDG_STATE_HOME) ? r.XDG_STATE_HOME : f.join(i, ".local", "state");
 	return f.join(s, "envoi", "openclaw", o);
 }
-function Bi(e, t = process.platform, n = process.execPath) {
+function Hi(e, t = process.platform, n = process.execPath) {
 	let r = [
 		n,
 		f.join(e, "connector.mjs"),
@@ -9710,13 +9730,13 @@ function Bi(e, t = process.platform, n = process.execPath) {
 	];
 	return t === "win32" ? `& ${r.map((e) => `'${e.replaceAll("'", "''")}'`).join(" ")}` : r.map((e) => `'${e.replaceAll("'", "'\"'\"'")}'`).join(" ");
 }
-function Vi(e = fetch) {
+function Ui(e = fetch) {
 	return (t, n) => e(t, {
 		...n,
 		redirect: "error"
 	});
 }
-async function Hi(e, t, n, r, i) {
+async function Wi(e, t, n, r, i) {
 	let a = await t.currentAccessToken(), o = await r(`${e}/api/agent/connection-status`, {
 		method: "POST",
 		headers: {
@@ -9736,14 +9756,14 @@ async function Hi(e, t, n, r, i) {
 	if (!o.ok) throw new F(`Envoi could not record setup checks (HTTP ${o.status}). Your connection is saved; retry start`);
 	await o.body?.cancel();
 }
-async function Ui(e) {
+async function Gi(e) {
 	let t = f.join(e, "connection.json");
 	if ((await n(t)).isSymbolicLink()) throw new F("The saved connection must not be a symbolic link");
 	let r = JSON.parse(await a(t, "utf8"));
 	if (r.version !== 1 || r.runtime !== "openclaw" || typeof r.address != "string" || !r.openclaw) throw new F("The saved connection is invalid. Inspect the private state directory");
 	return r.apiUrl = fe(r.apiUrl), r;
 }
-function Wi(e, t = {}) {
+function Ki(e, t = {}) {
 	let n = t.env ?? process.env, r = {
 		...t,
 		env: n,
@@ -9763,11 +9783,11 @@ function Wi(e, t = {}) {
 	}
 	return r;
 }
-async function Gi(e, n = {}) {
+async function qi(e, n = {}) {
 	Br(n.env ?? process.env);
-	let r = Vi(n.fetch), i = pe(e, { allowExpired: !0 });
+	let r = Ui(n.fetch), i = pe(e, { allowExpired: !0 });
 	if (i.runtime !== "openclaw" || i.operation === "reconnect") throw new F("Use the unified Envoi connector for this runtime or reconnect handoff");
-	let a = n.stateDir || zi(i.apiUrl, i.address, {
+	let a = n.stateDir || Vi(i.apiUrl, i.address, {
 		home: n.homeDir,
 		env: n.env,
 		platform: n.platform
@@ -9777,13 +9797,13 @@ async function Gi(e, n = {}) {
 		await a.init();
 		let s = await a.load(), c;
 		if (s) {
-			if (c = await Ui(o), c.apiUrl !== i.apiUrl || c.address !== i.address || s.address !== i.address) throw new F("This state directory belongs to another connection. Choose a separate private directory");
+			if (c = await Gi(o), c.apiUrl !== i.apiUrl || c.address !== i.address || s.address !== i.address) throw new F("This state directory belongs to another connection. Choose a separate private directory");
 		} else pe(e);
 		n.onProgress?.("Detecting OpenClaw");
 		let l = await Vr(o, n.env ?? process.env, c?.openclaw), u = {
 			...n,
 			env: l
-		}, d = await Qr(c ? Wi(c.openclaw, u) : u);
+		}, d = await Qr(c ? Ki(c.openclaw, u) : u);
 		n.onProgress?.("Testing OpenClaw before enrollment"), await $r(d, {
 			fetch: r,
 			env: l
@@ -9812,9 +9832,9 @@ async function Gi(e, n = {}) {
 		let m = new Pn(i.apiUrl, a, { fetch: r });
 		n.onProgress?.("Checking Envoi access");
 		try {
-			await m.checkStatus(), await Hi(i.apiUrl, m, "ready", r);
+			await m.checkStatus(), await Wi(i.apiUrl, m, "ready", r);
 		} catch (e) {
-			throw await Hi(i.apiUrl, m, "error", r, "CONNECTION_TEST_FAILED").catch(() => {}), e;
+			throw await Wi(i.apiUrl, m, "error", r, "CONNECTION_TEST_FAILED").catch(() => {}), e;
 		}
 		return {
 			stateDir: o,
@@ -9826,16 +9846,16 @@ async function Gi(e, n = {}) {
 		await s();
 	}
 }
-async function Ki(e, t, n = {}) {
+async function Ji(e, t, n = {}) {
 	Br(n.env ?? process.env), kr(n.env ?? process.env);
-	let r = await (n.secureDirectory ?? Vn)(await Qn(e, n.secureDirectory)), i = await J(r), a = Vi(n.fetch), o, s;
+	let r = await (n.secureDirectory ?? Vn)(await Qn(e, n.secureDirectory)), i = await J(r), a = Ui(n.fetch), o, s;
 	try {
-		let e = await Pr(r, n.env ?? process.env), i = await Ui(r), c = await Vr(r, n.env ?? process.env, i.openclaw), l = await Qr(Wi(i.openclaw, { env: c }));
+		let e = await Pr(r, n.env ?? process.env), i = await Gi(r), c = await Vr(r, n.env ?? process.env, i.openclaw), l = await Qr(Ki(i.openclaw, { env: c }));
 		if (await $r(l, {
 			fetch: a,
 			signal: t,
 			env: c
-		}), o = await Ri({
+		}), o = await Bi({
 			...l,
 			apiUrl: i.apiUrl,
 			stateDir: r
@@ -9853,14 +9873,14 @@ async function Ki(e, t, n = {}) {
 				config: e,
 				signal: t,
 				onListening: async () => {
-					await Hi(i.apiUrl, s, "ready", a), n.onReady?.();
+					await Wi(i.apiUrl, s, "ready", a), n.onReady?.();
 				}
 			});
-		} else await Hi(i.apiUrl, s, "ready", a), n.onReady?.(), await o.connector.run(t);
+		} else await Wi(i.apiUrl, s, "ready", a), n.onReady?.(), await o.connector.run(t);
 	} catch (e) {
 		if (s) {
-			let e = await Ui(r).catch(() => null);
-			e && await Hi(e.apiUrl, s, "error", a, "CONNECTOR_START_FAILED").catch(() => {});
+			let e = await Gi(r).catch(() => null);
+			e && await Wi(e.apiUrl, s, "error", a, "CONNECTOR_START_FAILED").catch(() => {});
 		}
 		throw e;
 	} finally {
@@ -9871,8 +9891,8 @@ async function Ki(e, t, n = {}) {
 		}
 	}
 }
-async function qi(e) {
-	let t = await Ui(f.resolve(e)), n = await new zr(f.resolve(e)).load();
+async function Yi(e) {
+	let t = await Gi(f.resolve(e)), n = await new zr(f.resolve(e)).load();
 	if (!n) throw new F("No saved enrollment. Run setup with a fresh Envoi handoff");
 	return {
 		address: n.address,
@@ -9886,10 +9906,10 @@ async function qi(e) {
 		note: "Saved configuration does not establish live presence. Use start and a real agent exchange to verify receiving"
 	};
 }
-var Ji = "Envoi OpenClaw Quick Connect (Node.js 22+)\n\nsetup --handoff <private JSON file> [--install-service]\nsetup --handoff-stdin [--install-service]\nstart --state-dir <directory>\nstatus --state-dir <directory>\ninstall-service --state-dir <directory>\nconfigure-wake|clear-wake --state-dir <directory>\n\nOptional setup overrides: --config <openclaw.json> --agent <id> --gateway-url <origin> --state-dir <private directory>\nGateway credentials are resolved locally; never pass secrets as arguments.\n";
-async function Yi(e = process.argv.slice(2)) {
+var Xi = "Envoi OpenClaw Quick Connect (Node.js 22+)\n\nsetup --handoff <private JSON file> [--install-service]\nsetup --handoff-stdin [--install-service]\nstart --state-dir <directory>\nstatus --state-dir <directory>\ninstall-service --state-dir <directory>\nconfigure-wake|clear-wake --state-dir <directory>\n\nOptional setup overrides: --config <openclaw.json> --agent <id> --gateway-url <origin> --state-dir <private directory>\nGateway credentials are resolved locally; never pass secrets as arguments.\n";
+async function Zi(e = process.argv.slice(2)) {
 	if (!e.length || e.includes("--help")) {
-		process.stdout.write(Ji);
+		process.stdout.write(Xi);
 		return;
 	}
 	if (Number(process.versions.node.split(".")[0]) < 22) throw new F("Install Node.js 22 or newer before connecting OpenClaw");
@@ -9933,7 +9953,7 @@ async function Yi(e = process.argv.slice(2)) {
 		} catch {
 			throw new F("The setup file is not valid JSON. Download a fresh setup file from Envoi");
 		}
-		let r = await Gi(t, {
+		let r = await qi(t, {
 			stateDir: i.get("--state-dir"),
 			configPath: i.get("--config"),
 			agentId: i.get("--agent"),
@@ -9941,7 +9961,7 @@ async function Yi(e = process.argv.slice(2)) {
 			executableFile: b(import.meta.url),
 			onProgress: (e) => process.stderr.write(`${e}…\n`)
 		});
-		process.stdout.write(`${JSON.stringify(r)}\n`), process.stderr.write(`Setup checks passed. Remove the temporary handoff file.\nStart: ${Bi(r.stateDir)}\n`), o.has("--install-service") ? process.stdout.write(`${JSON.stringify({
+		process.stdout.write(`${JSON.stringify(r)}\n`), process.stderr.write(`Setup checks passed. Remove the temporary handoff file.\nStart: ${Hi(r.stateDir)}\n`), o.has("--install-service") ? process.stdout.write(`${JSON.stringify({
 			startupService: await oi(r.stateDir),
 			startsAt: "user login"
 		})}\n`) : process.stderr.write("Configure automatic startup with install-service --state-dir <reported directory>, or run start under your host process supervisor. A real exchange with another agent verifies unattended receiving.\n");
@@ -9956,18 +9976,18 @@ async function Yi(e = process.argv.slice(2)) {
 	].includes(t) || !i.get("--state-dir") || i.size !== 1 || o.size) throw new F("Supply a supported command and --state-dir. Run --help");
 	let s = f.resolve(i.get("--state-dir"));
 	if (t === "configure-wake" || t === "clear-wake") {
-		await qi(s), t === "configure-wake" ? await Ir(s) : await Lr(s), process.stdout.write(`${JSON.stringify({
+		await Yi(s), t === "configure-wake" ? await Ir(s) : await Lr(s), process.stdout.write(`${JSON.stringify({
 			hostedWake: t === "configure-wake" ? "configured" : "disabled",
 			note: "Restart the connector service to apply this change"
 		})}\n`);
 		return;
 	}
 	if (t === "status") {
-		process.stdout.write(`${JSON.stringify(await qi(s))}\n`);
+		process.stdout.write(`${JSON.stringify(await Yi(s))}\n`);
 		return;
 	}
 	if (t === "install-service") {
-		await qi(s), process.stdout.write(`${JSON.stringify({
+		await Yi(s), process.stdout.write(`${JSON.stringify({
 			startupService: await oi(s),
 			startsAt: "user login"
 		})}\n`);
@@ -9976,12 +9996,12 @@ async function Yi(e = process.argv.slice(2)) {
 	let c = new AbortController(), l = () => c.abort();
 	process.once("SIGINT", l), process.once("SIGTERM", l);
 	try {
-		await Ki(s, c.signal, { onReady: () => process.stdout.write("Envoi connector started. Waiting for agent messages.\n") });
+		await Ji(s, c.signal, { onReady: () => process.stdout.write("Envoi connector started. Waiting for agent messages.\n") });
 	} finally {
 		process.removeListener("SIGINT", l), process.removeListener("SIGTERM", l);
 	}
 }
-Yi().catch((e) => {
+Zi().catch((e) => {
 	let t = e instanceof F || e instanceof X || e instanceof z ? e.message : "Setup could not finish. Check local OpenClaw configuration, connectivity and the saved Envoi connection; run --help for recovery options";
 	process.stderr.write(`${t}\n`), process.exitCode = 1;
 });

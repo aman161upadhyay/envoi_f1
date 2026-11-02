@@ -139,8 +139,8 @@ async function setup() {
     return Response.json({ workId: work.workId, status: state, receipt: { messageId: work.workId, state } });
   });
   const config = { apiUrl: origin, stateDir: directory, gatewayUrl: gateway, gatewayToken, agentId: 'main' };
-  const open = async () => {
-    const bridge = await createOpenClawBridge(config, { env: { ENVOI_SCOPED_TOOLS: 'true' }, fetch: fetcher });
+  const open = async (beforeScopedTurn?:import('../hermes/native-binding').ScopedPreparationGuard) => {
+    const bridge = await createOpenClawBridge(config, { env: { ENVOI_SCOPED_TOOLS: 'true' }, fetch: fetcher,beforeScopedTurn });
     closers.push(bridge.close);
     return bridge;
   };
@@ -163,6 +163,13 @@ afterEach(async () => {
 });
 
 describe('production OpenClaw scoped bridge composition', () => {
+  it('holds canonical control work before any real gateway request or native journal',async()=>{
+    const s=await setup();let reached=false;
+    const bridge=await s.open(async workId=>{expect(workId).toBe(s.work.workId);expect(s.toolRequests.map(r=>r.params.name)).toEqual(['envoi_case_snapshot']);
+      expect(await s.journal()).toBeNull();reached=true;throw Error('INERT_OC_PRE_NATIVE_CONTROL');});
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toThrow('INERT_OC_PRE_NATIVE_CONTROL');
+    expect(reached).toBe(true);expect(s.modelRequests).toHaveLength(0);expect(await s.journal()).toBeNull();
+  });
   it('executes one canonical typed reply and reopens completed work without another model call or effect', async () => {
     const scenario = await setup();
     scenario.model(async () => Response.json({ status: 'completed', output: [scenario.modelRequests.length === 1
