@@ -15,11 +15,12 @@ async function setup({held=false,role='je1',flowId='green'}:{held?:boolean;role?
   const origin='https://sinaloa-staging.rachelgonsalves821.workers.dev',gateway='http://127.0.0.1:19001',workId='msg_inert_work',caseId='case_inert',address='inert@agents-staging.sinaloa-inbox.com';
   const expected={address,agentId:'agent_inert',inboxId:'inbox_inert',installationId:'installation_inert'};
   state.saved={version:1,runtime:role==='openclaw'?'openclaw':'hermes',apiUrl:origin,address,configuration:{gatewayUrl:gateway,agentId:'inert'},activationSetup:{agentId:expected.agentId,inboxId:expected.inboxId,installationId:expected.installationId}};
-  const controller={active:()=>true,receipt:{serverSource:'2ae'},control:new AbortController(),ledger:{window:'a'.repeat(64),snapshot:()=>({chargedAttempts:30,pending:0})},expectWork:vi.fn(),observeClaim:vi.fn(),assertScopedTool:vi.fn(),nativeGuard:()=>vi.fn(async()=>{})} as unknown as ContinuationController;
+  const controller={active:()=>true,receipt:{serverSource:'2ae'},control:new AbortController(),ledger:{window:'a'.repeat(64),snapshot:()=>({chargedAttempts:30,pending:0})},expectWork:vi.fn(),observeClaim:vi.fn(),assertScopedTool:vi.fn(),closeNativeForwarding:vi.fn(),nativeGuard:()=>vi.fn(async()=>{})} as unknown as ContinuationController;
   const fetcher=vi.fn<typeof fetch>(async input=>{
     const url=new URL(String(input));if(url.origin===gateway)return Response.json({status:'completed',output:[{type:'message',content:[]}]});
     if(url.pathname.endsWith('/claim'))return Response.json({work:{workId,message:{id:workId,caseId,recipientAgentId:expected.agentId}}});
     if(url.pathname.endsWith('/complete'))return Response.json({workId,status:'processed'});
+    if(url.pathname.endsWith('/session/end'))return Response.json({session:{id:'session_inert',status:'ended'}});
     throw Error('UNEXPECTED_SYNTHETIC_ROUTE');
   });
   const process=vi.fn(async()=>{
@@ -32,6 +33,7 @@ async function setup({held=false,role='je1',flowId='green'}:{held?:boolean;role?
       await context.fetch(gateway+'/v1/responses',{method:'POST',body:JSON.stringify({model:'openclaw/inert',input:input.map(i=>({type:'message',...i}))})});
     }else await context.beforeNativeSubmit({workId,sessionId:'native_inert',deadlineUnixMs:Date.now()+10000},new AbortController().signal);
     await fs.writeFile(file,JSON.stringify({version:1,workId,model:role==='openclaw'?'openclaw:'+gateway+':inert':'hermes-inert',completed:true,pending:[],providerCalls:1,input}));
+    await context.fetch(origin+'/api/agent/work/'+workId+'/session/end',{method:'POST',body:JSON.stringify({sessionId:'session_inert'})});
     await context.fetch(origin+'/api/agent/work/'+workId+'/complete',{method:'POST',body:'{}'});return true;
   });
   state.bridge={connector:{start:vi.fn(async()=>{}),checkStatus:vi.fn(async()=>{}),scopedWakeWorkDriver:()=>({processWorkOnce:process}),startCase:vi.fn(async()=>{}),listCaseMessages:vi.fn(async()=>[]),getCase:vi.fn(async()=>({state:'inProgress'}))},close:vi.fn(async()=>{})};
@@ -61,6 +63,7 @@ it('returns an evidenced pre-native control result with no journal, prompt or mo
   const s=await setup({held:true});await s.receiver.runHeldControl('green',s.workId,s.caseId,'1'.repeat(64));
   await expect(fs.stat(path.join(s.dir,'scoped-runs',s.workId+'.json'))).rejects.toMatchObject({code:'ENOENT'});
   expect(s.record).toHaveBeenCalledWith(expect.objectContaining({kind:'pre_native_control_verified',nativePrompts:0}));
+  expect(s.controller.closeNativeForwarding).not.toHaveBeenCalled();
 });
 it('binds an OpenClaw native body only to its exact saved canonical input before forwarding',async()=>{
   const s=await setup({role:'openclaw',flowId:'openclaw'});await s.receiver.runOne('openclaw',s.workId,s.caseId,'1'.repeat(64));

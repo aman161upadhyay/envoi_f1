@@ -14,7 +14,7 @@ import { ContinuationController } from './continuation-controller';
 
 type Role='je1'|'je2'|'testowner'|'openclaw';
 export type ContinuationWork=Readonly<{flowId:string;workId:string;caseId:string;evidenceSha256:string}>;
-type ActiveWork=ContinuationWork & {humanEnd:boolean;settled:boolean;failed:boolean;deadline?:number;nativeBinding?:Promise<void>;held?:boolean;workStop?:AbortController;beforeIds?:Set<unknown>};
+type ActiveWork=ContinuationWork & {humanEnd:boolean;settled:boolean;failed:boolean;deadline?:number;nativeBinding?:Promise<void>;held?:boolean;workStop?:AbortController;beforeIds?:Set<unknown>;completedJournalHash?:string};
 type FlowPolicy={noAction:boolean;decisionOutcome:'approved'|'declined'|null;allowHumanEnd:boolean};
 const hash=(x:string|Buffer)=>createHash('sha256').update(x).digest('hex');
 function refuse(code:string):never{throw Object.assign(new Error(code),{code});}
@@ -100,7 +100,20 @@ export async function createContinuationReceiver(options:{
     }
     return response;
   };
-  const fetcher:typeof fetch=options.observeTransport?(input,init)=>options.observeTransport!(input,init,direct):direct;
+  const closeCompletedForwarding=async(input:Parameters<typeof fetch>[0],init:RequestInit={})=>{
+    const url=new URL(input instanceof Request?input.url:String(input));if(url.origin!==origin||init.method!=='POST')return;
+    const end=url.pathname.match(/^\/api\/agent\/work\/([^/]+)\/session\/end$/);if(!end||recovery)return;
+    const state=active.get(decodeURIComponent(end[1]));if(!state||state.held)return;
+    let bytes:Buffer;try{bytes=await fs.readFile(path.join(options.stateDir,'scoped-runs',state.workId+'.json'));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+    if(bytes.length>1000000)refuse('BOUNDED_NATIVE_COMPLETION_PROOF_REQUIRED');
+    const journal=JSON.parse(bytes.toString('utf8'));if(journal.workId!==state.workId)refuse('EXACT_NATIVE_COMPLETION_PROOF_REQUIRED');
+    if(journal.completed!==true)return;if(journal.pending?.length)refuse('ACTUAL_NATIVE_COMPLETION_REQUIRED');
+    const digest=hash(bytes);if(state.completedJournalHash&&state.completedJournalHash!==digest)refuse('NATIVE_COMPLETION_JOURNAL_CHANGED');
+    controller.closeNativeForwarding(state.flowId,{workId:state.workId,journalCompleted:true,journalSha256:digest});state.completedJournalHash=digest;
+  };
+  // Fence provider forwarding before the outer observer performs its pre-end
+  // scope/idempotency probes, even while another work's request is pending.
+  const fetcher:typeof fetch=async(input,init)=>{await closeCompletedForwarding(input,init);return options.observeTransport?options.observeTransport(input,init,direct):direct(input,init);};
   try{
     const adapter=adapterFor(runtime),context={apiUrl:origin,stateDir:options.stateDir,env:options.env,signal,fetch:fetcher,
       nativeRequestGate:options.nativeGate,beforeNativeSubmit:controller.nativeGuard(role,options.meterToken),
@@ -123,7 +136,8 @@ export async function createContinuationReceiver(options:{
       if(!state.settled)refuse('ACTUAL_WORK_SETTLEMENT_REQUIRED');
       const bytes=await fs.readFile(path.join(options.stateDir,'scoped-runs',state.workId+'.json')),journal=JSON.parse(bytes.toString('utf8'));
       if(journal.workId!==state.workId||journal.completed!==true||journal.pending?.length)refuse('ACTUAL_NATIVE_COMPLETION_REQUIRED');
-      const result={workId:state.workId,canonicalStatus:'processed' as const,journalCompleted:true as const,journalSha256:hash(bytes),nativeOutcome:state.humanEnd?'ended_for_human' as const:'completed' as const};
+      const digest=hash(bytes);if(!state.completedJournalHash||state.completedJournalHash!==digest)refuse('NATIVE_COMPLETION_JOURNAL_CHANGED');
+      const result={workId:state.workId,canonicalStatus:'processed' as const,journalCompleted:true as const,journalSha256:digest,nativeOutcome:state.humanEnd?'ended_for_human' as const:'completed' as const};
       if(state.beforeIds){const after=await bridge!.connector.listCaseMessages(state.caseId),record=await bridge!.connector.getCase(state.caseId);if(after.length>=50||after.some(m=>!state.beforeIds!.has(m.id))||new Set(after.map(m=>m.id)).size!==state.beforeIds.size||record.state!=='inProgress')refuse('NO_ACTION_RESUMPTION_CHANGED_CASE');return{...result,caseStillOpen:true as const,newCanonicalEffects:0 as const,...(policy(state.flowId).decisionOutcome==='declined'?{decisionOutcome:'declined' as const}:{})};}
       return result;
     };
