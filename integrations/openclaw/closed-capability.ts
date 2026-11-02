@@ -15,7 +15,14 @@ export interface ClosedOpenClawExpected {
 export interface ClosedOpenClawObservation {
   /** Exact bytes from a trusted native observer; never fabricate these from the config. */
   configuration:Uint8Array|string;environment:Uint8Array|string;runtime:Uint8Array|string;
+  /** Actual purpose-specific human decision from a separately trusted receipt source. */
+  approvalDecision:Uint8Array|string;
   sources:Readonly<Record<SourceName,string>>;
+}
+export interface ClosedOpenClawApprovalDecision {
+  version:1;purpose:'closed-openclaw-core-anthropic-capability';ownerApproved:true;
+  approvalId:string;approvedAtUtc:string;expiresAtUtc:string;
+  subjectHash:string;window:string;clientSource:string;nativeSourceSha256:string;
 }
 const hash=(v:string|Uint8Array)=>createHash('sha256').update(v).digest('hex');
 const digest=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -27,17 +34,29 @@ function exactKeys(value:unknown,keys:readonly string[]){return plain(value)&&eq
 
 /** Hash for a separately reviewed policy receipt; computing it supplies no approval. */
 export function closedOpenClawCapabilityDigest(expected:Omit<ClosedOpenClawExpected,'capabilitySha256'>|ClosedOpenClawExpected){
-  const{capabilitySha256:_hash,...pins}=expected as ClosedOpenClawExpected;return hash(canonical(pins));
+  const{capabilitySha256:_hash,approvalReceiptSha256:_receipt,...pins}=expected as ClosedOpenClawExpected;return hash(canonical(pins));
 }
+export function closedOpenClawApprovalReceiptDigest(decision:Readonly<ClosedOpenClawApprovalDecision>){return hash(canonical(decision));}
 
 /** Pure validation only. The caller must independently establish observation provenance. */
-export function validateClosedOpenClawCapability(expected:Readonly<ClosedOpenClawExpected>,observed:Readonly<ClosedOpenClawObservation>){
+export function validateClosedOpenClawCapability(expected:Readonly<ClosedOpenClawExpected>,observed:Readonly<ClosedOpenClawObservation>,nowUnixMs=Date.now()){
   if(!expected||!observed||!exactKeys(expected,['approvalReceiptSha256','capabilitySha256','window','clientSource','nativeSourceSha256','processIdentity',
     'configurationSha256','stateDirectorySha256','configurationPathSha256','workspaceSha256','agentStateSha256','registrySha256','nativeAgentId','modelId','proxyOrigin','proxyIdentity','toolChannelSha256','sources','observations'])
-    ||!exactKeys(observed,['configuration','environment','runtime','sources'])||!digest(expected.approvalReceiptSha256)||!digest(expected.capabilitySha256)
+    ||!exactKeys(observed,['configuration','environment','runtime','approvalDecision','sources'])||!digest(expected.approvalReceiptSha256)||!digest(expected.capabilitySha256)
     ||expected.capabilitySha256!==closedOpenClawCapabilityDigest(expected)||!digest(expected.window)||!/^[a-f0-9]{40}$/.test(expected.clientSource)
     ||![expected.nativeSourceSha256,expected.configurationSha256,expected.stateDirectorySha256,expected.configurationPathSha256,expected.workspaceSha256,expected.agentStateSha256,expected.registrySha256,expected.toolChannelSha256].every(digest)
     ||![expected.processIdentity,expected.proxyIdentity,expected.nativeAgentId,expected.modelId].every(v=>typeof v==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/.test(v)))refuse('CLOSED_NATIVE_POLICY_REVIEW_REQUIRED');
+  const decisionBytes=observed.approvalDecision;
+  if(!(typeof decisionBytes==='string'||decisionBytes instanceof Uint8Array)||Buffer.byteLength(decisionBytes)>16384)refuse('CLOSED_NATIVE_CAPABILITY_APPROVAL_REQUIRED');
+  let decision:unknown;try{decision=JSON.parse(Buffer.from(decisionBytes).toString('utf8'));}catch{return refuse('CLOSED_NATIVE_CAPABILITY_APPROVAL_REQUIRED');}
+  if(!exactKeys(decision,['version','purpose','ownerApproved','approvalId','approvedAtUtc','expiresAtUtc','subjectHash','window','clientSource','nativeSourceSha256']))refuse('CLOSED_NATIVE_CAPABILITY_APPROVAL_REQUIRED');
+  const d=decision as unknown as ClosedOpenClawApprovalDecision,start=Date.parse(d.approvedAtUtc),stop=Date.parse(d.expiresAtUtc);
+  if(d.version!==1||d.purpose!=='closed-openclaw-core-anthropic-capability'||d.ownerApproved!==true
+    ||typeof d.approvalId!=='string'||!/^capability_[A-Za-z0-9_-]{1,100}$/.test(d.approvalId)
+    ||!Number.isFinite(nowUnixMs)||!Number.isFinite(start)||!Number.isFinite(stop)||start>nowUnixMs||stop<=nowUnixMs||stop<=start||stop-start>90*60*1000
+    ||new Date(start).toISOString()!==d.approvedAtUtc||new Date(stop).toISOString()!==d.expiresAtUtc)refuse('CLOSED_NATIVE_CAPABILITY_APPROVAL_REQUIRED');
+  if(closedOpenClawApprovalReceiptDigest(d)!==expected.approvalReceiptSha256||d.subjectHash!==expected.capabilitySha256||d.window!==expected.window
+    ||d.clientSource!==expected.clientSource||d.nativeSourceSha256!==expected.nativeSourceSha256)refuse('CLOSED_NATIVE_CAPABILITY_APPROVAL_MISMATCH');
   let proxy:URL;try{proxy=new URL(expected.proxyOrigin);}catch{return refuse('CLOSED_NATIVE_POLICY_REVIEW_REQUIRED');}
   if(proxy.protocol!=='http:'||!['127.0.0.1','[::1]'].includes(proxy.hostname)||proxy.username||proxy.password||proxy.pathname!=='/'||proxy.search||proxy.hash||proxy.origin!==expected.proxyOrigin)refuse('CLOSED_NATIVE_POLICY_REVIEW_REQUIRED');
   if(!exactKeys(expected.sources,CLOSED_OPENCLAW_SOURCES)||!exactKeys(observed.sources,CLOSED_OPENCLAW_SOURCES)

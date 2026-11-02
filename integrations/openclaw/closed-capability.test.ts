@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';import vm from 'node:vm';
 import {expect,it} from 'vitest';
 import fixture from './closed-capability-native-selectors.fixture.json';
-import {CLOSED_OPENCLAW_SOURCES,closedOpenClawCapabilityDigest,validateClosedOpenClawCapability,type ClosedOpenClawExpected,type ClosedOpenClawObservation} from './closed-capability';
+import {CLOSED_OPENCLAW_SOURCES,closedOpenClawCapabilityDigest,closedOpenClawApprovalReceiptDigest,validateClosedOpenClawCapability,type ClosedOpenClawExpected,type ClosedOpenClawObservation} from './closed-capability';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const stable=(v:unknown):string=>JSON.stringify(v,(_k,x)=>x!==null&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.entries(x).sort(([a],[b])=>a.localeCompare(b))):x);
 // Entirely synthetic observation bytes. These never authorize a real native process.
@@ -13,7 +13,7 @@ function sample(){
  const ref='anthropic/'+expected.modelId,configuration={binding,effectiveSelectors:{plugins:{enabled:false,allow:[],deny:[],entries:{},load:{paths:[]},slots:{memory:'none',contextEngine:'none'}},agents:{defaults:{model:{primary:ref,fallbacks:[]},models:{[ref]:{agentRuntime:{id:'openclaw'}}}},list:[{id:expected.nativeAgentId}]},models:{mode:'replace',providers:{anthropic:{api:'anthropic-messages',baseUrl:expected.proxyOrigin,agentRuntime:{id:'openclaw'},models:[{id:expected.modelId}]}}}}};
  const environment={binding,selectorEnvironment:{}},runtime={binding,harness:{id:'openclaw',owner:'core',sourceSha256:sources.nativeAgent},modelRuntime:{owner:'core',sourceSha256:sources.modelRuntime},selectedModel:{provider:'anthropic',api:'anthropic-messages',id:expected.modelId,nativeAgentId:expected.nativeAgentId,baseUrl:expected.proxyOrigin,fallbacks:[]},providerStream:null,apiProvider:{api:'anthropic-messages',owner:'core:built-in',sourceSha256:sources.anthropicTransport},registryEntries:[{api:'anthropic-messages',owner:'core:built-in',sourceSha256:sources.apiRegistry}],loadedPluginArtifacts:[],autoloadArtifacts:[],auxiliaryRoutes:[{kind:'summary',owner:'core',sourceSha256:sources.summary,transportSourceSha256:sources.anthropicTransport},{kind:'slug',owner:'core',sourceSha256:sources.slug,transportSourceSha256:sources.anthropicTransport}],externalToolRoutes:[]};
  let observed:ClosedOpenClawObservation;
- const seal=()=>{expected.registrySha256=hash(stable(runtime.registryEntries));observed={configuration:JSON.stringify(configuration),environment:JSON.stringify(environment),runtime:JSON.stringify(runtime),sources};for(const k of['configuration','environment','runtime']as const)expected.observations[k]=hash(String(observed[k]));expected.capabilitySha256=closedOpenClawCapabilityDigest(expected);};seal();
+ const seal=()=>{expected.registrySha256=hash(stable(runtime.registryEntries));observed={configuration:JSON.stringify(configuration),environment:JSON.stringify(environment),runtime:JSON.stringify(runtime),approvalDecision:'',sources};for(const k of['configuration','environment','runtime']as const)expected.observations[k]=hash(String(observed[k]));expected.capabilitySha256=closedOpenClawCapabilityDigest(expected);const decision={version:1 as const,purpose:'closed-openclaw-core-anthropic-capability' as const,ownerApproved:true as const,approvalId:'capability_FAKE_OFFLINE',approvedAtUtc:new Date(Date.now()-1000).toISOString(),expiresAtUtc:new Date(Date.now()+60000).toISOString(),subjectHash:expected.capabilitySha256,window:expected.window,clientSource:expected.clientSource,nativeSourceSha256:expected.nativeSourceSha256};observed.approvalDecision=JSON.stringify(decision);expected.approvalReceiptSha256=closedOpenClawApprovalReceiptDigest(decision);};seal();
  return{expected,observed:()=>observed,configuration,environment,runtime,seal};
 }
 it('validates separate exact observation bytes and explicit reviewed pins without granting native admission',()=>{
@@ -25,6 +25,32 @@ it.each(['configuration','environment','runtime']as const)('refuses missing or b
 it('requires explicit review hashes rather than ownerApproved or nativeSafe flags',()=>{
  const s=sample();expect(()=>validateClosedOpenClawCapability({...s.expected,approvalReceiptSha256:''},s.observed())).toThrow(expect.objectContaining({code:'CLOSED_NATIVE_POLICY_REVIEW_REQUIRED'}));
  expect(()=>validateClosedOpenClawCapability(s.expected,{...s.observed(),runtime:'{"nativeSafe":true}'})).toThrow(expect.objectContaining({code:'TRUSTED_NATIVE_OBSERVATION_REQUIRED'}));
+});
+function changedDecision(s:ReturnType<typeof sample>,change:Record<string,unknown>,rehash=true){
+ const d={...JSON.parse(String(s.observed().approvalDecision)),...change};if(rehash)s.expected.approvalReceiptSha256=closedOpenClawApprovalReceiptDigest(d);return{...s.observed(),approvalDecision:JSON.stringify(d)};
+}
+it('requires a raw capability-specific human decision, not an earlier cap/time/graph/source approval',()=>{
+ for(const purpose of['phase-c-model-call-cap','phase-c-time-extension','reviewed-phase-c-graph','client-source-adoption']){const s=sample();expect(()=>validateClosedOpenClawCapability(s.expected,changedDecision(s,{purpose}))).toThrow(expect.objectContaining({code:'CLOSED_NATIVE_CAPABILITY_APPROVAL_REQUIRED'}));}
+ const s=sample();expect(()=>validateClosedOpenClawCapability(s.expected,{...s.observed(),approvalDecision:undefined} as never)).toThrow(expect.objectContaining({code:'CLOSED_NATIVE_CAPABILITY_APPROVAL_REQUIRED'}));
+});
+it.each(['subjectHash','window','clientSource','nativeSourceSha256'])('refuses an earlier or changed capability decision binding: %s',field=>{
+ const s=sample(),value=field==='clientSource'?'0'.repeat(40):'0'.repeat(64);expect(()=>validateClosedOpenClawCapability(s.expected,changedDecision(s,{[field]:value}))).toThrow(expect.objectContaining({code:'CLOSED_NATIVE_CAPABILITY_APPROVAL_MISMATCH'}));
+});
+it('computes the receipt from its canonical actual decision and detects unhashed record changes',()=>{
+ const s=sample();expect(()=>validateClosedOpenClawCapability(s.expected,changedDecision(s,{approvalId:'capability_another'},false))).toThrow(expect.objectContaining({code:'CLOSED_NATIVE_CAPABILITY_APPROVAL_MISMATCH'}));
+ const reordered=Object.fromEntries(Object.entries(JSON.parse(String(s.observed().approvalDecision))).reverse());expect(()=>validateClosedOpenClawCapability(s.expected,{...s.observed(),approvalDecision:JSON.stringify(reordered,null,2)})).not.toThrow();
+});
+it('keeps the capability subject independent of the approving record and receipt hash',()=>{
+ const s=sample(),subject=s.expected.capabilitySha256;expect(closedOpenClawCapabilityDigest({...s.expected,approvalReceiptSha256:'0'.repeat(64)})).toBe(subject);
+ const observed=changedDecision(s,{approvalId:'capability_replacement_review'});expect(closedOpenClawCapabilityDigest(s.expected)).toBe(subject);expect(JSON.parse(String(observed.approvalDecision)).subjectHash).toBe(subject);expect(()=>validateClosedOpenClawCapability(s.expected,observed)).not.toThrow();
+});
+it.each([
+ {version:2},{ownerApproved:false},{approvalId:'capability_'+'a'.repeat(101)},
+ {approvedAtUtc:new Date(Date.now()+60000).toISOString()},
+ {expiresAtUtc:new Date(Date.now()-1).toISOString()},
+ {expiresAtUtc:new Date(Date.now()+91*60000).toISOString()}
+])('refuses an unapproved, unbounded or out-of-time capability record %j',change=>{
+ const s=sample();expect(()=>validateClosedOpenClawCapability(s.expected,changedDecision(s,change))).toThrow(expect.objectContaining({code:'CLOSED_NATIVE_CAPABILITY_APPROVAL_REQUIRED'}));
 });
 it('refuses native source drift or incomplete source inventory',()=>{
  const s=sample();expect(()=>validateClosedOpenClawCapability(s.expected,{...s.observed(),sources:{...s.expected.sources,anthropicTransport:'0'.repeat(64)}})).toThrow(expect.objectContaining({code:'CLOSED_NATIVE_SOURCE_DRIFT'}));

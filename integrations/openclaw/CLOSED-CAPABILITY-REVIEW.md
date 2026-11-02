@@ -20,6 +20,20 @@ process/config/state/workspace/agent-state/proxy/private-tool-channel pins, and 
 captured raw bytes for three observations. Every byte digest is explicitly pinned. No
 `approved`, `safe`, `metered` or `isCore` boolean can replace these records.
 
+The capability subject digest excludes both its own digest and `approvalReceiptSha256`;
+the actual human receipt approves that independent subject. The caller must separately
+supply the RAW purpose-specific decision with version `1`, purpose
+`closed-openclaw-core-anthropic-capability`, `ownerApproved: true`, a bounded `capability_...`
+approval identity, canonical UTC approval/expiry timestamps, and exact subject/window/client/
+native-source pins. Its canonical-record hash must equal `approvalReceiptSha256`. The record
+must currently be valid and span at most 90 minutes. This validity ceiling grants no new Phase C
+interval, calls or host authority; the independent existing time/cap/graph/source controls
+remain binding. Earlier approvals for those other purposes cannot approve this capability.
+
+The raw decision must come from an independently trusted human-receipt source. Hash matching
+is not cryptographic authentication or proof of human provenance. Computing a matching
+synthetic record in a test supplies no real approval and cannot authorize adoption.
+
 The trusted host must capture and independently establish the provenance/completeness of:
 
 - The **effective native selector projection**, after includes, environment substitution,
