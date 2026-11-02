@@ -46,19 +46,54 @@ describe('private MCP events host catch-up and recovery', () => {
     await expect(test.host.tick()).rejects.toMatchObject({ code: 'EVENTS_UNAVAILABLE' });
     expect(test.client.subscribe).not.toHaveBeenCalled(); expect(test.driver.processWorkOnce).not.toHaveBeenCalled();
   });
-  it('holds every subscription and work tick until the server Retry-After minimum has elapsed', async () => {
+  it('honors the subscription Retry-After while continuing independent canonical safety claims', async () => {
     const test = setup();
     test.client.subscribe.mockRejectedValueOnce(new HostRequestError('RATE_LIMITED', 429, 120));
-    await expect(test.host.tick()).rejects.toMatchObject({ retryAfterSeconds: 120 });
-    test.advance(119000); await test.host.tick();
-    expect(test.client.subscribe).toHaveBeenCalledOnce(); expect(test.driver.processWorkOnce).not.toHaveBeenCalled();
-    test.advance(1000); await test.host.tick();
-    expect(test.client.subscribe).toHaveBeenCalledTimes(2); expect(test.driver.processWorkOnce).toHaveBeenCalledOnce();
+    await test.host.tick();
+    expect(test.host.diagnostics).toMatchObject({ eventMaintenance: 'retrying', errorCode: 'RATE_LIMITED' });
+    expect(test.driver.processWorkOnce).toHaveBeenCalledOnce();
+    test.advance(60000); await test.host.tick();
+    expect(test.client.subscribe).toHaveBeenCalledOnce(); expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+    test.advance(60000); await test.host.tick();
+    expect(test.client.subscribe).toHaveBeenCalledTimes(2); expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(3);
+    expect(test.host.diagnostics.eventMaintenance).toBe('ready');
   });
-  it('uses the safety interval as bounded backoff when a 503 supplies no valid delay', async () => {
+  it('uses the safety interval as subscription backoff when a 503 supplies no valid delay', async () => {
     const test = setup(); test.client.subscribe.mockRejectedValueOnce(new HostRequestError('GATEWAY_TEMPORARILY_UNAVAILABLE', 503));
-    await expect(test.host.tick()).rejects.toMatchObject({ status: 503 });
+    await test.host.tick(); expect(test.driver.processWorkOnce).toHaveBeenCalledOnce();
     await test.host.tick(); expect(test.client.subscribe).toHaveBeenCalledOnce();
     test.advance(60000); await test.host.tick(); expect(test.client.subscribe).toHaveBeenCalledTimes(2);
+    expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+  });
+  it('keeps canonical work available through a temporary discovery outage', async () => {
+    const test = setup(); test.client.discoverEvents.mockRejectedValueOnce(new HostRequestError('GATEWAY_TEMPORARILY_UNAVAILABLE', 503));
+    await test.host.tick();
+    expect(test.client.subscribe).not.toHaveBeenCalled();
+    expect(test.driver.processWorkOnce).toHaveBeenCalledOnce();
+    expect(test.host.diagnostics.eventMaintenance).toBe('retrying');
+    test.advance(60000); await test.host.tick();
+    expect(test.client.discoverEvents).toHaveBeenCalledTimes(2);
+    expect(test.client.subscribe).toHaveBeenCalledOnce();
+    expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+  });
+  it('does not claim after a terminal lifecycle transition during event maintenance', async () => {
+    const test = setup();
+    test.client.subscribe.mockImplementationOnce(async () => {
+      test.client.lifecycle = 'NEEDS_RECONNECT';
+      throw new HostRequestError('GATEWAY_RECOVERY_REQUIRED', 503);
+    });
+    await expect(test.host.tick()).rejects.toMatchObject({ code: 'GATEWAY_RECOVERY_REQUIRED' });
+    expect(test.driver.processWorkOnce).not.toHaveBeenCalled();
+    expect(test.host.diagnostics.eventMaintenance).toBe('stopped');
+  });
+  it('does not classify an authoritative work failure as a subscription-only outage', async () => {
+    const test = setup();
+    test.driver.processWorkOnce.mockRejectedValueOnce(new HostRequestError('GATEWAY_TEMPORARILY_UNAVAILABLE', 503));
+    await expect(test.host.tick()).rejects.toMatchObject({ status: 503 });
+    expect(test.host.diagnostics.eventMaintenance).toBe('ready');
+    await test.host.tick();
+    expect(test.driver.processWorkOnce).toHaveBeenCalledOnce();
+    test.advance(60000); await test.host.tick();
+    expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(2);
   });
 });

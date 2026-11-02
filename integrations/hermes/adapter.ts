@@ -2,9 +2,10 @@ import path from 'node:path';
 import { createServer } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { ConnectorSetupError, type AdapterContext, type ConnectorAdapter } from '../connector/adapter';
+import { EnvoiError } from '../../sdk/typescript/src/index';
 import { privateJson } from '../openclaw/quick-connect-store';
 import { discoverHermes, hermesServerName, mergeMcpConfiguration, optionalText, replaceConfiguration, setEnvValue } from './config';
-import { boundedHermesRun, preflightHermes } from './api';
+import { boundedHermesRun, checkHermesCapabilities, preflightHermes } from './api';
 import { createHermesBridge } from './runtime';
 import { assertScopedHermes, hermesHost, selectScopedHermes, type HermesRuntimeConfiguration } from './scoped-runtime';
 import { connectHermesHost } from './scoped-host';
@@ -67,8 +68,23 @@ export const hermesAdapter: ConnectorAdapter<HermesRuntimeConfiguration> = {
     const scoped = await selectScopedHermes(options, config);
     if (!scoped) return preflightHermes(config, options);
     await assertScopedHermes(scoped, options.env ?? process.env);
-    const wire = await connectHermesHost(hermesHost(scoped), AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(15000)]));
+    let wire;
+    try { wire = await connectHermesHost(hermesHost(scoped), AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(15000)])); }
+    catch (error) {
+      // Startup has not claimed work. Retry only an absent selected daemon;
+      // identity/scope mismatches and failures during a turn remain terminal.
+      if (error instanceof EnvoiError && error.code === 'HERMES_DAEMON_UNREACHABLE')
+        throw new ConnectorSetupError('GATEWAY_UNREACHABLE', 'The selected Hermes Gateway is unavailable; retrying its saved origin.');
+      if (error instanceof EnvoiError && error.code === 'HERMES_ORIGIN_CHANGED')
+        throw new ConnectorSetupError('SCOPED_CONFIG_INVALID', 'The selected Hermes Gateway origin changed. Preserve the saved connection and use the supported owner-confirmed reselection procedure.');
+      throw error;
+    }
     wire.close();
+  },
+  async startupCheck(config, options) {
+    const scoped = await selectScopedHermes(options, config);
+    if (!scoped) return checkHermesCapabilities(config, options);
+    return hermesAdapter.preflight(config, options);
   },
   async configure(config, context) {
     const scoped = await selectScopedHermes(context, config);

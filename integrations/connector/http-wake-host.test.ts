@@ -135,6 +135,74 @@ describe('private wake host', () => {
     await expect(setupState.host.run(new AbortController().signal)).rejects.toMatchObject({ code: 'CREDENTIAL_REVOKED' });
     expect(setupState.transport.create).not.toHaveBeenCalled(); expect(setupState.driver.processWorkOnce).not.toHaveBeenCalled();
   });
+  it('keeps the hosted worker alive through a temporary upstream status failure', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now);
+    const setupState = setup(); const stop = new AbortController();
+    const host = new HttpWakeHost(setupState.transport, setupState.store, setupState.driver, receiverUrl, Date.now);
+    setupState.transport.status.mockRejectedValueOnce(new EnvoiError('Temporary upstream response', 503, 'NETWORK_ERROR'));
+    const running = host.run(stop.signal, 1000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setupState.transport.status).toHaveBeenCalledTimes(1);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setupState.transport.status).toHaveBeenCalledTimes(2);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+    stop.abort(); await running;
+  });
+  it('keeps checking the canonical queue while subscription status is unavailable', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now);
+    const setupState = setup(); const stop = new AbortController();
+    const host = new HttpWakeHost(setupState.transport, setupState.store, setupState.driver, receiverUrl, Date.now);
+    setupState.transport.status.mockRejectedValue(new EnvoiError('Temporary upstream response', 503, 'NETWORK_ERROR'));
+    const running = host.run(stop.signal, 1000);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(setupState.transport.status).toHaveBeenCalledTimes(4);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledTimes(4);
+    stop.abort(); await running;
+  });
+  it('keeps claiming while wake maintenance honors Retry-After', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(now);
+    const setupState = setup(); const stop = new AbortController();
+    const host = new HttpWakeHost(setupState.transport, setupState.store, setupState.driver, receiverUrl, Date.now);
+    setupState.transport.status.mockRejectedValueOnce(new EnvoiError('Wake status throttled', 429, 'RATE_LIMITED', { retryAfterSeconds: 60 }));
+    const running = host.run(stop.signal, 1000);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(setupState.transport.status).toHaveBeenCalledOnce();
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledTimes(4);
+    stop.abort(); await running;
+  });
+  it('checks canonical work when a wake hint fails status revalidation', async () => {
+    vi.useFakeTimers();
+    const setupState = setup(); const stop = new AbortController();
+    await pending(setupState.store, 'wake.work_available');
+    setupState.transport.status.mockRejectedValue(new EnvoiError('Temporary upstream response', 503, 'NETWORK_ERROR'));
+    const running = setupState.host.run(stop.signal, 1000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledOnce();
+    expect((await setupState.store.read()).accepted[noticeId].pending).toBe(true);
+    stop.abort(); await running;
+  });
+  it('continues safety claims while a wake hint status call is stalled', async () => {
+    vi.useFakeTimers();
+    const setupState = setup(); const stop = new AbortController();
+    await pending(setupState.store, 'wake.work_available');
+    let release!: () => void;
+    setupState.transport.status.mockResolvedValueOnce({ paused: false, wake: { available: true, version: 1, subscription: null } })
+      .mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ paused: false, wake: { available: true, version: 1, subscription: null } }); }));
+    const running = setupState.host.run(stop.signal, 1000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setupState.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+    release(); stop.abort(); await running;
+  });
+  it('never starts a safety claim before a pending control is revalidated', async () => {
+    const setupState = setup(); await pending(setupState.store, 'wake.control_changed');
+    setupState.transport.status.mockRejectedValue(new EnvoiError('Temporary upstream response', 503, 'NETWORK_ERROR'));
+    setupState.driver.revalidateLiveLeases.mockRejectedValue(new EnvoiError('Credential revoked', 401, 'CREDENTIAL_REVOKED'));
+    await expect(setupState.host.run(new AbortController().signal)).rejects.toMatchObject({ code: 'CREDENTIAL_REVOKED' });
+    expect(setupState.driver.processWorkOnce).not.toHaveBeenCalled();
+  });
   it('honors an earlier canonical work-due hint instead of waiting for the safety interval', async () => {
     vi.useFakeTimers();
     const setupState = setup(); const stop = new AbortController();

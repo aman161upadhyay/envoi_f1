@@ -11,6 +11,7 @@ export interface GrokConfiguration {
 }
 
 const endpoint = 'https://api.x.ai/v1/responses';
+const modelsEndpoint = 'https://api.x.ai/v1/models';
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -136,10 +137,26 @@ export async function preflightGrok(config: GrokConfiguration, options: AdapterO
   }
 }
 
+/** Existing enrollment uses an authenticated catalog probe instead of another inference request on restart. */
+export async function checkGrokProvider(config: GrokConfiguration, options: AdapterOptions = {}): Promise<void> {
+  validate(config);
+  let response: Response;
+  try {
+    response = await (options.fetch ?? fetch)(modelsEndpoint, { method: 'GET', redirect: 'error',
+      headers: { authorization: `Bearer ${config.apiKey}` },
+      signal: AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(10_000)]) });
+  } catch { throw new ConnectorSetupError('PROVIDER_UNREACHABLE', 'The xAI provider is unavailable; retrying the saved connection.'); }
+  await response.body?.cancel().catch(() => {});
+  if (response.status === 401 || response.status === 403) throw new ConnectorSetupError('PROVIDER_AUTH_FAILED', 'xAI rejected the saved model credential. Check it privately on this host.');
+  if (response.status === 429 || response.status >= 500) throw new ConnectorSetupError('PROVIDER_UNREACHABLE', 'The xAI provider is temporarily unavailable; retrying.');
+  if (!response.ok) throw new ConnectorSetupError('MODEL_TEST_FAILED', 'The xAI model catalog check failed. Check the saved provider configuration.');
+}
+
 export const grokAdapter: ConnectorAdapter<GrokConfiguration> = {
   runtime: 'grok',
   discover: discoverGrok,
   preflight: preflightGrok,
+  startupCheck: checkGrokProvider,
   createBridge: async (config, context) => {
     const current = await discoverGrok(context, config);
     return createGrokBridge({ ...current, apiUrl: context.apiUrl, stateDir: context.stateDir }, context);

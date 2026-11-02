@@ -7,9 +7,11 @@ import { EnvoiConnector } from '../../sdk/typescript/src/connector';
 import { FileBridgeStore } from '../agent-bridges/file-store';
 import { validateQuickConnectHandoff, type ConnectorRuntime } from '../../sdk/typescript/src/quick-connect';
 import { ConnectorSetupError, type ConnectorAdapter } from './adapter';
-import { checkEnvoi, connectionDirectory, connectionStatus, doctorConnection, prepareConnection, readConnection, setupConnection, startConnection } from './core';
-import { startControl, queryControl } from './control';
+import { checkEnvoi, connectionDirectory, connectionStatus, doctorConnection, prepareConnection, readConnection, refreshInstalledExecutable, setupConnection, startConnection } from './core';
+import { startControl, queryControl, queryOwnedControl } from './control';
 import { connectorService } from './service';
+import * as serviceModule from './service';
+import { connectorMain } from './cli';
 
 const directories: string[] = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
@@ -86,6 +88,25 @@ describe('shared connector lifecycle', () => {
     expect(await readFile(target, 'utf8')).toBe('// upgraded connector');
     expect(f.counts().enrollmentCount).toBe(1);
   });
+  it('updates a stopped saved connector without changing enrollment or its queued work', async () => {
+    const f = await fixture();
+    const source = path.join(f.directory, 'candidate.mjs');
+    await writeFile(source, '// old connector');
+    await setupConnection(f.handoff, f.resolver, { ...f.options, executableFile: source });
+    const sessionPath = path.join(f.options.stateDir, 'session.json');
+    const originalSession = await readFile(sessionPath, 'utf8');
+    const workPath = path.join(f.options.stateDir, 'work', 'queued.json');
+    await writeFile(workPath, '{"queued":true}');
+    await writeFile(source, '// new connector');
+    const result = await refreshInstalledExecutable(f.options.stateDir, source);
+    expect(result.changed).toBe(true);
+    expect(await readFile(path.join(f.options.stateDir, 'connector.mjs'), 'utf8')).toBe('// new connector');
+    expect(await readFile(path.join(f.options.stateDir, 'connector.previous.mjs'), 'utf8')).toBe('// old connector');
+    expect(await readFile(sessionPath, 'utf8')).toBe(originalSession);
+    expect(await readFile(workPath, 'utf8')).toBe('{"queued":true}');
+    expect(f.counts().enrollmentCount).toBe(1);
+    expect((await refreshInstalledExecutable(f.options.stateDir, source)).changed).toBe(false);
+  });
   for (const runtime of ['hermes', 'openclaw', 'grok'] as const) {
     it(`enrolls ${runtime} once, stores local secrets privately, and resumes after handoff expiry`, async () => {
       const f = await fixture(runtime);
@@ -99,7 +120,8 @@ describe('shared connector lifecycle', () => {
       expect(saved).toContain('local-model-provider-secret'); expect(saved).not.toContain(f.handoff.enrollmentToken);
       expect(JSON.stringify(f.requests)).not.toContain('local-model-provider-secret');
       expect(JSON.stringify(await connectionStatus(result.stateDir))).not.toMatch(/local-model-provider-secret|refresh-secret|access-secret/);
-      expect(await connectionStatus(result.stateDir)).toMatchObject({ status: 'stopped', runtime });
+      expect(await connectionStatus(result.stateDir)).toMatchObject({ status: 'stopped', runtime,
+        startupService: { registration: 'not_installed' } });
       const reports = f.requests.filter(request => request.url.endsWith('/connection-status'));
       expect(JSON.parse(String(reports[0].init?.body))).toMatchObject({ runtime, runtimeTest: 'passed' });
     });
@@ -252,18 +274,81 @@ describe('shared connector lifecycle', () => {
 });
 
 describe('authenticated local management', () => {
+  it('uses a read-only adapter startup probe after one-time setup model proof', async () => {
+    const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
+    expect(f.counts().checks).toBeGreaterThan(0);
+    let probes = 0;
+    f.adapter.startupCheck = async () => { probes++; };
+    f.adapter.preflight = async () => { throw new Error('model preflight must not run on restart'); };
+    const original = f.adapter.createBridge;
+    f.adapter.createBridge = async (config, context) => {
+      const bridge = await original(config, context);
+      bridge.connector.run = async () => {};
+      return bridge;
+    };
+    const stop = new AbortController();
+    await startConnection(f.options.stateDir, stop.signal, f.resolver, { ...f.options, onReady: () => stop.abort() });
+    expect(probes).toBe(1);
+    expect(await doctorConnection(f.options.stateDir, f.resolver, f.options)).toMatchObject({ runtimeChecks: 'preflight_only' });
+    expect(probes).toBe(2);
+    expect(f.counts().enrollmentCount).toBe(1);
+  });
   it('reports the actual controlled process and stops it without signaling an arbitrary PID', async () => {
     const f = await fixture(); let stopRequested = false;
     const directory = await secureDirectory(f.options.stateDir);
-    const control = await startControl(directory, { runtime: 'hermes', address: f.handoff.address }, () => { stopRequested = true; });
+    const control = await startControl(directory, { runtime: 'hermes', address: f.handoff.address, apiUrl: f.handoff.apiUrl }, () => { stopRequested = true; });
     try {
       expect(await queryControl(directory, 'status')).toMatchObject({ pid: process.pid, runtime: 'hermes', status: 'running' });
       const record = JSON.parse(await readFile(path.join(directory, 'control.json'), 'utf8'));
       expect((await fetch(`http://127.0.0.1:${record.port}/stop`, { method: 'POST' })).status).toBe(403);
       expect(stopRequested).toBe(false);
-      await queryControl(directory, 'stop'); expect(stopRequested).toBe(true);
+      await queryOwnedControl(directory, 'stop', { runtime: 'hermes', address: f.handoff.address, apiUrl: f.handoff.apiUrl });
+      expect(stopRequested).toBe(true);
     } finally { await control.close(); }
     await expect(readFile(path.join(directory, 'control.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('does not present another agent control listener as this saved connection', async () => {
+    const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
+    let stoppedOther = false;
+    const control = await startControl(f.options.stateDir,
+      { runtime: 'hermes', address: 'other@agents.envoi.example', apiUrl: f.handoff.apiUrl }, () => { stoppedOther = true; });
+    try {
+      const status = await connectionStatus(f.options.stateDir);
+      expect(status).toMatchObject({ status: 'unverified', controlChannel: 'identity_mismatch',
+        nextAction: expect.stringContaining('control record') });
+      expect(JSON.stringify(status)).not.toContain('other@agents.envoi.example');
+      expect(await doctorConnection(f.options.stateDir, f.resolver, f.options))
+        .toMatchObject({ status: 'unverified', runtimeChecks: 'unverified' });
+      await expect(queryOwnedControl(f.options.stateDir, 'stop', await readConnection(f.options.stateDir)))
+        .rejects.toMatchObject({ code: 'CONTROL_INVALID' });
+      await expect(connectorMain(['stop', '--state-dir', f.options.stateDir])).rejects.toMatchObject({ code: 'CONTROL_INVALID' });
+      await expect(connectorMain(['uninstall', '--state-dir', f.options.stateDir])).rejects.toMatchObject({ code: 'CONTROL_INVALID' });
+      expect(stoppedOther).toBe(false);
+    } finally { await control.close(); }
+    await writeFile(path.join(f.options.stateDir, 'control.json'), 'invalid private record');
+    expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'unverified', controlChannel: 'invalid' });
+    expect(await doctorConnection(f.options.stateDir, f.resolver, f.options))
+      .toMatchObject({ status: 'unverified', runtimeChecks: 'unverified' });
+  });
+  it('does not advise starting a second owner when the service manager reports a live process', async () => {
+    const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
+    const inspect = vi.spyOn(serviceModule, 'inspectConnectorService').mockResolvedValue({
+      name: 'envoi-existing', registration: 'registered', managerState: 'running'
+    });
+    try {
+      expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'unverified', controlChannel: 'absent',
+        startupService: { managerState: 'running' }, nextAction: expect.stringContaining('inspect that process') });
+    } finally { inspect.mockRestore(); }
+  });
+  it('identifies an installed Windows startup task without durable repetition', async () => {
+    const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
+    const inspect = vi.spyOn(serviceModule, 'inspectConnectorService').mockResolvedValue({
+      name: 'envoi-existing', registration: 'registered', enabled: true, managerState: 'stopped', recoveryPolicy: 'outdated'
+    });
+    try {
+      expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'stopped',
+        startupService: { recoveryPolicy: 'outdated' }, nextAction: expect.stringContaining('reinstall the existing connector startup service') });
+    } finally { inspect.mockRestore(); }
   });
   it('holds the per-connection lock through supervised startup and releases it after shutdown', async () => {
     const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
@@ -279,13 +364,15 @@ describe('authenticated local management', () => {
     const started = startConnection(f.options.stateDir, stop.signal, f.resolver, { ...f.options, onReady: running });
     try {
       await ready;
-      expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'running' });
+      expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'running',
+        runtimeDiagnostic: { phase: 'ready', runtimeChecks: 'passed', wake: { transport: 'not_started' } } });
       const checksBeforeDoctor = f.counts().checks;
       expect(await doctorConnection(f.options.stateDir, f.resolver, f.options)).toMatchObject({ status: 'running', runtimeChecks: 'passed' });
       expect(f.counts().checks).toBe(checksBeforeDoctor);
       await expect(setupConnection(f.handoff, f.resolver, f.options)).rejects.toThrow('already running');
     } finally { stop.abort(); await started; }
-    expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'stopped' });
+    expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'stopped',
+      runtimeDiagnostic: { phase: 'stopped' } });
     await expect(readFile(path.join(f.options.stateDir, 'connector.lock'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('waits through startup outages, remains manageable, and recovers without reenrollment', async () => {
@@ -306,6 +393,7 @@ describe('authenticated local management', () => {
     try {
       await Promise.race([waited, prematureExit]);
       expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'waiting' });
+      expect(await connectionStatus(f.options.stateDir)).toMatchObject({ runtimeDiagnostic: { errorCode: 'ENVOI_UNREACHABLE' } });
       expect(await doctorConnection(f.options.stateDir, f.resolver)).toMatchObject({ runtimeChecks: 'pending', errorCode: 'ENVOI_UNREACHABLE' });
       f.healthFails(false); await Promise.race([startedReady, prematureExit]);
       expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'running' });
@@ -313,6 +401,32 @@ describe('authenticated local management', () => {
     } finally { stop.abort(); await started; }
   // Real filesystem and authenticated loopback requests need margin under full-suite load.
   }, 60_000);
+  it('keeps the saved connector alive while a selected gateway is briefly unavailable at startup', async () => {
+    const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
+    let gatewayUp = false;
+    f.adapter.preflight = async () => { if (!gatewayUp) throw new ConnectorSetupError('GATEWAY_UNREACHABLE', 'selected daemon absent'); };
+    const original = f.adapter.createBridge;
+    f.adapter.createBridge = async (config, context) => {
+      const bridge = await original(config, context);
+      bridge.connector.run = async signal => { if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })); };
+      return bridge;
+    };
+    const stop = new AbortController();
+    let waiting!: () => void; const waited = new Promise<void>(resolve => { waiting = resolve; });
+    let ready!: () => void; const startedReady = new Promise<void>(resolve => { ready = resolve; });
+    const started = startConnection(f.options.stateDir, stop.signal, f.resolver,
+      { ...f.options, retryDelayMs: 50, onWaiting: waiting, onReady: ready });
+    try {
+      await waited;
+      expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'waiting',
+        runtimeDiagnostic: { errorCode: 'GATEWAY_UNREACHABLE' } });
+      gatewayUp = true;
+      await startedReady;
+      expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'running',
+        runtimeDiagnostic: { phase: 'ready', runtimeChecks: 'passed' } });
+      expect(f.counts().enrollmentCount).toBe(1);
+    } finally { stop.abort(); await started; }
+  });
   it('keeps the same runtime bridge alive while parked Hermes tools recover before claiming work', async () => {
     const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
     const original = f.adapter.createBridge;
@@ -348,9 +462,40 @@ describe('authenticated local management', () => {
     const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
     f.healthFails(); const stop = new AbortController();
     await startConnection(f.options.stateDir, stop.signal, f.resolver, { ...f.options, onWaiting: () => stop.abort() });
-    expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'stopped' });
+    expect(await connectionStatus(f.options.stateDir)).toMatchObject({ status: 'stopped', nextAction: expect.stringContaining('existing connector') });
     f.healthFails(false); f.preflightFails();
     await expect(startConnection(f.options.stateDir, new AbortController().signal, f.resolver, f.options)).rejects.toMatchObject({ code: 'MODEL_NOT_READY' });
+    const stopped = await connectionStatus(f.options.stateDir);
+    expect(stopped).toMatchObject({ status: 'stopped', runtimeDiagnostic: { phase: 'failed', errorCode: 'MODEL_NOT_READY' },
+      nextAction: expect.stringContaining('repair the selected runtime') });
+    expect(JSON.stringify(stopped)).not.toMatch(/local-model-provider-secret|refresh-secret|access-secret|Configure your local model/);
+  });
+  it('preserves a safe failure code after a ready connector exits during a runtime turn', async () => {
+    const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
+    const original = f.adapter.createBridge;
+    f.adapter.createBridge = async (config, context) => {
+      const bridge = await original(config, context);
+      bridge.connector.run = async () => { throw new EnvoiError('private runtime prompt and key', undefined, 'HERMES_EXECUTION_UNCERTAIN'); };
+      return bridge;
+    };
+    await expect(startConnection(f.options.stateDir, new AbortController().signal, f.resolver, f.options))
+      .rejects.toMatchObject({ code: 'HERMES_EXECUTION_UNCERTAIN' });
+    const status = await connectionStatus(f.options.stateDir);
+    expect(status).toMatchObject({ status: 'stopped', runtimeDiagnostic: { phase: 'failed', errorCode: 'HERMES_EXECUTION_UNCERTAIN' },
+      nextAction: expect.stringContaining('turn journal') });
+    expect(JSON.stringify(status)).not.toContain('private runtime prompt and key');
+    await writeFile(path.join(f.options.stateDir, 'runtime-diagnostic.json'), JSON.stringify({ version: 1, phase: 'failed',
+      startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), runtimeChecks: 'pending', secret: 'private-key' }));
+    expect((await connectionStatus(f.options.stateDir)).runtimeDiagnostic).toBeNull();
+  });
+  it('points a scoped origin mismatch to owner review without disclosing a new Gateway origin', async () => {
+    const f = await fixture(); await setupConnection(f.handoff, f.resolver, f.options);
+    await writeFile(path.join(f.options.stateDir, 'runtime-diagnostic.json'), JSON.stringify({ version: 1, phase: 'failed',
+      startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), runtimeChecks: 'pending', errorCode: 'SCOPED_CONFIG_INVALID' }));
+    const status = await connectionStatus(f.options.stateDir);
+    expect(status).toMatchObject({ status: 'stopped', nextAction: expect.stringContaining('owner'),
+      runtimeDiagnostic: { errorCode: 'SCOPED_CONFIG_INVALID' } });
+    expect(JSON.stringify(status)).not.toMatch(/daemonOrigin|agentApiToken|agentRefreshToken/);
   });
 });
 
@@ -372,9 +517,10 @@ describe('durable lifecycle in the installed runtimes', () => {
     await c.observeError(new EnvoiError('Paused', 409, 'AGENT_PAUSED')); f.toolFails(true);
     const stop = new AbortController(); let ready!: () => void; const readyPromise = new Promise<void>(resolve => { ready = resolve; });
     const running = startConnection(f.options.stateDir, stop.signal, f.resolver, { ...f.options, onReady: ready });
-    try { await readyPromise; expect(await doctorConnection(f.options.stateDir, f.resolver, f.options)).toMatchObject({ status: 'paused', lifecycle: { state: 'PAUSED' }, runtimeChecks: 'deferred_while_paused' }); }
+    try { await readyPromise; expect(await doctorConnection(f.options.stateDir, f.resolver, f.options)).toMatchObject({ status: 'paused', lifecycle: { state: 'PAUSED' }, runtimeChecks: 'deferred_while_paused', nextAction: expect.stringContaining('owner to resume') }); }
     finally { stop.abort(); await running; }
-    expect(await connectionStatus(f.options.stateDir)).toMatchObject({ lifecycle: { state: 'STOPPED', paused: true } });
+    expect(await connectionStatus(f.options.stateDir)).toMatchObject({ lifecycle: { state: 'STOPPED', paused: true },
+      nextAction: expect.stringContaining('Start the existing connector') });
     const restarted = new EnvoiConnector(f.handoff.apiUrl, new FileBridgeStore(f.options.stateDir));
     await restarted.start(); expect(await restarted.lifecycle()).toMatchObject({ state: 'PAUSED', paused: true });
   });

@@ -14,11 +14,14 @@ const execute = promisify(execFile);
 const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
 const unitArgument = (value: string) => `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', () => '$$')}"`;
 const windowsArgument = (value: string) => `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
+const defaultPeriodicStart = new Date(Math.ceil((Date.now() + 60_000) / 60_000) * 60_000).toISOString();
 
 export interface ServiceDefinition { name: string; filename: string; contents: string; commands: Array<{ executable: string; args: string[] }> }
+export type ServiceRegistration = 'registered' | 'not_installed' | 'unverified';
+export type ServiceManagerState = 'running' | 'stopped' | 'failed' | 'unknown';
 
 /** All service manifests contain file paths only. Credentials remain in private local storage. */
-export function connectorService(directory: string, options: { platform?: string; home?: string; node?: string; user?: string; runtime?: string; env?: NodeJS.ProcessEnv } = {}): ServiceDefinition {
+export function connectorService(directory: string, options: { platform?: string; home?: string; node?: string; user?: string; runtime?: string; env?: NodeJS.ProcessEnv; now?: Date } = {}): ServiceDefinition {
   if (options.runtime && !CONNECTOR_RUNTIMES.includes(options.runtime as typeof CONNECTOR_RUNTIMES[number])) throw new QuickConnectError('Unsupported startup runtime');
   const platform = options.platform ?? process.platform;
   const home = options.home ?? homedir();
@@ -30,7 +33,7 @@ export function connectorService(directory: string, options: { platform?: string
   const args = [connector, 'start', '--state-dir', directory];
   if (platform === 'linux') {
     const filename = path.join(home, '.config', 'systemd', 'user', `${name}.service`);
-    return { name, filename, contents: `[Unit]\nDescription=Envoi agent connector\nStartLimitIntervalSec=300\nStartLimitBurst=5\n\n[Service]\nType=simple\nExecStart=${[node, ...args].map(unitArgument).join(' ')}\nWorkingDirectory=${unitArgument(directory)}\nRestart=on-failure\nRestartSec=10\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, commands: [
+    return { name, filename, contents: `[Unit]\nDescription=Envoi agent connector\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart=${[node, ...args].map(unitArgument).join(' ')}\nWorkingDirectory=${unitArgument(directory)}\nRestart=on-failure\nRestartSec=60\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, commands: [
       { executable: 'systemctl', args: ['--user', 'daemon-reload'] },
       { executable: 'systemctl', args: ['--user', 'enable', '--now', `${name}.service`] }
     ] };
@@ -45,11 +48,68 @@ export function connectorService(directory: string, options: { platform?: string
   if (platform === 'win32') {
     if (!options.user) throw new QuickConnectError('Windows startup requires the current account SID');
     const filename = path.join(directory, 'startup-task.xml');
+    // A repeating logon trigger is not scheduled until the next logon when a
+    // task is registered during an existing session. Keep logon startup and
+    // add an independently scheduled one-minute recovery trigger.
+    const periodicStart = options.now ? new Date(options.now.getTime() + 60_000).toISOString() : defaultPeriodicStart;
     return { name, filename,
-      contents: `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(options.user)}</UserId></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>${xml(options.user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure></Settings><Actions Context="Author"><Exec><Command>${xml(node)}</Command><Arguments>${xml(args.map(windowsArgument).join(' '))}</Arguments><WorkingDirectory>${xml(directory)}</WorkingDirectory></Exec></Actions></Task>`,
+      contents: `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(options.user)}</UserId></LogonTrigger><TimeTrigger><Enabled>true</Enabled><StartBoundary>${periodicStart}</StartBoundary><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition></TimeTrigger></Triggers><Principals><Principal id="Author"><UserId>${xml(options.user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure></Settings><Actions Context="Author"><Exec><Command>${xml(node)}</Command><Arguments>${xml(args.map(windowsArgument).join(' '))}</Arguments><WorkingDirectory>${xml(directory)}</WorkingDirectory></Exec></Actions></Task>`,
       commands: [{ executable: windowsExecutable('schtasks.exe', options.env), args: ['/Create', '/TN', name, '/XML', filename, '/F'] }, { executable: windowsExecutable('schtasks.exe', options.env), args: ['/Run', '/TN', name] }] };
   }
   throw new QuickConnectError('Automatic startup supports Linux systemd, macOS launchd and Windows Task Scheduler. Use your host process supervisor');
+}
+
+/** Observation only: a saved manifest is not proof that the host registered it. */
+export async function inspectConnectorService(directory: string, runtime: string,
+  options: { platform?: string; home?: string; env?: NodeJS.ProcessEnv;
+    run?: (executable: string, args: string[]) => Promise<string | void> } = {}) {
+  const platform = options.platform ?? process.platform;
+  const service = connectorService(path.resolve(directory), { platform, home: options.home, env: options.env, runtime,
+    // Only the generated XML needs a SID; the task name depends solely on stateDir/runtime.
+    user: platform === 'win32' ? 'S-1-0-0' : undefined });
+  let manifest;
+  try { manifest = await lstat(service.filename); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { name: service.name, registration: 'not_installed' as ServiceRegistration };
+    return { name: service.name, registration: 'unverified' as ServiceRegistration };
+  }
+  if (!manifest.isFile() || manifest.isSymbolicLink()) return { name: service.name, registration: 'unverified' as ServiceRegistration };
+  const command = platform === 'linux' ? { executable: 'systemctl', args: ['--user', 'show', '-p', 'LoadState', '-p', 'UnitFileState', '-p', 'ActiveState', `${service.name}.service`] }
+    : platform === 'darwin' ? { executable: 'launchctl', args: ['list'] }
+    : { executable: windowsExecutable('powershell.exe', options.env), args: ['-NoProfile', '-NonInteractive', '-Command',
+      `$task = Get-ScheduledTask -TaskName '${service.name}' -TaskPath '\\' -ErrorAction Stop; $logon = @($task.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and $_.Enabled }).Count -gt 0; $periodic = @($task.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskTimeTrigger' -and $_.Enabled -and $_.StartBoundary -and [string]$_.Repetition.Interval -eq 'PT1M' -and -not $_.Repetition.Duration }).Count -gt 0; Write-Output "$($task.State)|$($logon -and $periodic)"`] };
+  try {
+    const output = options.run ? await options.run(command.executable, command.args)
+      : (await execute(command.executable, command.args, { timeout: 15_000, windowsHide: true })).stdout;
+    if (platform === 'linux' && typeof output === 'string') {
+      const values = Object.fromEntries(output.trim().split(/\r?\n/).map(line => line.split('=', 2)));
+      if (values.LoadState !== 'loaded') return { name: service.name, registration: 'unverified' as ServiceRegistration };
+      const enabled = values.UnitFileState === 'enabled' ? true : values.UnitFileState === 'disabled' || values.UnitFileState === 'masked' ? false : undefined;
+      const managerState: ServiceManagerState = values.ActiveState === 'active' ? 'running' : values.ActiveState === 'failed' ? 'failed'
+        : values.ActiveState === 'inactive' ? 'stopped' : 'unknown';
+      return { name: service.name, registration: 'registered' as ServiceRegistration, enabled, managerState };
+    }
+    if (platform === 'win32' && typeof output === 'string') {
+      const match = /^(Running|Ready|Disabled|Queued|Unknown)\|(True|False)$/i.exec(output.trim());
+      if (!match) return { name: service.name, registration: 'unverified' as ServiceRegistration };
+      const state = match[1];
+      if (!['Running', 'Ready', 'Disabled', 'Queued', 'Unknown'].includes(state)) return { name: service.name, registration: 'unverified' as ServiceRegistration };
+      return { name: service.name, registration: 'registered' as ServiceRegistration, enabled: state !== 'Disabled',
+        managerState: (state === 'Running' ? 'running' : state === 'Ready' || state === 'Disabled' ? 'stopped' : 'unknown') as ServiceManagerState,
+        recoveryPolicy: match[2].toLowerCase() === 'true' ? 'current' as const : 'outdated' as const };
+    }
+    if (platform === 'darwin' && typeof output === 'string') {
+      // launchctl list uses PID, last exit status, and label columns. Match the
+      // complete generated label; another Envoi installation is not this owner.
+      const rows = output.trim().split(/\r?\n/).map(line => line.trim().split(/\s+/));
+      const row = rows.find(parts => parts.length === 3 && parts[2] === service.name);
+      if (!row || !/^(?:\d+|-)$/.test(row[0]) || !/^-?\d+$/.test(row[1]))
+        return { name: service.name, registration: 'unverified' as ServiceRegistration };
+      const managerState: ServiceManagerState = row[0] !== '-' ? 'running' : Number(row[1]) === 0 ? 'stopped' : 'failed';
+      return { name: service.name, registration: 'registered' as ServiceRegistration, managerState };
+    }
+    return { name: service.name, registration: 'registered' as ServiceRegistration, managerState: 'unknown' as ServiceManagerState };
+  } catch { return { name: service.name, registration: 'unverified' as ServiceRegistration }; }
 }
 
 export async function checkServiceManager() {

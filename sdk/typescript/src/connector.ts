@@ -354,6 +354,11 @@ export class EnvoiConnector {
   private readonly activeLeaseChecks = new Map<() => Promise<void>, AbortController>();
   private caseSessionsAvailable = false;
   private readonly mintingCaseWork = new Set<string>();
+  private wakeTransport: 'not_started' | 'connecting' | 'connected' | 'disconnected' = 'not_started';
+  private lastWakeReadyAt?: string;
+  private lastWakeEventAt?: string;
+  private lastWorkClaimAt?: string;
+  private lastWakeErrorCode?: string;
 
   constructor(baseUrl: string, private readonly store: ConnectorStore, private readonly options: ConnectorOptions = {}) {
     if (options.handler && options.caseSessionHandler) throw new TypeError('Choose one work handler; a scoped turn cannot fall back to a legacy handler');
@@ -384,6 +389,13 @@ export class EnvoiConnector {
   }
 
   onState(observer: (lifecycle: ConnectorLifecycle) => void) { this.stateObserver = observer; }
+
+  /** Live transport observations only; no inbox contents, cursor, or credentials. */
+  wakeDiagnostics() {
+    return { transport: this.wakeTransport, lastReadyAt: this.lastWakeReadyAt,
+      lastEventAt: this.lastWakeEventAt, lastWorkClaimAt: this.lastWorkClaimAt,
+      lastErrorCode: this.lastWakeErrorCode };
+  }
 
   private mutate(update: (current: ConnectorSession) => ConnectorSession): Promise<ConnectorSession> {
     const write = this.writes.then(async () => {
@@ -624,6 +636,15 @@ export class EnvoiConnector {
         if (signal?.aborted) throw new EnvoiError('Wake request was cancelled', undefined, 'REQUEST_CANCELLED');
         if (deadline.aborted) throw new EnvoiError('Wake request timed out', undefined, 'TIMEOUT');
         if (error instanceof EnvoiError) throw error;
+        // A proxy may return HTML or an empty body for a temporary 429/5xx.
+        // Preserve a valid canonical error envelope; classify only malformed replies by status.
+        if (response.status === 429 || response.status >= 500) {
+          const header = response.headers.get('retry-after');
+          const seconds = header && /^\d{1,6}$/.test(header) ? Math.min(Number(header), 86_400) : 0;
+          throw new EnvoiError('Wake service is temporarily unavailable', response.status,
+            response.status === 429 ? 'RATE_LIMITED' : 'NETWORK_ERROR',
+            seconds ? { retryAfterSeconds: seconds } : undefined);
+        }
         throw new EnvoiError('Invalid wake response');
       } finally { await reader?.cancel().catch(() => {}); }
     }, false);
@@ -893,6 +914,7 @@ export class EnvoiConnector {
       if (error instanceof EnvoiError && [404, 405, 501].includes(error.status || 0)) throw new ConnectorContractError();
       throw error;
     }
+    this.lastWorkClaimAt = new Date().toISOString();
     if (claimed.state === 'paused') { await this.observeError(new EnvoiError('Paused', undefined, 'AGENT_PAUSED')); return false; }
     this.nextClaimAt = Infinity;
     if (claimed.work === null) {
@@ -1216,6 +1238,7 @@ export class EnvoiConnector {
     const streams = (async () => {
       let failures = 0;
       while (!stopped.aborted) {
+        this.wakeTransport = 'connecting';
         const stream = new AbortController();
         this.activeStreams.add(stream);
         const streamSignal = AbortSignal.any([stopped, stream.signal]);
@@ -1258,6 +1281,7 @@ export class EnvoiConnector {
                 await this.observeEvent(event, frame.type);
                 await this.options.onEvent?.(event);
                 await this.saveCursor(session, frame.id);
+                this.lastWakeEventAt = new Date().toISOString();
                 if (frame.type === 'work.available' && event.agentId === session.agentId
                   || (frame.type === 'message.delivered' || frame.type === 'human.instruction_created') && event.recipientAgentId === session.agentId) trigger();
               } else if (frame.type === 'ready') {
@@ -1265,6 +1289,7 @@ export class EnvoiConnector {
                   throw new EnvoiError('Envoi returned an invalid ready frame');
                 if (baseline && !this.cursorFor(validSession(await this.store.load()))) await this.saveCursor(session, frame.data.cursor as string | null);
                 connected = true; safetyAt = Date.now() + safetyDelay();
+                this.wakeTransport = 'connected'; this.lastWakeReadyAt = new Date().toISOString(); this.lastWakeErrorCode = undefined;
                 if ((await this.lifecycle()).paused) { await this.checkStatus(); statusAt = Date.now() + 30_000 + Math.random() * 30_000; }
                 trigger();
               } else if (frame.type === 'replay_required') { recovery = true; break; }
@@ -1276,12 +1301,15 @@ export class EnvoiConnector {
             throw new EnvoiError('Envoi event stream was interrupted', undefined, 'NETWORK_ERROR');
           }
         } catch (error) {
+          this.lastWakeErrorCode = error instanceof EnvoiError && error.code && /^[A-Z][A-Z0-9_]{0,119}$/.test(error.code)
+            ? error.code : 'WAKE_STREAM_ERROR';
           if (error instanceof EnvoiError && error.code === 'EVENT_CURSOR_INVALID') { await this.saveCursor(session, null); trigger(); }
           else { retryAfter = error instanceof EnvoiError ? (error.retryAfterSeconds ?? 0) * 1000 : 0; await failure(error, true); }
         } finally {
           clearTimeout(idle); stream.abort(); this.activeStreams.delete(stream);
           uptime = openedAt ? Date.now() - openedAt : 0;
           connected = false; safetyAt = Math.min(safetyAt, Date.now() + safetyDelay()); notify();
+          this.wakeTransport = 'disconnected';
         }
         if (stopped.aborted) break;
         if (recovery) {

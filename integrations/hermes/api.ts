@@ -79,7 +79,7 @@ export async function boundedHermesRun(config: HermesConfiguration, input: strin
   }
 }
 
-export async function preflightHermes(config: HermesConfiguration, options: AdapterOptions) {
+export async function checkHermesCapabilities(config: HermesConfiguration, options: AdapterOptions) {
   const response = await hermesRequest(config, '/v1/capabilities', options);
   if (!response.ok) throw new ConnectorSetupError('GATEWAY_INCOMPATIBLE', 'Hermes does not expose the required Runs API. Update Hermes on its host before enrollment.');
   const payload = await json(response);
@@ -87,5 +87,9 @@ export async function preflightHermes(config: HermesConfiguration, options: Adap
   if (!features || ['run_submission', 'run_status', 'run_stop'].some(name => features[name] !== true)) {
     throw new ConnectorSetupError('GATEWAY_INCOMPATIBLE', 'Hermes must support run submission, status and cancellation. Update Hermes before enrollment.');
   }
+}
+
+export async function preflightHermes(config: HermesConfiguration, options: AdapterOptions) {
+  await checkHermesCapabilities(config, options);
   await boundedHermesRun(config, 'Envoi connection preflight. Reply with OK only. Do not use tools or change files.', options);
 }

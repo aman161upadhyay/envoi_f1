@@ -23,7 +23,8 @@ describe('Quick Connect handoff', () => {
     expect(prompt).toContain('remove the handoff file');
     expect(prompt).toContain('Setup exits after configuration and checks');
     expect(prompt).toContain('append --install-service');
-    expect(prompt).toContain('existing process supervisor');
+    expect(prompt).toContain('owner-managed persistent supervisor');
+    expect(prompt).toContain('not available for background receiving');
     expect(prompt).toContain('If multiple agents');
     expect(prompt).not.toContain('provider_secret_should_not_be_sent');
     const setup = JSON.parse(prompt.split('Setup data:\n')[1]);

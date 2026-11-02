@@ -49,9 +49,16 @@ export async function runPortableRestCli(args: string[], emit: (result: Record<s
     const config = await readHostConfig(filename);
     await privateDirectory(config.stateDirectory);
     if (JSON.stringify(await readHostConfig(filename)) !== JSON.stringify(config)) throw new Error('HOST_CONFIG_CHANGED');
-    const module = await import(/* @vite-ignore */ pathToFileURL(config.handlerModule).href) as { createWorkHandler?: (context: { origin: string; stateDirectory: string }) => Promise<WorkHandler> | WorkHandler };
-    if (typeof module.createWorkHandler !== 'function') throw new Error('HOST_HANDLER_INVALID');
-    const handler = await module.createWorkHandler({ origin: config.origin, stateDirectory: config.stateDirectory });
+    let handler: WorkHandler;
+    if (command !== 'status') {
+      const module = await import(/* @vite-ignore */ pathToFileURL(config.handlerModule).href) as { createWorkHandler?: (context: { origin: string; stateDirectory: string }) => Promise<WorkHandler> | WorkHandler };
+      if (typeof module.createWorkHandler !== 'function') throw new Error('HOST_HANDLER_INVALID');
+      handler = await module.createWorkHandler({ origin: config.origin, stateDirectory: config.stateDirectory });
+    } else {
+      // Status never executes provider work or initializes its model.
+      handler = { admit: async () => { throw new Error('HOST_HANDLER_NOT_RUNNING'); },
+        process: async () => { throw new Error('HOST_HANDLER_NOT_RUNNING'); } };
+    }
     const host = await createPortableRestHost({ origin: config.origin, directory: config.stateDirectory,
       runtime: config.runtime, helper: { name: 'envoi-rest-host', version: '1.0.0' },
       deliveryCapabilities: { persistentProcess: true, outboundHttps: true, sse: true, webhook: false, scheduledPolling: false, a2a: false },

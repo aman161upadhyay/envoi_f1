@@ -50,6 +50,16 @@ describe('trusted host-only wake transport', () => {
     await expect(connector.wakeRequest('/api/agent/wake-subscriptions')).rejects.toMatchObject({ code: 'CREDENTIAL_REVOKED' });
     await expect(connector.wakeRequest('/api/agent/wake-subscriptions')).rejects.toThrow(); expect(fetcher).toHaveBeenCalledOnce();
   });
+  it('retries an HTML gateway outage or rate limit without treating it as a corrupt permanent response', async () => {
+    for (const [status, code] of [[503, 'NETWORK_ERROR'], [429, 'RATE_LIMITED']] as const) {
+      const fetcher = vi.fn(async () => new Response('private upstream diagnostic', { status, headers: { 'retry-after': '3' } }));
+      const connector = setup(fetcher as typeof fetch);
+      const error = await connector.wakeRequest('/api/agent/status').catch(error => error);
+      expect(error).toMatchObject({ status, code, retryAfterSeconds: 3 });
+      expect(error.message).not.toContain('private upstream diagnostic');
+      expect(fetcher).toHaveBeenCalledOnce();
+    }
+  });
   it('caps untrusted response bodies', async () => {
     const connector = setup(vi.fn(async () => new Response('a'.repeat(16 * 1024 * 1024 + 1))) as typeof fetch);
     await expect(connector.wakeRequest('/api/agent/status')).rejects.toThrow('Invalid wake response');

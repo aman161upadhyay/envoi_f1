@@ -77,6 +77,20 @@ export async function queryControl(directory: string, action: 'status' | 'stop' 
   return await response.json() as Record<string, unknown>;
 }
 
+export function controlIdentityMatches(value: unknown, expected: { runtime: string; address: string; apiUrl: string }): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && (value as Record<string, unknown>).runtime === expected.runtime
+    && (value as Record<string, unknown>).address === expected.address
+    && (value as Record<string, unknown>).apiUrl === expected.apiUrl;
+}
+
+/** Verify the saved owner before a local management action can affect a process. */
+export async function queryOwnedControl(directory: string, action: 'status' | 'stop', expected: { runtime: string; address: string; apiUrl: string }) {
+  const status = await queryControl(directory, 'status');
+  if (!controlIdentityMatches(status, expected)) throw new ConnectorSetupError('CONTROL_INVALID', 'Local connector identity does not match this installation');
+  return action === 'status' ? status : queryControl(directory, 'stop');
+}
+
 export async function sendTaskControl(directory: string, request: HostTaskRequest): Promise<HostTaskReceipt> {
   const task = validateHostTask(request);
   const record = await controlRecord(directory);

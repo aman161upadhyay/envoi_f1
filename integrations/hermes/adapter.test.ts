@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createServer, createConnection } from 'node:net';
 import * as hermesConfig from './config';
 import { discoverHermes, envValue, mergeMcpConfiguration, yamlScalar, type HermesConfiguration } from './config';
-import { boundedHermesRun, preflightHermes } from './api';
+import { boundedHermesRun, checkHermesCapabilities, preflightHermes } from './api';
 import { configureHermes, hermesAdapter } from './adapter';
 import { saveHermesScopedMode } from './scoped-runtime';
 
@@ -138,6 +138,16 @@ describe('Hermes profile discovery and preparation', () => {
 });
 
 describe('Hermes authenticated preflight', () => {
+  it('checks legacy Gateway capabilities on restart without creating a model run', async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8642/v1/capabilities');
+      expect(init?.method).toBeUndefined();
+      expect(init?.body).toBeUndefined();
+      return payload({ features: { run_submission: true, run_status: true, run_stop: true } });
+    });
+    await checkHermesCapabilities(config, { fetch: fetcher as typeof fetch });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
   it.each([429, 503])('classifies HTTP %s as a temporary Gateway outage without exposing its body', async status => {
     const f = await fixture();
     const error = await preflightHermes(f.config, { fetch: vi.fn(async () => new Response('sensitive-local-key', { status })) as typeof fetch }).catch(error => error);
@@ -179,6 +189,15 @@ describe('Hermes authenticated preflight', () => {
 });
 
 describe('Hermes profile MCP configuration', () => {
+  it('classifies an absent selected scoped daemon as a retryable startup outage without changing its selection', async () => {
+    const scenario = await fixture();
+    const env = { ENVOI_SCOPED_TOOLS: 'true', HERMES_HOME: scenario.home, HERMES_DAEMON_URL: 'http://127.0.0.1:18973' };
+    const selected = await hermesAdapter.discover({ ...scenario.options, env });
+    const before = await readFile(scenario.config.configPath, 'utf8');
+    await expect(hermesAdapter.preflight(selected, { ...scenario.options, env })).rejects.toMatchObject({ code: 'GATEWAY_UNREACHABLE' });
+    expect(await readFile(scenario.config.configPath, 'utf8')).toBe(before);
+    expect(selected).toMatchObject({ daemonOrigin: env.HERMES_DAEMON_URL, home: scenario.home });
+  });
   it('selects scoped mode before profile preparation and refuses a legacy Envoi integration', async () => {
     const scenario = await fixture();
     const original = await readFile(path.join(scenario.home, '.env'), 'utf8');

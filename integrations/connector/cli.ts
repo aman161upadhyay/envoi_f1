@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { CONNECTOR_RUNTIMES, type ConnectorRuntime } from '../../sdk/typescript/src/quick-connect';
 import { adapterFor } from './adapters';
 import { ConnectorSetupError } from './adapter';
-import { connectionStatus, doctorConnection, prepareConnection, readConnection, removeInstalledExecutable, setupConnection, startCommand, startConnection } from './core';
-import { installConnectorService, uninstallConnectorService } from './service';
-import { queryControl } from './control';
+import { connectionStatus, doctorConnection, prepareConnection, readConnection, refreshInstalledExecutable, removeInstalledExecutable, setupConnection, startCommand, startConnection } from './core';
+import { checkServiceManager, installConnectorService, uninstallConnectorService } from './service';
+import { queryOwnedControl } from './control';
 import { clearHostedWake, configureHostedWake } from './hosted-wake-config';
 
 const usage = `Envoi connector (Node.js 22+) — OpenClaw, Hermes, Grok\n
@@ -75,15 +75,31 @@ export async function connectorMain(args = process.argv.slice(2)) {
   }
   if (command === 'status') { process.stdout.write(`${JSON.stringify(await connectionStatus(directory))}\n`); return; }
   if (command === 'doctor') { process.stdout.write(`${JSON.stringify(await doctorConnection(directory, adapterFor))}\n`); return; }
-  if (command === 'install-service') { const saved = await readConnection(directory); process.stdout.write(`${JSON.stringify({ startupService: await installConnectorService(directory, saved.runtime), startsAt: 'user login' })}\n`); return; }
+  if (command === 'install-service') {
+    const saved = await readConnection(directory);
+    await checkServiceManager();
+    const executable = await refreshInstalledExecutable(directory, fileURLToPath(import.meta.url));
+    const startupService = await installConnectorService(directory, saved.runtime);
+    process.stdout.write(`${JSON.stringify({ startupService, startsAt: 'user login', executable })}\n`);
+    return;
+  }
   if (command === 'stop') {
-    await queryControl(directory, 'stop').catch(() => { throw new ConnectorSetupError('CONNECTOR_UNREACHABLE', 'No responding connector. Use status or stop the installed service through its supervisor'); });
+    const saved = await readConnection(directory);
+    await queryOwnedControl(directory, 'stop', saved).catch(error => {
+      if (error instanceof ConnectorSetupError && error.code === 'CONTROL_INVALID') throw error;
+      throw new ConnectorSetupError('CONNECTOR_UNREACHABLE', 'No responding connector. Use status or stop the installed service through its supervisor');
+    });
     process.stdout.write(`${JSON.stringify({ status: 'stop requested', note: 'An external supervisor may restart this service. Disable it to keep the connection stopped' })}\n`); return;
   }
   if (command === 'uninstall') {
     const saved = await readConnection(directory);
+    let responding = false;
+    try { await queryOwnedControl(directory, 'status', saved); responding = true; }
+    catch (error) { if (error instanceof ConnectorSetupError && error.code === 'CONTROL_INVALID') throw error; }
     await uninstallConnectorService(directory, saved.runtime);
-    await queryControl(directory, 'stop').catch(() => null);
+    if (responding) await queryOwnedControl(directory, 'stop', saved).catch(error => {
+      if (error instanceof ConnectorSetupError && error.code === 'CONTROL_INVALID') throw error;
+    });
     await removeInstalledExecutable(directory);
     process.stdout.write(`${JSON.stringify({ status: 'startup removed', note: 'Credentials and work history are preserved. Revoke access in Envoi to invalidate credentials' })}\n`); return;
   }

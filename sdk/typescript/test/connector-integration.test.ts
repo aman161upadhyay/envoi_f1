@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { generateSync } from 'otplib';
 import { newCaseId, EnvoiClient } from '@envoi/protocol';
-import { enrollConnector, EnvoiConnector, type ConnectorSession, type ConnectorStore } from '@envoi/protocol/connector';
+import { enrollConnector, EnvoiConnector, type ConnectorSession, type ConnectorStore, type WorkHandler } from '@envoi/protocol/connector';
 import { BrowserSession } from '../../../test/browser-session.js';
 
 function memoryStore() {
@@ -103,7 +103,7 @@ describe('customer-hosted connector against the real local API', () => {
     }
   });
 
-  it('enrolls two independent owners and exchanges a message after the recipient was offline', async () => {
+  it('keeps identity and queued work through offline delivery and a recipient process restart', async () => {
     const server = await startServer();
     servers.push(server);
     const senderHuman = await owner(server.baseUrl, 'Connector sender owner', '+14165550141');
@@ -123,7 +123,8 @@ describe('customer-hosted connector against the real local API', () => {
     const processed: string[] = [];
     let processingAttempts = 0;
     const observedEvents: string[] = [];
-    const recipientConnector = new EnvoiConnector(server.baseUrl, recipient.store, { handler: {
+    const identity = { agentId: recipient.get().agentId, inboxId: recipient.get().inboxId, address: recipient.get().address };
+    const handler: WorkHandler = {
       admit: async message => { processed.push(`admitted:${message.id}`); },
       process: async (message, context) => {
         processingAttempts += 1;
@@ -131,8 +132,13 @@ describe('customer-hosted connector against the real local API', () => {
         await context.reply('Yes, I can meet.', `reply:${message.id}:1`);
         if (processingAttempts === 1) throw new Error('simulated runtime crash after reply');
       }
-    }, onEvent: event => { observedEvents.push(event.id); } });
+    };
+    let recipientConnector = new EnvoiConnector(server.baseUrl, recipient.store, { handler, onEvent: event => { observedEvents.push(event.id); } });
     await expect(recipientConnector.processWorkOnce()).rejects.toThrow('simulated runtime crash');
+    // Recreate the process-facing connector over the saved session. The queued work
+    // must be retried under the same identity, without another enrollment.
+    recipientConnector = new EnvoiConnector(server.baseUrl, recipient.store, { handler, onEvent: event => { observedEvents.push(event.id); } });
+    expect(recipient.get()).toMatchObject(identity);
     // Poll until the server permits the retry; scheduling can already consume the short test backoff.
     expect(await eventually(async () => await recipientConnector.processWorkOnce() || null)).toBe(true);
     expect(processed).toEqual([`admitted:${sent.id}`, `processed:${sent.id}`, `admitted:${sent.id}`, `processed:${sent.id}`]);

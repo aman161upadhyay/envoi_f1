@@ -33,6 +33,8 @@ export interface ConnectorAdapter<C = unknown> {
   runtime: ConnectorRuntime;
   discover(options: AdapterOptions, previous?: C): Promise<C>;
   preflight(config: C, options: AdapterOptions): Promise<void>;
+  /** Restart-only, read-only readiness probe. Setup still uses the full model preflight. */
+  startupCheck?(config: C, options: AdapterOptions): Promise<void>;
   /** Configure local tools after enrollment, before the runtime bridge starts. */
   configure?(config: C, context: AdapterContext): Promise<void>;
   createBridge(config: C, context: AdapterContext): Promise<RuntimeBridge>;

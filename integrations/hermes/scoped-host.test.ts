@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
-import { hermesSocketWire, validateHermesHost } from './scoped-host';
+import { hermesSocketWire, selectedHermesProfile, summarizeHermesIdentity, validateHermesHost } from './scoped-host';
 
 class InertSocket extends EventTarget {
   readyState = 1;
@@ -14,6 +14,25 @@ class InertSocket extends EventTarget {
 afterEach(() => vi.useRealTimers());
 
 describe('Hermes production daemon wire', () => {
+  it('separates a transient daemon restart from a changed pinned origin', () => {
+    const host = { home: path.resolve('profile'), cwd: path.resolve('workspace'), origin: 'http://127.0.0.1:65499' };
+    const identity = { runtime_protocol: 1, state: 'ready', api_origin: host.origin,
+      capabilities: ['session-authority-v1'], instance_id: 'instance',
+      served_profiles: [{ home: host.home, profile_id: 'profile' }] };
+    expect(selectedHermesProfile(identity, host)).toBe('profile');
+    expect(() => selectedHermesProfile({ ...identity, state: 'starting' }, host)).toThrowError(expect.objectContaining({ code: 'HERMES_DAEMON_UNREACHABLE' }));
+    expect(() => selectedHermesProfile({ ...identity, state: 'draining' }, host)).toThrowError(expect.objectContaining({ code: 'HERMES_DAEMON_UNREACHABLE' }));
+    expect(() => selectedHermesProfile({ ...identity, api_origin: 'http://127.0.0.1:65500' }, host)).toThrowError(expect.objectContaining({ code: 'HERMES_ORIGIN_CHANGED' }));
+    expect(() => selectedHermesProfile({ ...identity, served_profiles: [] }, host)).toThrowError(expect.objectContaining({ code: 'HERMES_SCOPED_UNAVAILABLE' }));
+    expect(summarizeHermesIdentity({ ...identity, supervisor: 'none', ticket: 'private-ticket' }, host)).toEqual({
+      connection: 'ready', supervisor: 'none', originMatches: true });
+    expect(summarizeHermesIdentity({ ...identity, api_origin: 'http://127.0.0.1:65500', supervisor: 'systemd' }, host)).toEqual({
+      connection: 'origin_changed', supervisor: 'systemd', originMatches: false });
+    expect(summarizeHermesIdentity({ ...identity, served_profiles: [], supervisor: 'systemd' }, host)).toEqual({
+      connection: 'unverified', supervisor: 'unknown', originMatches: null });
+    expect(summarizeHermesIdentity({ ...identity, state: 'draining', supervisor: 'systemd' }, host)).toEqual({
+      connection: 'not_ready', supervisor: 'unknown', originMatches: null });
+  });
   it.each(['https://remote.example:443', 'http://localhost:1234', 'http://127.0.0.1:1234/path', 'http://user:secret@127.0.0.1:1234'])('refuses a nonlocal or ambiguous daemon origin: %s', origin => {
     expect(() => validateHermesHost({ home: path.resolve('profile'), cwd: path.resolve('workspace'), origin })).toThrow();
   });

@@ -92,7 +92,8 @@ const policies: Record<string, Policy> = {
 export function lifecyclePolicy(error: { code?: string; reason?: string; status?: number } | null | undefined): Policy {
   const policy = error?.code ? policies[error.code] : undefined;
   if (policy) return { ...policy, guidance: policy.guidanceByReason?.[error?.reason ?? ''] ?? policy.guidance };
-  // HTTP is only a fallback for unknown server outages; never an authentication policy.
+  // HTTP is only a fallback for unknown throttling and server outages; never an authentication policy.
+  if (error?.status === 429) return { lifecycle: 'DEGRADED', retry: 'after_retry_after', guidance: 'service_busy' };
   if (error?.code === 'HANDLER_FAILED' || error?.code === 'NETWORK_ERROR' || error?.code === 'TIMEOUT' || (error?.status !== undefined && error.status >= 500 && error.status !== 501))
     return { lifecycle: 'DEGRADED', retry: 'backoff', guidance: 'service_unavailable' };
   return { lifecycle: 'UNCHANGED', retry: 'none', guidance: 'none' };

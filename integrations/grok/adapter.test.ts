@@ -3,12 +3,29 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { FileBridgeStore } from '../agent-bridges/file-store';
-import { discoverGrok, grokAdapter, preflightGrok } from './adapter';
+import { checkGrokProvider, discoverGrok, grokAdapter, preflightGrok } from './adapter';
 import { createGrokBridge } from './runtime';
 
 const completed = (text = 'OK') => ({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text }] }] });
 
 describe('Grok unified adapter', () => {
+  it('checks the saved provider on restart with no inference request or prompt', async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.x.ai/v1/models');
+      expect(init?.method).toBe('GET');
+      expect(init?.body).toBeUndefined();
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer private-key');
+      return Response.json({ data: [] });
+    });
+    await checkGrokProvider({ apiKey: 'private-key', model: 'grok-test' }, { fetch: fetcher as typeof fetch });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    for (const [status, code] of [[401, 'PROVIDER_AUTH_FAILED'], [503, 'PROVIDER_UNREACHABLE']] as const) {
+      const error = await checkGrokProvider({ apiKey: 'private-key', model: 'grok-test' },
+        { fetch: vi.fn(async () => new Response('private-key and provider diagnostic', { status })) as typeof fetch }).catch(error => error);
+      expect(error.code).toBe(code);
+      expect(error.message).not.toContain('private-key');
+    }
+  });
   it('rejects an alternate MCP origin before issuing a case-scoped token', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'envoi-grok-mcp-origin-'));
     try {

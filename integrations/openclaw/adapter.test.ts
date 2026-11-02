@@ -11,6 +11,21 @@ describe('OpenClaw unified adapter', () => {
   const configured = { configPath: '/local/openclaw.json', gatewayUrl: 'http://127.0.0.1:18789',
     gatewayToken: 'private-gateway-key', agentId: 'main', chatCompletionsEnabled: true };
 
+  it('uses read-only Gateway readiness on restart without an agent turn', async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:18789/readyz');
+      expect(init?.method).toBe('GET');
+      expect(init?.body).toBeUndefined();
+      return Response.json({ ready: true });
+    });
+    await openclawAdapter.startupCheck!(configured, { fetch: fetcher as typeof fetch });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await openclawAdapter.startupCheck!(configured, { fetch: vi.fn(async () =>
+      Response.json({ ready: false, coreReady: true, failing: ['telegram'] }, { status: 503 })) as typeof fetch });
+    await expect(openclawAdapter.startupCheck!(configured, { fetch: vi.fn(async () => new Response('', { status: 503 })) as typeof fetch }))
+      .rejects.toMatchObject({ code: 'GATEWAY_UNREACHABLE' });
+  });
+
   it('classifies Gateway network outages for startup retry without exposing native errors', async () => {
     const error = await openclawAdapter.preflight(configured, { fetch: vi.fn(async () => {
       throw new Error('sensitive private-gateway-key upstream error');

@@ -161,6 +161,7 @@ describe('handoff and startup configuration', () => {
     const directory = '/private/path with spaces/%n/$HOME';
     const linux = connectorService(directory, { ...options, platform: 'linux' });
     expect(linux.contents).toContain('%%n/$$HOME'); expect(linux.contents).toContain('Restart=on-failure');
+    expect(linux.contents).toContain('StartLimitIntervalSec=0'); expect(linux.contents).toContain('RestartSec=60');
     const mac = connectorService(directory, { ...options, platform: 'darwin' });
     expect(mac.contents).toContain('<key>ProgramArguments</key>'); expect(mac.commands[0].executable).toBe('launchctl');
     const win = connectorService(directory, { ...options, platform: 'win32', user: 'S-1-5-123', env: { SystemRoot: 'C:\\Windows' } });

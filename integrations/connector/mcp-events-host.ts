@@ -18,6 +18,8 @@ export interface McpEventsWorkDriver {
 export class McpEventsHost {
   #nextPoll = 0;
   #retryAt = 0;
+  #maintenanceRetryAt = 0;
+  #maintenanceErrorCode?: string;
   #ready = false;
   #flight: Promise<void> | null = null;
   #stopped = false;
@@ -28,6 +30,19 @@ export class McpEventsHost {
     this.#pollMs = options.pollMs ?? 60000;
     if (!Number.isSafeInteger(this.#pollMs) || this.#pollMs < 1000 || this.#pollMs > 900000) throw new TypeError('Safety poll must be between 1 and 900 seconds');
     this.#now = options.now ?? Date.now;
+  }
+  get diagnostics() { return { eventMaintenance: this.#stopped || this.client.lifecycle !== 'RUNNING' ? 'stopped'
+    : this.#maintenanceErrorCode ? 'retrying' : this.#ready ? 'ready' : 'pending',
+    ...(this.#maintenanceErrorCode ? { errorCode: this.#maintenanceErrorCode, retryAt: new Date(this.#maintenanceRetryAt).toISOString() } : {}) }; }
+  #deferMaintenance(error: unknown): boolean {
+    if (this.#stopped || this.client.lifecycle !== 'RUNNING' || !(error instanceof HostRequestError)
+      || !(error.status === 429 || error.status !== undefined && error.status >= 500
+      || ['NETWORK_ERROR', 'TIMEOUT'].includes(error.code))) return false;
+    const retryMs = Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds! > 0
+      ? Math.min(86400, error.retryAfterSeconds!) * 1000 : this.#pollMs;
+    this.#maintenanceRetryAt = this.#now() + retryMs;
+    this.#maintenanceErrorCode = /^[A-Z][A-Z0-9_]{0,119}$/.test(error.code) ? error.code : 'EVENT_MAINTENANCE_UNAVAILABLE';
+    return true;
   }
   tick(): Promise<void> {
     if (this.#flight) return this.#flight;
@@ -43,22 +58,33 @@ export class McpEventsHost {
   }
   async #tick() {
     if (this.#stopped || this.client.lifecycle !== 'RUNNING') return;
-    if (!this.#ready) {
-      if (!await this.client.discoverEvents()) throw new HostRequestError('EVENTS_UNAVAILABLE');
-      this.#ready = true;
+    if (!this.#ready && this.#now() >= this.#maintenanceRetryAt) {
+      try {
+        if (!await this.client.discoverEvents()) throw new HostRequestError('EVENTS_UNAVAILABLE');
+        this.#ready = true;
+        this.#maintenanceErrorCode = undefined;
+      } catch (error) { if (!this.#deferMaintenance(error)) throw error; }
     }
+    if (this.#stopped || this.client.lifecycle !== 'RUNNING') return;
     let state = await this.store.read();
     let claimed = false;
     // Renewal is early enough for a tick at the maximum allowed safety interval.
-    if (!state.subscription || Date.parse(state.subscription.refreshBefore) - this.#now() <= this.#pollMs) {
+    if (this.#ready && this.#now() >= this.#maintenanceRetryAt
+      && (!state.subscription || Date.parse(state.subscription.refreshBefore) - this.#now() <= this.#pollMs)) {
       const input = await this.privateInput();
-      const subscription = await this.client.subscribe({ ...input, cursor: state.cursor });
-      state = { subscription, cursor: subscription.cursor };
-      await this.store.save(state); // persist the cursor before any uncertain work effect
-      await this.driver.catchUp(subscription.cursor, subscription.truncated);
-      await this.driver.processWorkOnce(); // every subscribe/reconnect claims even without a hint
-      claimed = true;
+      let subscription: EventSubscription | undefined;
+      try { subscription = await this.client.subscribe({ ...input, cursor: state.cursor }); }
+      catch (error) { if (!this.#deferMaintenance(error)) throw error; }
+      if (subscription) {
+        state = { subscription, cursor: subscription.cursor };
+        await this.store.save(state); // persist the cursor before any uncertain work effect
+        this.#maintenanceErrorCode = undefined;
+        await this.driver.catchUp(subscription.cursor, subscription.truncated);
+        await this.driver.processWorkOnce(); // every subscribe/reconnect claims even without a hint
+        claimed = true;
+      }
     }
+    if (this.#stopped || this.client.lifecycle !== 'RUNNING') return;
     for (const hint of await this.store.pending()) {
       if (this.#stopped || this.client.lifecycle !== 'RUNNING') return;
       await this.driver.catchUp(hint.cursor, false);

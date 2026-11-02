@@ -41,6 +41,16 @@ async function harness(extra: { session?: Partial<ConnectorSession>; claim?: () 
 }
 
 describe('approved a4 wake consumption', () => {
+  it('reports live idle stream, claim, and disconnect state without exposing the cursor or token', async () => {
+    const h = await harness();
+    expect(h.connector.wakeDiagnostics()).toMatchObject({ transport: 'connecting', lastWorkClaimAt: expect.any(String) });
+    h.send('stream-from-latest'); await h.tick();
+    expect(h.connector.wakeDiagnostics()).toMatchObject({ transport: 'connected', lastReadyAt: expect.any(String) });
+    h.close(); await h.tick();
+    const safe = JSON.stringify(h.connector.wakeDiagnostics());
+    expect(safe).toContain('disconnected');
+    expect(safe).not.toMatch(/access|refresh|00000000000000000044/);
+  });
   it('baselines from latest, ignores own sends, and persists unknown events without claiming', async () => {
     const h = await harness(); expect(h.claims).toHaveBeenCalledTimes(1);
     expect(h.requests.find(r => r.url.includes('/events'))?.url).toContain('?from=latest');
@@ -118,6 +128,16 @@ describe('approved a4 wake consumption', () => {
     await h.tick(4999); expect(h.requests.filter(r => r.url.includes('/events'))).toHaveLength(1);
     await h.tick(1); expect(h.requests.filter(r => r.url.includes('/events'))).toHaveLength(2);
     await h.tick(60000); await h.tick(1000); expect(h.requests.filter(r => r.url.includes('/events')).length).toBeGreaterThan(2);
+  });
+  it('retries an unstructured upstream 429 without ending the local connector', async () => {
+    const h = await harness({ connect: attempt => attempt === 1
+      ? new Response('<html>temporary proxy throttle</html>', { status: 429, headers: { 'retry-after': '5' } }) : undefined! });
+    expect((await h.connector.lifecycle()).state).toBe('RUNNING');
+    await h.tick(4999);
+    expect(h.requests.filter(r => r.url.includes('/events'))).toHaveLength(1);
+    await h.tick(1);
+    expect(h.requests.filter(r => r.url.includes('/events'))).toHaveLength(2);
+    expect((await h.connector.lifecycle()).state).toBe('RUNNING');
   });
   it('wakes for human instructions and own agent resume, accepting future work reasons', async () => {
     const h = await harness();

@@ -1,5 +1,5 @@
 import { ConnectorSetupError, type ConnectorAdapter } from '../connector/adapter';
-import { discoverOpenClaw, OpenClawSetupError, preflightOpenClaw, type OpenClawConfiguration } from './quick-connect-config';
+import { checkOpenClawGateway, discoverOpenClaw, OpenClawSetupError, preflightOpenClaw, type OpenClawConfiguration } from './quick-connect-config';
 import { createOpenClawBridge } from './runtime';
 import path from 'node:path';
 import { assertOpenClawScopedAdmission } from './scoped-admission';
@@ -68,6 +68,13 @@ export const openclawAdapter: ConnectorAdapter<InstalledOpenClawConfiguration> =
   },
   preflight: async (config, options) => {
     try { assertOpenClawScopedAdmission(options.env ?? process.env, config); validate(config); await preflightOpenClaw(config, options); }
+    catch (error) {
+      if (error instanceof OpenClawSetupError) throw new ConnectorSetupError(error.code, error.message);
+      throw error;
+    }
+  },
+  startupCheck: async (config, options) => {
+    try { assertOpenClawScopedAdmission(options.env ?? process.env, config); validate(config); await checkOpenClawGateway(config, options); }
     catch (error) {
       if (error instanceof OpenClawSetupError) throw new ConnectorSetupError(error.code, error.message);
       throw error;

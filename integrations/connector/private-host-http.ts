@@ -27,7 +27,9 @@ export function text(value: unknown, max = 2048): value is string {
 export const matches = (value: unknown, pattern: RegExp): value is string => typeof value === 'string' && pattern.test(value);
 const httpCodes = new Set([
   'AGENT_PAUSED', 'CREDENTIAL_REVOKED', 'CREDENTIAL_EXPIRED', 'ACCESS_TOKEN_EXPIRED', 'AUTHENTICATION_REQUIRED', 'RATE_LIMITED',
-  'FEATURE_DISABLED', 'GATEWAY_SESSION_EXPIRED', 'GATEWAY_CSRF_INVALID', 'GATEWAY_SCOPE_DENIED', 'GATEWAY_REQUEST_INVALID',
+  'FEATURE_DISABLED', 'GATEWAY_SESSION_REVOKED', 'GATEWAY_SESSION_EXPIRED', 'GATEWAY_SESSION_REQUIRED',
+  'GATEWAY_SCOPE_CHANGED', 'GATEWAY_SCOPE_REQUIRED', 'GATEWAY_GENERATION_STALE', 'GATEWAY_RECOVERY_REQUIRED',
+  'GATEWAY_CSRF_INVALID', 'GATEWAY_SCOPE_DENIED', 'GATEWAY_REQUEST_INVALID',
   'GATEWAY_CHECK_ACTIVE', 'GATEWAY_ACTION_UNSUPPORTED', 'LEASE_LOST', 'GATEWAY_RUN_EXPIRED', 'GATEWAY_RUN_MISMATCH',
   'IDEMPOTENCY_CONFLICT', 'GATEWAY_TEMPORARILY_UNAVAILABLE'
 ]);
@@ -115,7 +117,9 @@ export class PrivateHostTransport {
         const code = payload && typeof payload === 'object' && 'code' in payload && typeof payload.code === 'string' && httpCodes.has(payload.code) ? payload.code : 'HTTP_ERROR';
         if (code === 'AGENT_PAUSED') this.#state = 'PAUSED';
         if (code === 'CREDENTIAL_REVOKED' || code === 'GATEWAY_SESSION_REVOKED') this.#state = 'REVOKED';
-        if (['GATEWAY_SESSION_EXPIRED', 'GATEWAY_SCOPE_CHANGED', 'GATEWAY_SCOPE_REQUIRED', 'GATEWAY_SESSION_REQUIRED', 'GATEWAY_GENERATION_STALE'].includes(code)) this.#state = 'NEEDS_RECONNECT';
+        if (['CREDENTIAL_EXPIRED', 'AUTHENTICATION_REQUIRED', 'GATEWAY_SESSION_EXPIRED', 'GATEWAY_SCOPE_CHANGED',
+          'GATEWAY_SCOPE_REQUIRED', 'GATEWAY_SCOPE_DENIED', 'GATEWAY_SESSION_REQUIRED', 'GATEWAY_GENERATION_STALE',
+          'GATEWAY_RECOVERY_REQUIRED'].includes(code)) this.#state = 'NEEDS_RECONNECT';
         throw new HostRequestError(code, response.status, retryDelay(response, payload));
       }
       return payload;

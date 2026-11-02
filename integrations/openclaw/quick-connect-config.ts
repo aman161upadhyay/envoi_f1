@@ -247,6 +247,29 @@ export async function discoverOpenClaw(options: DiscoverOpenClawOptions = {}): P
   return result;
 }
 
+/** Restart readiness does not start an agent turn or spend a model call. */
+export async function checkOpenClawGateway(config: OpenClawConfiguration,
+  options: { fetch?: typeof fetch; signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {}): Promise<void> {
+  assertOpenClawScopedAdmission(options.env ?? process.env, config);
+  const url = validate(config);
+  let response: Response;
+  try {
+    response = await (options.fetch ?? fetch)(`${url}/readyz`, { method: 'GET', redirect: 'error',
+      headers: { authorization: `Bearer ${config.gatewayToken}` },
+      signal: AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(10_000)]) });
+  } catch {
+    throw new OpenClawSetupError('The selected OpenClaw Gateway is unavailable; retrying the saved origin.', 'GATEWAY_UNREACHABLE');
+  }
+  // A broken, unrelated chat channel can make /readyz return 503 while the
+  // agent runtime remains admissible. Authenticated probes expose coreReady.
+  const body = response.status === 503 ? await response.json().catch(() => null) : null;
+  await response.body?.cancel().catch(() => {});
+  if (response.status === 401 || response.status === 403) throw new OpenClawSetupError('The selected OpenClaw Gateway rejected its saved credential.', 'GATEWAY_AUTH_FAILED');
+  if (response.status === 503 && body && typeof body === 'object' && 'coreReady' in body && body.coreReady === true) return;
+  if (response.status === 429 || response.status >= 500) throw new OpenClawSetupError('The selected OpenClaw Gateway is not ready; retrying.', 'GATEWAY_UNREACHABLE');
+  if (!response.ok) throw new OpenClawSetupError('The selected OpenClaw Gateway does not expose the expected readiness check.', 'GATEWAY_TEST_FAILED');
+}
+
 /** Require a complete harmless agent turn before consuming the enrollment token. */
 export async function preflightOpenClaw(config: OpenClawConfiguration, options: { fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}): Promise<void> {
   const env = assertOpenClawScopedAdmission(options.env ?? process.env, config);

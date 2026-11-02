@@ -12,6 +12,7 @@ import { startScopedMcpRelay } from './scoped-relay';
 
 const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const failure = (code = 'HERMES_SCOPED_UNAVAILABLE') => new EnvoiError('Hermes scoped execution unavailable; preserve the turn journal for recovery', undefined, code);
+const daemonUnavailable = () => failure('HERMES_DAEMON_UNREACHABLE');
 const protocol = 'hermes-gateway-v1';
 const requiredCapabilities = ['acp-editor-policy-v1', 'acp-session-mcp-v1'];
 
@@ -19,6 +20,47 @@ export interface HermesScopedHost {
   home: string;
   origin: string;
   cwd: string;
+}
+
+/** Validate the selected profile before accepting the live daemon's origin. */
+export function selectedHermesProfile(identity: Record<string, any>, host: HermesScopedHost): string {
+  if (identity.state === 'starting' || identity.state === 'draining') throw daemonUnavailable();
+  const canonical = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+  const matches = Array.isArray(identity.served_profiles) ? identity.served_profiles.filter((entry: unknown) => object(entry)
+    && typeof entry.home === 'string' && canonical(entry.home) === canonical(host.home)) : [];
+  if (identity.runtime_protocol !== 1 || identity.state !== 'ready'
+    || !Array.isArray(identity.capabilities) || !identity.capabilities.includes('session-authority-v1')
+    || typeof identity.instance_id !== 'string' || matches.length !== 1 || typeof matches[0].profile_id !== 'string') throw failure();
+  if (identity.api_origin !== host.origin) throw failure('HERMES_ORIGIN_CHANGED');
+  return matches[0].profile_id;
+}
+
+export interface HermesHostObservation {
+  connection: 'ready' | 'origin_changed' | 'not_ready' | 'unverified';
+  supervisor: 'none' | 'systemd' | 'launchd' | 'external' | 'unknown';
+  originMatches: boolean | null;
+}
+
+/** Project only safe live descriptor fields; never expose profile IDs, origins or tickets. */
+export function summarizeHermesIdentity(identity: Record<string, any>, host: HermesScopedHost): HermesHostObservation {
+  try {
+    selectedHermesProfile(identity, host);
+    const supervisor = ['none', 'systemd', 'launchd', 'external'].includes(identity.supervisor) ? identity.supervisor : 'unknown';
+    return { connection: 'ready', supervisor, originMatches: true };
+  } catch (error) {
+    if (error instanceof EnvoiError && error.code === 'HERMES_ORIGIN_CHANGED') {
+      const supervisor = ['none', 'systemd', 'launchd', 'external'].includes(identity.supervisor) ? identity.supervisor : 'unknown';
+      return { connection: 'origin_changed', supervisor, originMatches: false };
+    }
+    return { connection: error instanceof EnvoiError && error.code === 'HERMES_DAEMON_UNREACHABLE' ? 'not_ready' : 'unverified',
+      supervisor: 'unknown', originMatches: null };
+  }
+}
+
+export async function inspectHermesHost(host: HermesScopedHost): Promise<HermesHostObservation> {
+  validateHermesHost(host);
+  try { return summarizeHermesIdentity(await control(host.home, 'identify', {}, AbortSignal.timeout(6000)), host); }
+  catch { return { connection: 'unverified', supervisor: 'unknown', originMatches: null }; }
 }
 
 export function validateHermesHost(host: HermesScopedHost) {
@@ -33,7 +75,7 @@ async function controlPath(home: string) {
   const direct = path.join(home, 'gateway.sock');
   if (await lstat(direct).catch(() => null)) return direct;
   const pointer = path.join(home, 'gateway.sock.path');
-  const stat = await lstat(pointer);
+  const stat = await lstat(pointer).catch(error => { if (error.code === 'ENOENT') throw daemonUnavailable(); throw error; });
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096 || stat.mode & 0o077) throw failure();
   const target = (await readFile(pointer, 'utf8')).trim();
   if (!path.isAbsolute(target)) throw failure();
@@ -46,7 +88,7 @@ async function control(home: string, verb: string, params: Record<string, unknow
   return new Promise<Record<string, any>>((resolve, reject) => {
     const socket = connect(target);
     let buffered = '';
-    const timer = setTimeout(() => finish(failure()), 5000);
+    const timer = setTimeout(() => finish(daemonUnavailable()), 5000);
     const abort = () => finish(signal.reason);
     const finish = (error?: unknown, result?: Record<string, any>) => {
       clearTimeout(timer); signal.removeEventListener('abort', abort); socket.destroy();
@@ -55,7 +97,8 @@ async function control(home: string, verb: string, params: Record<string, unknow
     signal.addEventListener('abort', abort, { once: true });
     socket.setEncoding('utf8');
     socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, id: 1, verb, params }) + '\n'));
-    socket.on('error', () => finish(failure()));
+    socket.on('error', error => finish(['ENOENT', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH'].includes((error as NodeJS.ErrnoException).code ?? '')
+      ? daemonUnavailable() : failure()));
     socket.on('end', () => { if (!buffered.includes('\n')) finish(failure()); });
     socket.on('data', chunk => {
       buffered += chunk;
@@ -124,13 +167,7 @@ export function hermesSocketWire(socket: WebSocket): HermesWire {
 export async function connectHermesHost(host: HermesScopedHost, signal: AbortSignal): Promise<HermesWire> {
   validateHermesHost(host);
   const identity = await control(host.home, 'identify', {}, signal);
-  const canonical = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
-  const matches = Array.isArray(identity.served_profiles) ? identity.served_profiles.filter((entry: unknown) => object(entry)
-    && typeof entry.home === 'string' && canonical(entry.home) === canonical(host.home)) : [];
-  if (identity.runtime_protocol !== 1 || identity.state !== 'ready' || identity.api_origin !== host.origin
-    || !Array.isArray(identity.capabilities) || !identity.capabilities.includes('session-authority-v1')
-    || typeof identity.instance_id !== 'string' || matches.length !== 1 || typeof matches[0].profile_id !== 'string') throw failure();
-  const profileId = matches[0].profile_id;
+  const profileId = selectedHermesProfile(identity, host);
   const grant = await control(host.home, 'session-ticket', { profile_id: profileId, instance_id: identity.instance_id, purpose: 'interactive' }, signal);
   if (grant.runtime_protocol !== 1 || grant.profile_id !== profileId || grant.instance_id !== identity.instance_id
     || typeof grant.ticket !== 'string' || !/^[A-Za-z0-9_-]{16,256}$/.test(grant.ticket)) throw failure();
