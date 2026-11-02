@@ -12,6 +12,11 @@ export interface OpenClawWorkTarget {
   readonly agentId: string;
   readonly processIdentity: string;
   readonly configurationSha256: string;
+  /** Hashes of canonical native paths, not credentials or raw private paths. */
+  readonly stateDirectorySha256: string;
+  readonly configurationPathSha256: string;
+  readonly workspaceSha256: string;
+  readonly agentStateSha256: string;
   readonly proxyOrigin: string;
   readonly proxyIdentity: string;
   readonly deadlineUnixMs: number;
@@ -36,7 +41,8 @@ export function openClawTargetDigest(t: Readonly<OpenClawWorkTarget>) {
   return hash(JSON.stringify({binding:{window:t.binding.window,workId:t.binding.workId,caseId:t.binding.caseId,
     caseSessionId:t.binding.caseSessionId,recipientAgentId:t.binding.recipientAgentId,installationId:t.binding.installationId,fence:t.binding.fence},
     gatewayOrigin:origin(t.gatewayUrl),gatewayTokenSha256:hash(t.gatewayToken),agentId:t.agentId,processIdentity:t.processIdentity,
-    configurationSha256:t.configurationSha256,proxyOrigin:origin(t.proxyOrigin),proxyIdentity:t.proxyIdentity,
+    configurationSha256:t.configurationSha256,stateDirectorySha256:t.stateDirectorySha256,configurationPathSha256:t.configurationPathSha256,
+    workspaceSha256:t.workspaceSha256,agentStateSha256:t.agentStateSha256,proxyOrigin:origin(t.proxyOrigin),proxyIdentity:t.proxyIdentity,
     deadlineUnixMs:t.deadlineUnixMs,toolChannelSha256:t.toolChannelSha256}));
 }
 
@@ -56,7 +62,12 @@ export class OpenClawTargetRegistry {
   private pending = new Map<string, Promise<Readonly<OpenClawWorkTarget>>>();
   private closed = new Set<string>();
   private stops = new Map<string, AbortController>();
-  constructor(private readonly resolver: OpenClawTargetResolver, private readonly selection?: OpenClawTargetSelectionAuthority) {}
+  private readonly selection?: OpenClawTargetSelectionAuthority;
+  constructor(private readonly resolver: OpenClawTargetResolver, selection?: OpenClawTargetSelectionAuthority) {
+    // Authority pins and reader identity cannot change while a selection is pending.
+    if(selection)this.selection=Object.freeze({clientSource:selection.clientSource,nativeSourceSha256:selection.nativeSourceSha256,
+      window:selection.window,readPersonalSelection:selection.readPersonalSelection.bind(selection)});
+  }
 
   async resolve(workId: string, inputSignal: AbortSignal) {
     inputSignal.throwIfAborted();
@@ -72,8 +83,10 @@ export class OpenClawTargetRegistry {
         const operation = async () => {
           const authority=this.selection;
           if(!authority||!/^[a-f0-9]{40}$/.test(authority.clientSource)||!/^[a-f0-9]{64}$/.test(authority.nativeSourceSha256)||!/^[a-f0-9]{64}$/.test(authority.window))refuse('PERSONAL_OPENCLAW_TARGET_REVIEW_REQUIRED');
-          const receipt=await authority.readPersonalSelection(workId,signal);signal.throwIfAborted();
-          if(!receipt)refuse('PERSONAL_OPENCLAW_TARGET_REVIEW_REQUIRED');
+          const received=await authority.readPersonalSelection(workId,signal);signal.throwIfAborted();
+          if(!received)refuse('PERSONAL_OPENCLAW_TARGET_REVIEW_REQUIRED');
+          // The trusted reader can reuse an object; capture it before another await.
+          const receipt=Object.freeze({...received});
           const value=await this.resolver(workId,signal);signal.throwIfAborted();
           return{value,receipt,authority};
         };
@@ -86,6 +99,7 @@ export class OpenClawTargetRegistry {
           || !/^case_session_[A-Za-z0-9_-]+$/.test(b.caseSessionId) || !/^agent_[A-Za-z0-9_-]+$/.test(b.recipientAgentId)
           || !/^installation_[A-Za-z0-9_-]+$/.test(b.installationId) || !Number.isSafeInteger(b.fence) || b.fence < 1
           || !safe(value.agentId) || !safe(value.processIdentity) || !safe(value.proxyIdentity) || !/^[a-f0-9]{64}$/.test(value.configurationSha256)
+          || ![value.stateDirectorySha256,value.configurationPathSha256,value.workspaceSha256,value.agentStateSha256].every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v))
           || typeof value.gatewayToken !== 'string' || !value.gatewayToken || value.gatewayToken.length > 16384 || /[\x00-\x20\x7f]/.test(value.gatewayToken)
           || !/^[a-f0-9]{64}$/.test(value.toolChannelSha256)||!/^[a-f0-9]{64}$/.test(value.ownerSelectionSha256)
           || !Number.isSafeInteger(value.deadlineUnixMs) || value.deadlineUnixMs <= Date.now() || value.deadlineUnixMs > Date.now() + 120000) refuse('OPENCLAW_TARGET_INVALID');
@@ -96,7 +110,9 @@ export class OpenClawTargetRegistry {
         if (target.gatewayUrl === target.proxyOrigin || this.closed.has(workId)) refuse('OPENCLAW_TARGET_CLOSED');
         for (const prior of this.targets.values()) if (prior.binding.workId !== workId && (prior.gatewayUrl === target.gatewayUrl
           || prior.gatewayToken === target.gatewayToken || prior.processIdentity === target.processIdentity
-          || prior.proxyOrigin === target.proxyOrigin || prior.proxyIdentity === target.proxyIdentity)) refuse('OPENCLAW_TARGET_REUSED');
+          || prior.proxyOrigin === target.proxyOrigin || prior.proxyIdentity === target.proxyIdentity
+          || prior.stateDirectorySha256===target.stateDirectorySha256||prior.configurationPathSha256===target.configurationPathSha256
+          || prior.workspaceSha256===target.workspaceSha256||prior.agentStateSha256===target.agentStateSha256)) refuse('OPENCLAW_TARGET_REUSED');
         this.live(target, signal); this.targets.set(workId, target); return target;
       } finally { signal.removeEventListener('abort', abort); }
     };
