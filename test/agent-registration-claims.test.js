@@ -27,6 +27,25 @@ test('[FileStore] with the registration flag off every registration and claim ro
   assertCode(await withdrawRequest(server.baseUrl, who, 'registration_example'), 'FEATURE_DISABLED');
 });
 
+test('[FileStore] staging exception permits a named owner to approve four additional agents', { timeout: 90000 }, async t => {
+  const backend = backends.find(item => item.name === 'FileStore');
+  const initial = await launchRegistration(backend, { ENVOI_DEPLOYMENT_ENVIRONMENT: 'staging' });
+  const who = await owner(initial.baseUrl, '7099');
+  await initial.stop(true);
+  const server = await launchRegistration(backend, {
+    ENVOI_DEPLOYMENT_ENVIRONMENT: 'staging',
+    ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS: who.human.id
+  }, initial.dataDir);
+  t.after(() => server.stop());
+  assert.equal((await api(server.baseUrl, '/api/auth/me', { session: who.session })).status, 200);
+  for (let index = 0; index < 4; index += 1) {
+    const created = await registered(server.baseUrl);
+    const approved = await approveRequest(server.baseUrl, who, created.registrationId,
+      approveBody(code(created), newAgentTarget(who, unique())));
+    assert.equal(approved.status, 200, approved.text);
+  }
+});
+
 for (const backend of backends) {
   const s = suffixes[backend.name];
 
