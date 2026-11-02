@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
-import {afterEach,expect,it} from 'vitest';
+import {afterEach,expect,it,vi} from 'vitest';
 import {ContinuationController,type ContinuationReceipt,type SameRoleNativeAttributionGuard} from './continuation-controller';
 import {RequestBudgetLedger,nativeWorkToken} from './request-budget';
 import {DECLINE_CONTINUATION,continuationAllocation,defaultContinuationFlowPolicy,hashReviewedContinuationPlan,validateReviewedContinuationPlan,type ReviewedContinuationPlan,type ReviewedContinuationFlow} from './continuation-plan';
@@ -98,9 +98,41 @@ it('never refunds completed calls, reduces below charged quota, resets native de
 
 it('requires actual per-session native attribution beyond an approved same-role graph',async()=>{
  const s=await setup(),p=plan(s),c=await adopt(s,p);expect(()=>c.releaseGroup(['openclaw','oc-private'])).toThrow('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');expect(c.summary().released).toEqual([]);
+ expect(()=>c.releaseGroup(['openclaw'])).toThrow('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
  const wrong=await adopt(s,p,async binding=>({...binding,workId:'msg_wrong'}));wrong.releaseGroup(['openclaw','oc-private']);const w=claim(wrong,p,'openclaw');
  await expect(wrong.nativeGuard('openclaw',h('3'))({workId:w,sessionId:'session_one',deadlineUnixMs:Date.now()+10000},new AbortController().signal)).rejects.toThrow('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
  expect(wrong.ledger.snapshot()).toMatchObject({chargedAttempts:30,pending:0});expect((await fs.readFile(s.filename,'utf8')).includes('"kind":"binding"')).toBe(false);
+});
+
+for(const source of ['controller','caller'] as const)it(`cancels a never-resolving attribution hook with the initiating ${source} abort reason before any ledger binding`,async()=>{
+ const s=await setup(),p=plan(s);let entered!:()=>void;const started=new Promise<void>(resolve=>{entered=resolve;});let seen:AbortSignal|undefined;
+ const c=await adopt(s,p,async(_binding,signal)=>{seen=signal;entered();return new Promise(()=>{});});
+ c.releaseGroup(['openclaw']);const workId=claim(c,p,'openclaw'),caller=new AbortController();
+ const pending=c.nativeGuard('openclaw',h('3'))({workId,sessionId:'never_resolving',deadlineUnixMs:Date.now()+10000},caller.signal).catch(error=>error);
+ await started;const reason=new Error('INERT_INITIATING_ABORT');
+ if(source==='controller')c.control.abort(reason);else caller.abort(reason);
+ expect(await pending).toBe(reason);expect(seen?.aborted).toBe(true);expect(seen?.reason).toBe(reason);
+ expect(c.ledger.snapshot()).toMatchObject({chargedAttempts:30,pending:0});expect((await fs.readFile(s.filename,'utf8')).includes('"kind":"binding"')).toBe(false);
+});
+
+it('expires the original short attribution deadline and ignores a proof returned after the guard already ended',async()=>{
+ const s=await setup(),p=plan(s);let resolveProof!:(value:Parameters<SameRoleNativeAttributionGuard>[0])=>void,frame:Parameters<SameRoleNativeAttributionGuard>[0]|undefined;
+ const c=await adopt(s,p,async binding=>{frame=binding;return new Promise(resolve=>{resolveProof=resolve;});});
+ c.releaseGroup(['openclaw']);const workId=claim(c,p,'openclaw');
+ const failure=c.nativeGuard('openclaw',h('3'))({workId,sessionId:'late_proof',deadlineUnixMs:Date.now()+40},new AbortController().signal).catch(error=>error);
+ let watchdog:ReturnType<typeof setTimeout>|undefined;
+ const error=await Promise.race([failure,new Promise<never>((_resolve,reject)=>{watchdog=setTimeout(()=>reject(Error('ORIGINAL_DEADLINE_NOT_ENFORCED')),1000);})]).finally(()=>clearTimeout(watchdog));
+ expect(error.name).toBe('TimeoutError');resolveProof(frame!);await new Promise(resolve=>setTimeout(resolve,0));
+ expect(c.ledger.snapshot()).toMatchObject({chargedAttempts:30,pending:0});expect((await fs.readFile(s.filename,'utf8')).includes('"kind":"binding"')).toBe(false);
+});
+
+it('rejects a proof that crosses the original wall-clock deadline before the timeout event is serviced',async()=>{
+ const s=await setup(),p=plan(s);let deadline=0;
+ const c=await adopt(s,p,async binding=>{vi.spyOn(Date,'now').mockReturnValue(deadline+1);return {...binding};});
+ c.releaseGroup(['openclaw']);const workId=claim(c,p,'openclaw');deadline=Date.now()+10000;
+ try{await expect(c.nativeGuard('openclaw',h('3'))({workId,sessionId:'clock_crossing',deadlineUnixMs:deadline},new AbortController().signal)).rejects.toThrow('NATIVE_DEADLINE_EXPIRED');}
+ finally{vi.restoreAllMocks();}
+ expect(c.ledger.snapshot()).toMatchObject({chargedAttempts:30,pending:0});expect((await fs.readFile(s.filename,'utf8')).includes('"kind":"binding"')).toBe(false);
 });
 
 it('admits a bounded distinct-case same-role cohort only with injected inert per-native-session proofs and exact scoped work',async()=>{

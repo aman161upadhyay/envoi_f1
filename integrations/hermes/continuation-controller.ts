@@ -22,6 +22,7 @@ type Work=Readonly<{workId:string;message:{id:string;caseId:string;kind?:string;
 type Binding={flowId:string;role:Role;caseId:string;workId:string;evidenceSha256:string;submitted:boolean;finished:boolean;sessionId?:string;nativeToken?:string};
 type Deferred={promise:Promise<void>;resolve:()=>void;reject:(reason:unknown)=>void};
 /** Supplied by a trusted host only after establishing its real per-native-session meter attribution.
+ * Multi-work OpenClaw plans need it even for sequential groups: an earlier turn may issue a late request.
  * Merely reviewing a graph or returning a fixture object is not a host capability proof. */
 export type SameRoleNativeAttribution=Readonly<{window:string;role:Role;flowId:string;caseId:string;agentId:string;workId:string;sessionId:string;nativeToken:string}>;
 export type SameRoleNativeAttributionGuard=(binding:SameRoleNativeAttribution,signal:AbortSignal)=>Promise<SameRoleNativeAttribution>;
@@ -74,6 +75,10 @@ export class ContinuationController {
   modelActive(){return this.active()&&!!this.group&&this.group.ready.size===this.group.ids.length&&this.group.ids.some(id=>!this.bindings.get(id)?.finished);}
   allowMeterWork(role:Role,token:string){return this.modelActive()&&[...this.bindings.values()].some(b=>b.role===role&&b.nativeToken===token&&b.submitted&&!b.finished&&this.group?.ids.includes(b.flowId));}
   private live(){if(!this.active())refuse('CONTINUATION_WINDOW_CLOSED');}
+  private needsNativeAttribution(ids:readonly string[],role:Role){
+    return ids.filter(id=>this.ledger.flows.find(f=>f.id===id)?.role===role).length>1
+      ||role==='openclaw'&&(this.ledger.reviewedPlan?.flows.filter(f=>f.role==='openclaw').length??0)>1;
+  }
   stop(reason='CONTROLLED_STOP'){this.control.abort(new Error(reason));this.group?.gate.reject(this.control.signal.reason);}
   releaseGroup(ids:readonly string[]) {
     this.live();if(this.ledger.snapshot().pending||this.group&&!this.group.ids.every(id=>this.bindings.get(id)?.finished))refuse('PRIOR_FLOW_NOT_RECONCILED');
@@ -82,7 +87,7 @@ export class ContinuationController {
     if(!ids.length||new Set(ids).size!==ids.length||flows.some(f=>!f)||ids.some(id=>this.released.has(id))
       ||sameRole&&(!this.ledger.reviewedPlan?.allowSameRoleCohorts||ids.length!==2||new Set(ids.map(id=>this.flowCases[id])).size!==2)
       ||this.ledger.reviewedPlan&&(ids.length>2||new Set(flows.map(f=>f?.role==='openclaw')).size>1))refuse('REVIEWED_DISTINCT_FLOW_GROUP_REQUIRED');
-    if(sameRole&&!this.sameRoleNativeAttribution)refuse('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
+    if(flows.some(f=>this.needsNativeAttribution(ids,f!.role))&&!this.sameRoleNativeAttribution)refuse('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
     this.group={ids:[...ids],ready:new Map(),gate:deferred(),activating:false};for(const id of ids)this.released.add(id);
   }
   /** Trusted canonical GET/effect observer pins the exact work before any claim/native admission. */
@@ -114,22 +119,33 @@ export class ContinuationController {
       this.live();signal.throwIfAborted();const group=this.group;
       const binding=[...this.bindings.values()].find(b=>b.role===role&&b.workId===frame.workId&&group?.ids.includes(b.flowId));
       if(!binding||!group||binding.submitted||frame.deadlineUnixMs<=Date.now()||frame.deadlineUnixMs>Date.now()+120000)refuse('EXACT_NATIVE_WORK_REQUIRED');
+      const nativeSignal=AbortSignal.any([signal,this.control.signal,AbortSignal.timeout(Math.max(1,frame.deadlineUnixMs-Date.now()))]);
       const token=nativeWorkToken(meterToken,this.ledger.window,role,frame.sessionId);
-      if(group.ids.filter(id=>this.ledger.flows.find(f=>f.id===id)?.role===role).length>1){
+      if(this.needsNativeAttribution(group.ids,role)){
         if(!this.sameRoleNativeAttribution)refuse('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
         const expected={window:this.ledger.window,role,flowId:binding.flowId,caseId:binding.caseId,agentId:this.actorIds[role],workId:frame.workId,sessionId:frame.sessionId,nativeToken:token};
-        const observed=await this.sameRoleNativeAttribution(Object.freeze(expected),signal);
-        if(!observed||Object.keys(observed).length!==Object.keys(expected).length||Object.entries(expected).some(([key,value])=>observed[key as keyof SameRoleNativeAttribution]!==value))refuse('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
-        this.live();signal.throwIfAborted();
+        let observed:SameRoleNativeAttribution|undefined;
+        await guardNativeSubmission(async(_binding,bounded)=>{
+          const result=await this.sameRoleNativeAttribution!(Object.freeze(expected),bounded);
+          bounded.throwIfAborted();
+          if(Date.now()>=frame.deadlineUnixMs)refuse('NATIVE_DEADLINE_EXPIRED');
+          observed=result;
+        },frame,nativeSignal);
+        nativeSignal.throwIfAborted();
+        const proof=observed;
+        if(!proof||Object.keys(proof).length!==Object.keys(expected).length||Object.entries(expected).some(([key,value])=>proof[key as keyof SameRoleNativeAttribution]!==value))refuse('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
+        this.live();
       }
+      nativeSignal.throwIfAborted();
+      if(Date.now()>=frame.deadlineUnixMs)refuse('NATIVE_DEADLINE_EXPIRED');
       await this.ledger.bindWork(binding.flowId,{canonicalWorkHash:hash(frame.workId),nativeToken:token,evidenceHash:binding.evidenceSha256});
-      this.live();signal.throwIfAborted();binding.submitted=true;binding.sessionId=frame.sessionId;binding.nativeToken=nativeWorkToken(meterToken,this.ledger.window,role,frame.sessionId);group.ready.set(binding.flowId,frame.deadlineUnixMs);
+      nativeSignal.throwIfAborted();this.live();binding.submitted=true;binding.sessionId=frame.sessionId;binding.nativeToken=nativeWorkToken(meterToken,this.ledger.window,role,frame.sessionId);group.ready.set(binding.flowId,frame.deadlineUnixMs);
       if(group.ready.size===group.ids.length&&!group.activating){group.activating=true;
         try{const phase=role==='openclaw'?'openclaw':'hermes';if(group.ids.some(id=>(this.bindings.get(id)!.role==='openclaw')!==(phase==='openclaw')))refuse('MIXED_HOST_PHASE_REFUSED');
           await this.ledger.selectPhase(phase,group.ids,Math.min(...group.ready.values()));this.live();group.gate.resolve();
         }catch(error){this.stop('NATIVE_GROUP_REFUSED');throw error;}}
-      await guardNativeSubmission(async()=>group.gate.promise,frame,AbortSignal.any([signal,this.control.signal]));
-      this.live();signal.throwIfAborted();
+      await guardNativeSubmission(async()=>group.gate.promise,frame,nativeSignal);
+      nativeSignal.throwIfAborted();this.live();
     };
   }
   flowPolicy(flowId:string){
