@@ -42,6 +42,28 @@ Implementation is grounded in official NousResearch/hermes-agent commit
 
 ## Recovery and cancellation
 
+For an enrolled profile whose gateway restarts on a different loopback port,
+the private helper supports `resume <same-origin> --runtime hermes
+--reselect-gateway`. It takes the existing connector lock, verifies completed
+enrollment bindings, discovers the selected profile through its private control
+socket and rechecks the ticketed canonical descriptor. The owner confirms the
+displayed old/new address in a native interactive prompt. Only the address may
+change; home, workspace, profile, config path and scoped mode stay fixed. Gateway
+discovery sends no session creation, provider prompt or Envoi registration.
+
+Any unfinished scoped journal refuses an address change before confirmation.
+The original journal must go through supported recovery rather than deletion,
+resubmission or a replacement enrollment. Completed legacy journals remain
+deduplication evidence for their exact profile/workspace across a port change.
+New journals use a stable profile/workspace identity independent of the port.
+
+After rechecking the gateway and saved bindings, reselection writes a private
+backup and one atomic version 2 marker with the exact previous and selected
+configuration. Only that exact previous cache may transition to the new marker;
+unrelated caches, explicit conflicts and older clients refuse. Enrollment,
+grants, operational session and journals are never rewritten by reselection.
+Normal resume refreshes the connection cache through the existing adapter path.
+
 FileScopedRunStore saves one bounded record before creation/submission. It keeps
 stable create/input IDs, exact prompt text, returned session/admission IDs,
 provider identity and completion. It never stores Envoi credentials, lease
@@ -64,9 +86,29 @@ Before human-wait, the shared handler durably completes the journal. Its signal
 then invalidates MCP. All aborts/deadlines close that binding before cancellation.
 Cleanup attempts prompt.cancel, reads the original receipt and interrupts only
 that receipt's execution_generation, then waits within a bounded deadline.
-Transport loss triggers one bounded fresh cancellation connection. Cancellation
-failure remains uncertain, never proof the daemon stopped; local scoped effects
-remain denied regardless.
+During a fresh in-process turn with its original MCP relay still active, a genuine
+status-socket loss permits at most two read-only reconnects. Each revalidates the
+same selected native instance/profile and resumes only the original session and
+admission. The relay stays active; no session creation, prompt submission or
+deadline reset is repeated. A policy/protocol close, malformed/oversized frame,
+unmatched RPC, refused operation, changed instance or invalid receipt refuses
+reconnection. A closing socket waits for its CloseEvent so a delayed policy close
+is not mistaken for an outage. No close verdict before the original request bound
+is an unknown failure, not permission to reconnect.
+
+Unrecoverable failure still uses one bounded cancellation connection pinned to
+the original native instance. Cancellation failure remains uncertain, never proof
+the daemon stopped; local scoped effects remain denied regardless. A saved
+terminal/interrupted admission is still reconciled as failed without replacing
+its journal, creating another admission or equating a committed effect with native
+completion.
+
+The optional trusted-host `onRuntimeEvent` observer reports allowlisted lifecycle
+events, monotonic offsets, pending MCP count and coded abort/reconnect outcomes.
+It records the initiating abort before cleanup, without native IDs, provider text,
+prompts or transport credentials. Observer failures do not authorize effects or
+replace execution errors; a mandatory gate recorder must stop its own controller
+if evidence cannot be persisted. Existing 120-second and 16-turn bounds remain.
 
 ## Validation and remaining gate
 

@@ -22,6 +22,51 @@ afterEach(async () => {
 function session() {
   return { address: 'example@envoi.mail', _onboarding: { completionId: 'completion_fixture', installation: { id: 'installation_example' } } } as any;
 }
+it('reselects only on explicit Hermes resume and starts with the confirmed origin without changing caller environment', async () => {
+  vi.spyOn(FileBridgeStore.prototype, 'load').mockResolvedValue(session());
+  const env = { HERMES_DAEMON_URL: 'http://127.0.0.1:18973', HERMES_HOME: '/fixture/profile' };
+  const selected = { daemonOrigin: 'http://127.0.0.1:18974' } as any;
+  const reselectGateway = vi.fn(async () => selected), helper = vi.fn().mockResolvedValue({ state: 'connected' }), start = vi.fn();
+  await runLocalLink(['resume', origin, '--runtime', 'hermes', '--reselect-gateway'], new AbortController().signal,
+    { stateDir: '/fixture/private', resolveAdapter: resolver, reselectGateway, env, helperCli: helper, start });
+  expect(reselectGateway).toHaveBeenCalledExactlyOnceWith('/fixture/private', origin, expect.any(AbortSignal), expect.objectContaining({ env }));
+  expect(helper.mock.calls[0][0]).toEqual(['resume', origin, '--runtime', 'hermes']);
+  expect(start.mock.calls[0][3].env).toEqual({ ...env, HERMES_DAEMON_URL: selected.daemonOrigin });
+  expect(env.HERMES_DAEMON_URL).toBe('http://127.0.0.1:18973');
+});
+it.each(['declined', 'unfinished'])('does not contact Envoi or start a connector when reselection is %s', async mode => {
+  const reselectGateway = vi.fn(async () => {
+    if (mode === 'unfinished') throw Object.assign(new Error('PRIVATE journal detail'), { code: 'HERMES_TURN_RECOVERY_REQUIRED' });
+    return null;
+  });
+  const helper = vi.fn(), start = vi.fn(), write = vi.fn();
+  const result = await runLocalLink(['resume', origin, '--runtime', 'hermes', '--reselect-gateway'], new AbortController().signal,
+    { stateDir: '/fixture/private', resolveAdapter: resolver, reselectGateway, helperCli: helper, start, write });
+  expect(result.state).toBe('needs_help'); expect(helper).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled();
+  expect(JSON.stringify(write.mock.calls)).not.toMatch(/PRIVATE|journal detail|fixture\/private/);
+});
+it.each([
+  ['connect', '--reselect-gateway'], ['status', '--reselect-gateway'], ['doctor', '--reselect-gateway'], ['task', '--reselect-gateway'],
+  ['resume', '--reselect-gateway', '--reselect-gateway'], ['resume', '--reselect-gateway', '--new'], ['resume', '--reselect-gateway', '--show-code']
+].map(([command, ...flags]) => ({ command, flags })))('rejects misplaced gateway reselection before discovery ($command)', async ({ command, flags }) => {
+  const resolveAdapter = vi.fn(), reselectGateway = vi.fn();
+  await expect(runLocalLink([command, origin, '--runtime', 'hermes', ...flags], new AbortController().signal,
+    { resolveAdapter, reselectGateway })).rejects.toThrow();
+  expect(resolveAdapter).not.toHaveBeenCalled(); expect(reselectGateway).not.toHaveBeenCalled();
+});
+it('refuses gateway reselection for OpenClaw without touching its saved state', async () => {
+  const reselectGateway = vi.fn(), helperCli = vi.fn();
+  await expect(runLocalLink(['resume', origin, '--runtime', 'openclaw', '--reselect-gateway'], new AbortController().signal,
+    { resolveAdapter: resolver, reselectGateway, helperCli })).rejects.toThrow('saved Hermes');
+  expect(reselectGateway).not.toHaveBeenCalled(); expect(helperCli).not.toHaveBeenCalled();
+});
+it('does not discover or reselect a replacement gateway during an ordinary saved resume', async () => {
+  vi.spyOn(FileBridgeStore.prototype, 'load').mockResolvedValue(session());
+  const reselectGateway = vi.fn(), start = vi.fn();
+  await runLocalLink(['resume', origin, '--runtime', 'hermes'], new AbortController().signal,
+    { resolveAdapter: resolver, reselectGateway, helperCli: vi.fn().mockResolvedValue({ state: 'connected' }), start });
+  expect(reselectGateway).not.toHaveBeenCalled(); expect(start).toHaveBeenCalledOnce();
+});
 it('keeps polling a private pending setup, then starts the foreground connector after confirmed authenticated completion', async () => {
   vi.spyOn(FileBridgeStore.prototype, 'load').mockResolvedValue(session());
   const helper = vi.fn().mockResolvedValueOnce({ schemaVersion: '1', state: 'pending_approval', claimUrl: origin + '/claim', verificationCode: 'F7KQ-PM4D' })
@@ -49,6 +94,43 @@ it('does not start on status/doctor or when no explicit local confirmation was s
 it('refuses token-bearing/unknown arguments before discovering or contacting any runtime', async () => {
   const discover = vi.fn();
   await expect(runLocalLink(['connect', origin, '--token', 'private-never-output'], new AbortController().signal, { resolveAdapter: discover })).rejects.toThrow();
+  expect(discover).not.toHaveBeenCalled();
+});
+
+it.each(['hermes', 'openclaw'])('passes explicitly selected permissions to the existing %s registration engine', async runtime => {
+  const permissions = ['send_agent_messages', 'receive_agent_messages', 'execute_cases', 'create_assets'];
+  const helper = vi.fn().mockResolvedValue({ state: 'confirm_approval' });
+  const start = vi.fn();
+  await runLocalLink(['connect', origin, '--runtime', runtime, '--permissions', permissions.join(','), '--show-code'],
+    new AbortController().signal, { resolveAdapter: resolver, helperCli: helper, start });
+  expect(helper.mock.calls[0][0]).toEqual(['connect', origin, '--runtime', runtime, '--show-code']);
+  expect(helper.mock.calls[0][1].requestedPermissions).toEqual(permissions);
+  expect(start).not.toHaveBeenCalled();
+});
+
+it('leaves the existing default permission request with the helper when no selection is supplied', async () => {
+  const helper = vi.fn().mockResolvedValue({ state: 'confirm_approval' });
+  await runLocalLink(['connect', origin, '--runtime', 'hermes'], new AbortController().signal,
+    { resolveAdapter: resolver, helperCli: helper });
+  expect(helper.mock.calls[0][1].requestedPermissions).toBeUndefined();
+});
+
+it.each([
+  ['connect', ''], ['connect', 'send_agent_messages'], ['connect', 'receive_agent_messages,'],
+  ['connect', 'receive_agent_messages,receive_agent_messages'], ['connect', 'receive_agent_messages,__proto__'],
+  ['connect', 'receive_agent_messages,envoi_agent_access_DO_NOT_PRINT'],
+  ['resume', 'receive_agent_messages'], ['status', 'receive_agent_messages'], ['task', 'receive_agent_messages']
+])('refuses invalid or misplaced permission selection before discovery (%s)', async (command, value) => {
+  const discover = vi.fn();
+  await expect(runLocalLink([command, origin, '--permissions', value], new AbortController().signal,
+    { resolveAdapter: discover })).rejects.toThrow(/supported permission list|documented local helper options/);
+  expect(discover).not.toHaveBeenCalled();
+});
+
+it('refuses a repeated permission option before discovery', async () => {
+  const discover = vi.fn();
+  await expect(runLocalLink(['connect', origin, '--permissions', 'receive_agent_messages', '--permissions', 'receive_agent_messages'],
+    new AbortController().signal, { resolveAdapter: discover })).rejects.toThrow('documented local helper options');
   expect(discover).not.toHaveBeenCalled();
 });
 it('does not start stale runtime configuration after a mismatched installation completion', async () => {

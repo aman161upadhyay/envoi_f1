@@ -1,0 +1,679 @@
+--- a/agent/anthropic_adapter.py
++++ b/agent/anthropic_adapter.py
+@@ -405,6 +405,8 @@
+     documented Foundry pattern) uses a custom ``httpx.Client`` whose request hook mints a fresh JWT
+     and rewrites ``Authorization``; the SDK skips its own auth when ``http_client`` is given. The
+     placeholder ``auth_token`` is still required at construction and makes any leak diagnosable."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_BEARER_TRANSPORT_UNSUPPORTED')
+     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
+     normalize_proxy_env_vars()
+     from agent.azure_identity_adapter import build_bearer_http_client
+@@ -431,7 +433,7 @@
+     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
+ 
+ 
+-def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route: str | None = None):
++def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route: str | None = None, gate_session_id: str | None = None):
+     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
+     ``route`` is the caller's un-normalized base_url (the ``/v1`` form ``custom_providers`` entries are
+     keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
+@@ -453,7 +455,8 @@
+     merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
+     if merged:
+         kwargs["default_headers"] = merged
+-    return sdk.Anthropic(**kwargs)
++    from agent.envoi_request_gate import construct_client
++    return construct_client(sdk, kwargs, gate_session_id)
+ 
+ 
+ def _custom_provider_extra_headers(base_url) -> dict[str, str]:
+@@ -487,7 +490,7 @@
+     return "api_key"
+ 
+ 
+-def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False):
++def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False, gate_session_id: str | None = None):
+     """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
+     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
+     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
+@@ -517,7 +520,7 @@
+         # get these from profile.default_headers, but this route never sees the profile.
+         for k, v in _attribution_headers().items():
+             headers.setdefault(k, v)
+-    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
++    return _new_sdk_client(sdk, kwargs, headers, route=base_url, gate_session_id=gate_session_id)
+ 
+ 
+ def build_anthropic_bedrock_client(region: str):
+@@ -527,6 +530,8 @@
+     ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
+     A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
+     (primary, auxiliary, per-request rebuild) enforces it."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
+     sdk = _require_sdk("the Bedrock provider")
+     if not hasattr(sdk, "AnthropicBedrock"):
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -784,7 +784,7 @@
+     # cause 401/403 on their endpoints. See #1739.
+     from agent.anthropic_credentials import anthropic_route_is_oauth
+     agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
+-    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
++    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout, gate_session_id=agent.session_id)
+     if not agent.quiet_mode:
+         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
+         _print_key_banner(effective_key, "token")
+@@ -1030,6 +1030,8 @@
+ def _build_client(agent, api_key, base_url, fallback_model):
+     # LLM client per wire mode (raw_codex=True: the main agent needs direct
+     # responses.stream()). One provider/model timeout up front so every path applies it.
++    from agent.envoi_request_gate import guard_provider
++    guard_provider(agent.provider, agent.model)
+     agent._anthropic_client = None
+     agent._is_anthropic_oauth = False
+     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
+--- a/agent/auxiliary_client.py
++++ b/agent/auxiliary_client.py
+@@ -183,6 +183,8 @@
+ 
+ 
+ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_TRANSPORT')
+     if _aux_probe_active():
+         # Availability probe: resolved credentials/base_url are the answer.
+         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
+@@ -2302,6 +2304,8 @@
+ 
+ def _try_openrouter(explicit_api_key: Optional[str | Callable[[], str]] = None, model: str | None = None,
+                     explicit_base_url: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     free_only, cfg_model = _aux_openrouter_settings()
+     or_model = model or cfg_model
+     if free_only and not _is_free_model(or_model):
+@@ -2360,6 +2364,8 @@
+ 
+ 
+ def _try_nous(vision: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     nous = _read_nous_auth()
+     runtime = _resolve_nous_runtime_api(force_refresh=False)
+     if runtime is None and not nous:
+@@ -2898,6 +2904,8 @@
+ 
+ 
+ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     runtime = _resolve_custom_runtime()
+     custom_base, custom_key, custom_mode = (*runtime, None) if len(runtime) == 2 else runtime
+     if not custom_base or not custom_key:
+@@ -2940,6 +2948,8 @@
+ 
+     Caller must pass an explicit model — a pinned Grok default would rot as xAI's allowlist drifts.
+     """
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     if not model:
+         logger.warning(
+             "Auxiliary client: xai-oauth requested without a model; "
+@@ -2969,6 +2979,8 @@
+ 
+     No auto-selected default: the Codex model allow-list is undocumented and drifts.
+     """
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     if not model:
+         logger.warning(
+             "Auxiliary client: openai-codex requested without a model; "
+@@ -2992,6 +3004,8 @@
+ ) -> tuple[Optional[Any], Optional[str]]:
+     """Azure Foundry aux client via the main agent's ``_resolve_azure_foundry_runtime`` (api_key vs Entra
+     callable bearer, per-model api_mode, base_url overrides). Returns ``(client, model)`` or ``(None, None)``."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     try:
+         from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+         from hermes_cli.auth import AuthError
+@@ -3087,6 +3101,8 @@
+             )
+             return None, None
+         base_url = override_url
++    from agent.envoi_request_gate import pin_endpoint
++    base_url = pin_endpoint(base_url)
+     from agent.anthropic_credentials import _is_oauth_token
+     is_oauth = _is_oauth_token(token)
+     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+@@ -3095,7 +3111,7 @@
+         return _AuxProbeClientStub(api_key="", base_url=base_url), model
+     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
+     try:
+-        real_client = build_anthropic_client(token, base_url)
++        real_client = build_anthropic_client(token, base_url, gate_session_id=_normalize_main_runtime(None).get("session_id"))
+     except ImportError:
+         return None, None  # Adapter imports fine but the anthropic SDK itself is missing.
+     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
+@@ -4640,6 +4656,8 @@
+ 
+ def _try_discovery_chain() -> tuple[Optional[OpenAI], Optional[str], str]:
+     """Step 3: hardcoded aggregator/fallback chain, skipping unhealthy providers."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_UNPINNED_DISCOVERY_REFUSED')
+     tried = []
+     for label, try_fn in _get_provider_chain():
+         candidate_base_url = _custom_health_base_url(label)
+@@ -4706,6 +4724,9 @@
+ 
+ def _to_async_client(sync_client, model: str, is_vision: bool = False):
+     """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
++    from agent.envoi_request_gate import policy, guard_cached_client
++    if policy() is not None and not isinstance(sync_client, _AuxProbeClientStub):
++        guard_cached_client(sync_client)
+     from openai import AsyncOpenAI
+     if isinstance(sync_client, _AuxProbeClientStub):
+         return sync_client, model
+@@ -4798,6 +4819,8 @@
+ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> tuple[Optional[Any], Optional[str]]:
+     """AWS Bedrock: Claude → Anthropic Bedrock SDK (prompt caching, thinking); bare in-Region OpenAI IDs
+     → Mantle Responses; everything else, incl. OpenAI ``us.``/``global.`` profiles, → Converse API."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     try:
+         from agent.bedrock_adapter import (
+             has_aws_credentials, is_anthropic_bedrock_model, resolve_bedrock_runtime_region,
+@@ -4844,6 +4867,8 @@
+ 
+ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[Any], Optional[str]]:
+     """Google Vertex AI: Gemini via the OpenAI-compatible endpoint with an OAuth2 bearer (standard OpenAI client)."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     try:
+         from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+     except ImportError:
+@@ -5329,6 +5354,8 @@
+ 
+ def _resolve_external_process_branch(req: _ResolveRequest, creds: dict[str, Any]) -> _ResolveResult:
+     """PROVIDER_REGISTRY ``external_process`` providers, served via their registered profile."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     provider = req.provider
+     final_model = _normalize_resolved_model(
+         req.model or (req.main_runtime.get("model") if req.main_runtime else None) or _read_main_model_for_aux(),
+@@ -5423,6 +5450,10 @@
+     (full auto-detection chain). ``model=None`` → provider's default aux model. ``raw_codex`` → bare OpenAI
+     client for ``responses.stream()`` callers. ``api_mode`` forces "codex_responses"/"chat_completions"/
+     "anthropic_messages" instead of auto-detect. Returns (client, resolved_model) or (None, None)."""
++    from agent.envoi_request_gate import pin_endpoint
++    pin_endpoint(explicit_base_url)
++    from agent.envoi_request_gate import guard_provider
++    guard_provider(provider, model)
+     _validate_proxy_env_urls()
+     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
+     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
+@@ -5556,6 +5587,8 @@
+ 
+ 
+ def _resolve_strict_vision_backend(provider: str, model: Optional[str] = None) -> tuple[Optional[Any], Optional[str]]:
++    from agent.envoi_request_gate import guard_provider
++    guard_provider(provider, model)
+     backend = _STRICT_VISION_BACKENDS.get(_normalize_vision_provider(provider))
+     return backend(model) if backend is not None else (None, None)
+ 
+@@ -5686,6 +5719,8 @@
+     Direct endpoint overrides beat provider selection; explicit providers may force
+     experimental backends; auto mode only tries backends known to work.
+     """
++    from agent.envoi_request_gate import guard_provider
++    guard_provider(provider, model)
+     runtime = _normalize_main_runtime(main_runtime)
+     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
+         "vision", provider, model, base_url, api_key
+@@ -6017,6 +6052,8 @@
+     previously occurred in long-running gateways where recycled worker threads created unbounded entries
+     (#10200).
+     """
++    from agent.envoi_request_gate import guard_provider
++    guard_provider(provider, model)
+     # A bare llama.cpp alias keys on the live local endpoint: a restarted server (new port/key)
+     # must not be served the old client, and a stopped one resolves to nothing, not a cloud client.
+     from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
+@@ -6038,6 +6075,8 @@
+                 cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
+             )
+             if loop_ok:
++                from agent.envoi_request_gate import guard_cached_client
++                guard_cached_client(cached_client)
+                 return cached_client, _compat_model(cached_client, model, cached_default)
+             # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
+             # foreign loop stays force-neutered.
+@@ -6075,6 +6114,9 @@
+                 client, default_model, _ = _client_cache[cache_key]
+                 # Race loser was never exposed to a caller — safe to close now.
+                 _close_cached_client(built_client, close_async=async_mode)
++    from agent.envoi_request_gate import guard_cached_client
++    if client is not None:
++        guard_cached_client(client)
+     return client, _compat_model(client, model, default_model)
+ 
+ 
+--- a/hermes_cli/runtime_provider.py
++++ b/hermes_cli/runtime_provider.py
+@@ -349,6 +349,9 @@
+ 
+ def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> dict[str, Any]:
+     """Build a resolved-runtime dict; ``extra`` carries source/requested_provider/provider-specific keys."""
++    from agent.envoi_request_gate import guard_provider, pin_endpoint
++    guard_provider(provider)
++    base_url = pin_endpoint(base_url)
+     if is_actual_route(provider, base_url):
+         api_mode = "chat_completions"
+         base_url = normalize_actual_base_url(base_url)
+@@ -483,6 +486,8 @@
+ 
+ def _auto_detect_local_model(base_url: str) -> str:
+     """Query a local server for its model name when only one model is loaded."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_UNPINNED_DISCOVERY_REFUSED')
+     if not base_url:
+         return ""
+     try:
+@@ -965,6 +970,8 @@
+     recovered on 401 by run_agent._try_refresh_vertex_client_credentials(). Under
+     :func:`deferred_token_mint` the credentials are loaded (same failure copy) but the token is a
+     callable minted on first use, so a process that only routes never exchanges a JWT."""
++    from agent.envoi_request_gate import forbid_variant
++    forbid_variant('PROVIDER_GATE_FOREIGN_PROVIDER')
+     from agent.vertex_adapter import get_vertex_base_url, get_vertex_config, vertex_access_token
+     if _DEFER_TOKEN_MINT.get():
+         token, base_url = vertex_access_token, get_vertex_base_url()
+@@ -1057,6 +1064,9 @@
+     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
+     OpenCode Zen/Go where different models route through different API surfaces)."""
+     requested_provider = resolve_requested_provider(requested)
++    from agent.envoi_request_gate import guard_provider, pin_endpoint
++    guard_provider(requested_provider, target_model)
++    pin_endpoint(explicit_base_url)
+     _raise_if_provider_disabled(requested_provider)
+     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
+     # every path (background review, curator, MoA slots, delegation) instead of "Unknown provider".
+@@ -1112,6 +1122,8 @@
+     if not explicit_base_url and not explicit_api_key:
+         yield _local_endpoint_bypass(requested_provider, explicit_api_key, explicit_base_url)
+     provider = resolve_provider(requested_provider, explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url)
++    from agent.envoi_request_gate import guard_provider
++    guard_provider(provider, target_model)
+     model_cfg = _get_model_config()
+     yield _resolve_explicit_runtime(provider=provider, requested_provider=requested_provider, model_cfg=model_cfg,
+                                     explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url,
+--- a/tools/tool_search.py
++++ b/tools/tool_search.py
+@@ -170,11 +170,12 @@
+                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
+     after classification)."""
++    from agent.envoi_request_gate import eager_case_tool
+     visible: list[dict[str, Any]] = []
+     deferrable: list[dict[str, Any]] = []
+     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):
+         if name not in BRIDGE_TOOL_NAMES:
+-            (deferrable if is_deferrable_tool_name(name, defer_tools) else visible).append(td)
++            (deferrable if not eager_case_tool(name) and is_deferrable_tool_name(name, defer_tools) else visible).append(td)
+     return visible, deferrable
+ 
+ 
+--- a/gateway/control_socket.py
++++ b/gateway/control_socket.py
+@@ -190,7 +190,7 @@
+         # symlinked component, so an unresolved symlinked ~/.hermes would never mint tickets.
+         self._home = Path(home).resolve()
+         self.ticket_store = None
+-        self.private_handlers = {}
++        self.private_handlers = {'envoi-request-gate-status': self._envoi_request_gate_status}
+         self._server: Optional[asyncio.AbstractServer] = None
+         self._pipe_server: Any = None  # Windows proactor pipe server
+         self._bind_path: Optional[Path] = None
+@@ -332,6 +332,12 @@
+             encoded = json.dumps(too_large).encode("utf-8")
+         return encoded + b"\n"
+ 
++    def _envoi_request_gate_status(self, params: dict, peer_subject: str) -> dict:
++        from agent.envoi_request_gate import runtime_status, RequestGateRefused
++        if not peer_subject or self.ticket_store is None or set(params) != {'instance_id','challenge'} or params['instance_id'] != self.ticket_store.instance_id:
++            raise RequestGateRefused('PROVIDER_GATE_ATTESTATION_REFUSED')
++        return runtime_status(self.ticket_store.instance_id, params['challenge'])
++
+     def _session_ticket(self, request: dict, peer_subject: Optional[str]) -> dict:
+         if not peer_subject or self.ticket_store is None:
+             raise PermissionError("authenticated runtime bootstrap unavailable")
+--- /dev/null
++++ b/agent/envoi_request_gate.py
+@@ -0,0 +1,324 @@
++"""Opt-in, mandatory provider transport for an isolated, single-profile Hermes host.
++
++Installed only by an explicit reviewed native-source adoption, never by importing
++this file. Provider credentials stay in the SDK; this module never logs requests.
++The physical HTTP request crosses an authenticated loopback meter, whose only
++upstream is the unchanged HTTPS Anthropic Messages endpoint.
++"""
++from __future__ import annotations
++import hashlib
++import hmac
++import http.client
++import io
++import json
++import os
++import re
++import select
++import socket
++import threading
++import time
++from dataclasses import dataclass
++from pathlib import Path
++from urllib.parse import urlsplit
++
++UPSTREAM = 'https://api.anthropic.com'
++MAX_BODY = 2_000_000
++_anchor = None
++_lock = threading.RLock()
++_native_root=Path(__file__).resolve().parents[1]
++_factory_names=('agent/anthropic_adapter.py','agent/agent_init.py','agent/auxiliary_client.py','hermes_cli/runtime_provider.py','tools/tool_search.py','gateway/control_socket.py')
++_loaded_module_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
++def _factory_sha256():
++    try:
++        value=[[name,hashlib.sha256((_native_root/name).read_bytes()).hexdigest()] for name in _factory_names]
++        return hashlib.sha256(json.dumps(value,separators=(',',':')).encode()).hexdigest()
++    except OSError:return None
++_loaded_factories_sha256=_factory_sha256()
++
++class RequestGateRefused(RuntimeError):
++    def __init__(self, code='PROVIDER_REQUEST_GATE_REFUSED'):
++        self.code = code
++        super().__init__(code)  # Never interpolate policy, headers, key, prompt or URL.
++
++@dataclass(frozen=True)
++class Policy:
++    path: str
++    digest: str
++    window: str
++    profile: str
++    role: str
++    origin: str
++    token: str
++    models: tuple[str, ...]
++    deadline: float
++    config_digest: str
++    eager_case_tools: bool
++
++    def verify(self):
++        try:
++            b = Path(self.path).read_bytes()
++            if len(b) > 16384 or hashlib.sha256(b).hexdigest() != self.digest:
++                raise RequestGateRefused('PROVIDER_GATE_POLICY_CHANGED')
++        except RequestGateRefused:
++            raise
++        except Exception:
++            raise RequestGateRefused('PROVIDER_GATE_POLICY_UNAVAILABLE') from None
++        if time.time() >= self.deadline:
++            raise RequestGateRefused('PROVIDER_GATE_HARD_STOP')
++        try:
++            if os.path.normcase(os.path.realpath(os.environ['HERMES_HOME']))!=self.profile or hashlib.sha256((Path(self.profile)/'config.yaml').read_bytes()).hexdigest()!=self.config_digest:
++                raise ValueError()
++        except Exception:
++            raise RequestGateRefused('PROVIDER_GATE_PROFILE_CHANGED') from None
++        return self
++
++def policy():
++    """A successfully armed process cannot downgrade when its environment changes."""
++    global _anchor
++    with _lock:
++        if _anchor is not None:
++            return _anchor.verify()
++        enabled = os.environ.get('ENVOI_HERMES_GATE_REQUIRED', '')
++        if not enabled:
++            return None
++        if enabled != '1':
++            raise RequestGateRefused('PROVIDER_GATE_REQUIRED_INVALID')
++        try:
++            filename = os.environ['ENVOI_HERMES_GATE_POLICY']
++            digest = os.environ['ENVOI_HERMES_GATE_POLICY_SHA256']
++            if not Path(filename).is_absolute() or not re.fullmatch('[a-f0-9]{64}', digest):
++                raise ValueError()
++            b = Path(filename).read_bytes()
++            if len(b) > 16384 or hashlib.sha256(b).hexdigest() != digest:
++                raise ValueError()
++            data = json.loads(b)
++            fields = {'version','window','profile','role','origin','token','models','hardStopUnix','upstream','configSha256','eagerCaseTools'}
++            if set(data) != fields or data['version'] != 1 or data['upstream'] != UPSTREAM:
++                raise ValueError()
++            u = urlsplit(data['origin'])
++            if u.scheme != 'http' or u.hostname != '127.0.0.1' or not u.port or u.username or u.password or u.query or u.fragment or u.path not in ('','/'):
++                raise ValueError()
++            if not re.fullmatch('[a-f0-9]{64}', data['token']) or not re.fullmatch('[a-f0-9]{64}', data['window']):
++                raise ValueError()
++            if data['profile'] != os.path.normcase(os.path.realpath(os.environ['HERMES_HOME'])):
++                raise ValueError()
++            if data['role'] not in ('je1','je2','testowner'):
++                raise ValueError()
++            if not re.fullmatch('[a-f0-9]{64}',data['configSha256']):raise ValueError()
++            if type(data['eagerCaseTools']) is not bool:raise ValueError()
++            if not isinstance(data['models'],list) or not 1 <= len(data['models']) <= 8 or any(not isinstance(m,str) or not re.fullmatch('[A-Za-z0-9_.:/-]{1,160}',m) for m in data['models']):
++                raise ValueError()
++            if type(data['hardStopUnix']) not in (int,float) or not time.time() < data['hardStopUnix'] <= time.time()+5400:
++                raise ValueError()
++            _anchor = Policy(filename,digest,data['window'],data['profile'],data['role'],data['origin'].rstrip('/'),data['token'],tuple(data['models']),data['hardStopUnix'],data['configSha256'],data['eagerCaseTools'])
++            return _anchor.verify()
++        except RequestGateRefused:
++            raise
++        except Exception:
++            raise RequestGateRefused('PROVIDER_GATE_SETUP_INVALID') from None
++
++def guard_provider(provider=None, model=None):
++    p = policy()
++    if p is None:
++        return
++    if provider not in (None,'','auto','anthropic'):
++        raise RequestGateRefused('PROVIDER_GATE_FOREIGN_PROVIDER')
++    if model not in (None,'','auto') and model not in p.models:
++        raise RequestGateRefused('PROVIDER_GATE_MODEL_CHANGED')
++
++def pin_endpoint(base_url=None):
++    if policy() is None:
++        return base_url
++    if base_url and str(base_url).rstrip('/') not in (UPSTREAM,UPSTREAM+'/v1'):
++        raise RequestGateRefused('PROVIDER_GATE_FOREIGN_ENDPOINT')
++    return UPSTREAM
++
++def forbid_variant(code):
++    if policy() is not None:
++        raise RequestGateRefused(code)
++
++def eager_case_tool(name):
++    p=policy()
++    return bool(p and p.eager_case_tools and isinstance(name,str) and re.fullmatch(r'mcp__?envoi_turn_[a-f0-9]{16}_[A-Za-z0-9_-]{1,100}',name))
++
++def guard_cached_client(client):
++    p=policy()
++    if p is None:return
++    leaf=getattr(client,'_real_client',client)
++    closed=getattr(leaf,'is_closed',False)
++    if callable(closed):closed=closed()
++    if getattr(leaf,'_envoi_gate_digest',None)!=p.digest or closed:
++        raise RequestGateRefused('PROVIDER_GATE_UNGUARDED_CACHE_REFUSED')
++
++def runtime_status(instance_id,challenge):
++    """Authenticated owner-control proof, bound to this process and a fresh nonce."""
++    if not isinstance(instance_id,str) or not instance_id or not isinstance(challenge,str) or not re.fullmatch('[a-f0-9]{32}',challenge):
++        raise RequestGateRefused('PROVIDER_GATE_ATTESTATION_REFUSED')
++    p=policy()
++    if p is None:return {'version':1,'required':False,'ready':False}
++    ready=bool(_loaded_factories_sha256 and _factory_sha256()==_loaded_factories_sha256)
++    fields=[1,instance_id,challenge,p.digest,_loaded_module_sha256,_loaded_factories_sha256,
++        hashlib.sha256(p.profile.encode()).hexdigest(),p.window,p.role,int(p.deadline*1000),ready]
++    mac=hmac.new(bytes.fromhex(p.token),json.dumps(fields,separators=(',',':')).encode(),hashlib.sha256).hexdigest()
++    return {'version':1,'required':True,'ready':ready,'fields':fields,'mac':mac}
++
++class CancelableReader(io.RawIOBase):
++    def __init__(self,connection):self.connection=connection
++    def readable(self):return True
++    def readinto(self,buffer):
++        conn=self.connection;deadline=min(conn.absolute_deadline,time.monotonic()+conn.read_timeout)
++        while True:
++            if conn.cancelled.is_set():raise RequestGateRefused('PROVIDER_GATE_CANCELLED')
++            remaining=deadline-time.monotonic()
++            if remaining<=0:raise TimeoutError('PROVIDER_GATE_READ_TIMEOUT')
++            try:
++                ready,_,_=select.select([conn.last_socket],[],[],min(.05,remaining))
++                if ready:return conn.last_socket.recv_into(buffer)
++            except (OSError,ValueError):raise RequestGateRefused('PROVIDER_GATE_CANCELLED') from None
++
++class CancelableSocket:
++    def __init__(self,raw,connection):self.raw,self.connection=raw,connection
++    def __getattr__(self,name):return getattr(self.raw,name)
++    def close(self):pass  # A will-close response owns the raw socket until its body closes.
++    def makefile(self,mode='rb',*args,**kwargs):
++        if mode!='rb':raise RequestGateRefused('PROVIDER_GATE_STREAM_MODE_REFUSED')
++        # No socket.makefile ownership ref can trap cancellation in Windows recv.
++        return io.BufferedReader(CancelableReader(self.connection))
++
++class CancelableConnection(http.client.HTTPConnection):
++    def __init__(self,*args,write_timeout=None,**kwargs):
++        super().__init__(*args,**kwargs);self.cancelled=threading.Event();self.last_socket=None;self.write_timeout=write_timeout;self.read_timeout=120;self.absolute_deadline=time.monotonic()+120
++    def connect(self):
++        if self.cancelled.is_set():raise RequestGateRefused('PROVIDER_GATE_CANCELLED')
++        super().connect();self.last_socket=self.sock;self.sock=CancelableSocket(self.last_socket,self)
++        if self.cancelled.is_set():self.cancel();raise RequestGateRefused('PROVIDER_GATE_CANCELLED')
++    def send(self,data):
++        if self.cancelled.is_set():raise RequestGateRefused('PROVIDER_GATE_CANCELLED')
++        if self.sock is not None and self.write_timeout is not None:self.sock.settimeout(self.write_timeout)
++        return super().send(data)
++    def cancel(self):
++        self.cancelled.set()
++        for s in (self.sock,self.last_socket):
++            if s:
++                try:s.shutdown(socket.SHUT_RDWR)
++                except OSError:pass
++        super().close()
++        if self.last_socket:self.last_socket.close()
++
++class ForwardedResponse:
++    def __init__(self,conn,response,p,deadline,unregister):
++        self.conn,self.response,self.policy = conn,response,p
++        self.deadline,self.unregister=deadline,unregister
++        self.status = response.status
++        self.headers = response.getheaders()
++    def chunks(self):
++        try:
++            while True:
++                self.policy.verify()
++                remaining=self.deadline-time.monotonic()
++                if remaining<=0:raise RequestGateRefused('PROVIDER_GATE_REQUEST_DEADLINE')
++                if self.conn.sock:
++                    self.conn.sock.settimeout(max(0.001,min(self.read_timeout,remaining)))
++                chunk=self.response.read1(65536)
++                if not chunk:return
++                self.policy.verify()
++                yield chunk
++        finally:self.close()
++    def close(self):
++        self.conn.cancel();self.response.close();self.unregister(self.conn)
++
++def native_work_token(p,session_id=None):
++    if session_id is None:
++        try:
++            from agent.relay_runtime import active_turn
++            turn=active_turn();session_id=turn.lease.session_id if turn else None
++        except Exception:session_id=None
++    if not isinstance(session_id,str) or not 1<=len(session_id)<=256:
++        raise RequestGateRefused('PROVIDER_GATE_NATIVE_WORK_REQUIRED')
++    return hmac.new(bytes.fromhex(p.token),(p.window+'\0'+p.role+'\0'+session_id).encode(),hashlib.sha256).hexdigest()
++
++def forward(method,url,headers,body,p=None,register=lambda _:None,unregister=lambda _:None,timeouts=None,session_id=None):
++    p=(p or policy())
++    if p is None:raise RequestGateRefused('PROVIDER_GATE_NOT_ARMED')
++    p.verify()
++    if method!='POST' or str(url)!=UPSTREAM+'/v1/messages':
++        raise RequestGateRefused('PROVIDER_GATE_REQUEST_ROUTE_REFUSED')
++    if not isinstance(body,bytes) or len(body)>MAX_BODY:
++        raise RequestGateRefused('PROVIDER_GATE_BODY_REFUSED')
++    try:data=json.loads(body)
++    except Exception:raise RequestGateRefused('PROVIDER_GATE_BODY_REFUSED') from None
++    if not isinstance(data,dict) or data.get('model') not in p.models or not isinstance(data.get('messages'),list):
++        raise RequestGateRefused('PROVIDER_GATE_MODEL_CHANGED')
++    h={str(k).lower():str(v) for k,v in headers.items()}
++    if h.get('host','api.anthropic.com')!='api.anthropic.com':
++        raise RequestGateRefused('PROVIDER_GATE_HOST_OVERRIDE')
++    if h.get('content-encoding','identity')!='identity':raise RequestGateRefused('PROVIDER_GATE_ENCODING_REFUSED')
++    nominated={x.strip().lower() for x in h.get('connection','').split(',') if x.strip()}
++    if nominated-{'keep-alive','close'}:raise RequestGateRefused('PROVIDER_GATE_FRAMING_REFUSED')
++    for key in ('host','content-length','connection','transfer-encoding','te','trailer','upgrade','keep-alive','proxy-authenticate','proxy-authorization','x-phase-c-meter','x-envoi-meter-role','x-envoi-meter-window','x-envoi-meter-work'):
++        h.pop(key,None)
++    h.update({'x-phase-c-meter':p.token,'x-envoi-meter-role':p.role,'x-envoi-meter-window':p.window,'x-envoi-meter-work':native_work_token(p,session_id)})
++    u=urlsplit(p.origin)
++    deadline=time.monotonic()+min(120,p.deadline-time.time())
++    limits={}
++    for key in ('connect','read','write','pool'):
++        value=(timeouts or {}).get(key)
++        if value is not None and (type(value) not in (int,float) or value<=0):raise RequestGateRefused('PROVIDER_GATE_TIMEOUT_INVALID')
++        limits[key]=max(.001,min(value if value is not None else 120,deadline-time.monotonic()))
++    conn=CancelableConnection(u.hostname,u.port,timeout=limits['connect'],write_timeout=limits['write'])
++    conn.absolute_deadline=deadline;conn.read_timeout=limits['read']
++    try:
++        register(conn)
++        p.verify();conn.request('POST','/v1/messages',body=body,headers=h)
++        if conn.sock:conn.sock.settimeout(min(limits['read'],max(.001,deadline-time.monotonic())))
++        response=conn.getresponse()
++        if 300<=response.status<400:
++            response.close();raise RequestGateRefused('PROVIDER_GATE_REDIRECT_REFUSED')
++        result=ForwardedResponse(conn,response,p,deadline,unregister);result.read_timeout=limits['read'];return result
++    except RequestGateRefused:
++        conn.cancel();unregister(conn);raise
++    except Exception:
++        conn.cancel();unregister(conn);raise RequestGateRefused('PROVIDER_GATE_TRANSPORT_UNAVAILABLE') from None
++
++def construct_client(sdk,kwargs,session_id=None):
++    """Guard constructor AND SDK copy/with_options; transport is never caller-replaceable."""
++    p=policy()
++    if p is None:return sdk.Anthropic(**kwargs)
++    import httpx
++    class Body(httpx.SyncByteStream):
++        def __init__(self,response):self.response=response
++        def __iter__(self):yield from self.response.chunks()
++        def close(self):self.response.close()
++    class Transport(httpx.BaseTransport):
++        def __init__(self):self.lock=threading.RLock();self.connections=set();self.closed=False
++        def register(self,conn):
++            with self.lock:
++                if self.closed:raise RequestGateRefused('PROVIDER_GATE_CLIENT_CLOSED')
++                self.connections.add(conn)
++        def unregister(self,conn):
++            with self.lock:self.connections.discard(conn)
++        def handle_request(self,request):
++            response=forward(request.method,str(request.url),dict(request.headers),request.read(),p,self.register,self.unregister,request.extensions.get('timeout'),session_id)
++            return httpx.Response(response.status,headers=response.headers,stream=Body(response),request=request)
++        def close(self):
++            with self.lock:
++                self.closed=True
++                for conn in tuple(self.connections):conn.cancel()
++                self.connections.clear()
++    class Client(sdk.Anthropic):
++        def __init__(self,*args,**options):
++            p.verify()
++            if args:raise RequestGateRefused('PROVIDER_GATE_CLIENT_OVERRIDE')
++            pin_endpoint(options.get('base_url'))
++            prior=options.get('http_client')
++            if prior is not None and getattr(prior,'_envoi_gate_digest',None)!=p.digest:
++                raise RequestGateRefused('PROVIDER_GATE_CLIENT_OVERRIDE')
++            if options.get('max_retries',0)!=0:
++                raise RequestGateRefused('PROVIDER_GATE_RETRY_OVERRIDE')
++            client=httpx.Client(transport=Transport(),follow_redirects=False,trust_env=False)
++            client._envoi_gate_digest=p.digest
++            options.update(http_client=client,base_url=UPSTREAM,max_retries=0)
++            try:super().__init__(**options)
++            except BaseException:client.close();raise
++            self._envoi_gate_digest=p.digest
++    return Client(**kwargs)

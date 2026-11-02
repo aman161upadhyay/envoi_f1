@@ -183,3 +183,13 @@ configured model provider's dependencies. Gateway readiness and successful
 onboarding do not establish that a real model turn can process work or reply.
 Keep failed turn journals, and verify processing and canonical replies before
 claiming live acceptance.
+
+Gateway reselection also supports retained unfinished journals whose original
+native admissions can be read as terminal on the same selected profile and
+workspace. The helper checks those receipts before and after the owner's
+address confirmation. Queued, running, unknown, missing or changed receipts
+still refuse reselection. This operation never submits or cancels a prompt,
+marks a journal completed, requeues failed work, resets attempts or replaces an
+installation. Failed/interrupted work remains failed; a committed reply alone
+does not prove native completion. Legacy unfinished journals tied to a different
+gateway address still require separate recovery.
