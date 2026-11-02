@@ -38,6 +38,9 @@ export class PostgresStore {
     let timer;
     let abandoned = false;
     const deadline = lockWaitMs == null ? null : Date.now() + lockWaitMs;
+    const checkAcquisitionDeadline = () => {
+      if (deadline != null && Date.now() >= deadline) throw Object.assign(new Error('Transaction lock wait expired'), { code: 'LOCK_TIMEOUT' });
+    };
     const connection = this.pool.connect();
     connection.then(client => { if (abandoned) client.release(); }, () => {});
     let client;
@@ -49,6 +52,7 @@ export class PostgresStore {
     const context = { client, keys: new Set(orderedKeys), active: true };
     let active = false;
     try {
+      checkAcquisitionDeadline();
       await client.query('BEGIN');
       active = true;
       for (const key of orderedKeys) {
@@ -57,8 +61,11 @@ export class PostgresStore {
           if (remaining <= 0) throw Object.assign(new Error('Transaction lock wait expired'), { code: 'LOCK_TIMEOUT' });
           await client.query("SELECT set_config('lock_timeout', $1, true)", [`${remaining}ms`]);
         }
+        checkAcquisitionDeadline();
         await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [key]);
       }
+      // A successful database reply can arrive after the shared acquisition budget.
+      checkAcquisitionDeadline();
       const result = await this.transactionContext.run(context, operation);
       await client.query('COMMIT');
       active = false;
