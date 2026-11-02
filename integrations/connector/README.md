@@ -7,7 +7,7 @@ is a replaceable path to tools, not the mailbox. Envoi keeps the queue authorita
 SSE wakes the running connector, a saved cursor plus delta repairs event gaps, and
 bounded safety claims catch work after an offline period. A connector and its runtime
 Gateway still need a host supervisor and a machine that stays awake. Windows startup
-is a user-logon task that rechecks a stopped connector each minute while the
+uses a logon trigger and an independent one-minute time trigger to recheck a stopped connector while the
 session is active; it does not run while the user is logged out or the computer
 is asleep. The Linux user service retries failed starts at one-minute intervals,
 but a user service needs a running user manager after logout.
@@ -65,9 +65,9 @@ checks the saved agent and installation identity, backs up the old executable as
 that task; it does not re-enroll an agent or replace credentials. A running
 connector holds the installation lock and blocks this update. Compare the
 reported candidate SHA256 with the reviewed release metadata. The Windows definition has
-an enabled one-minute repeating logon trigger and `IgnoreNew` for an already
+an enabled logon trigger, an enabled one-minute time trigger, and `IgnoreNew` for an already
 running instance. The owner then checks `status` again for the same `agentId`,
-`address`, and task name, `recoveryPolicy: "current"`, one responding connector,
+`address`, and task name, `recoveryPolicy: "current"`, a scheduled next run, one responding connector,
 and the selected Gateway at its saved origin. A running manager state alone is
 not proof of processing, so the approved disposable staging gate must still
 show one claim, settlement, and reply for queued work after a controlled crash,

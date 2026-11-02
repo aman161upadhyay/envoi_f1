@@ -14,9 +14,11 @@ describe('native Windows helpers', () => {
     expect(windowsExecutable('whoami.exe', env)).toBe('D:\\Windows\\System32\\whoami.exe');
     expect(windowsExecutable('powershell.exe', env)).toBe('D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     expect(windowsExecutable('icacls.exe', { windir: 'C:\\Windows' })).toBe('C:\\Windows\\System32\\icacls.exe');
-    const service = connectorService('C:\\private\\agent', { platform: 'win32', user: 'S-1-5-123', env });
+    const service = connectorService('C:\\private\\agent', { platform: 'win32', user: 'S-1-5-123', env,
+      now: new Date('2026-11-01T19:00:00.000Z') });
     expect(service.commands.map(command => command.executable)).toEqual(['D:\\Windows\\System32\\schtasks.exe', 'D:\\Windows\\System32\\schtasks.exe']);
-    expect(service.contents).toMatch(/<LogonTrigger><Enabled>true<\/Enabled><Repetition><Interval>PT1M<\/Interval><StopAtDurationEnd>false<\/StopAtDurationEnd><\/Repetition><UserId>/);
+    expect(service.contents).toContain('<LogonTrigger><Enabled>true</Enabled><UserId>S-1-5-123</UserId></LogonTrigger>');
+    expect(service.contents).toContain('<TimeTrigger><Enabled>true</Enabled><StartBoundary>2026-11-01T19:01:00.000Z</StartBoundary><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition></TimeTrigger>');
     expect(service.contents).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
     expect(service.contents).toContain('<RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure>');
   });
@@ -49,6 +51,7 @@ describe('native Windows helpers', () => {
         else expect(command?.[1]).toEqual(['list']);
         if (platform === 'win32') expect(command).toMatchObject([expect.stringContaining('powershell.exe'),
           expect.arrayContaining(['-NoProfile', '-NonInteractive', '-Command'])]);
+        if (platform === 'win32') expect(command?.[1].join(' ')).toContain('MSFT_TaskTimeTrigger');
         if (platform === 'linux') expect(command?.[1]).toContain('ActiveState');
         if (platform !== 'darwin') expect(observed).toMatchObject({ enabled: true, managerState: 'running',
           ...(platform === 'win32' ? { recoveryPolicy: 'current' } : {}) });
