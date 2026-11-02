@@ -187,9 +187,15 @@ export interface CaseSessionWorkHandler {
 
 export interface ScopedWakeWorkDriver {
   processWorkOnce(signal?: AbortSignal): Promise<boolean>;
+  /** Trusted opt-in only: at most two exact, distinct case/work pairs. Claims
+   * validate serially before either handler is admitted; leases renew while
+   * waiting for that admission barrier. Outcomes remain per work. */
+  processWorkBatch(expectations: readonly ScopedWorkExpectation[], signal?: AbortSignal): Promise<readonly ScopedWorkOutcome[]>;
   revalidateLiveLeases(signal?: AbortSignal): Promise<void>;
   nextAvailableInMs(): number | undefined;
 }
+export type ScopedWorkExpectation = Readonly<{workId: string; caseId: string}>;
+export type ScopedWorkOutcome = ScopedWorkExpectation & ({status: 'fulfilled'; worked: boolean} | {status: 'rejected'; error: unknown});
 
 export interface ConnectorOptions extends ClientOptions {
   pageSize?: number;
@@ -347,6 +353,7 @@ export class EnvoiConnector {
   private stateObserver?: (lifecycle: ConnectorLifecycle) => void;
   private refreshInFlight: Promise<ConnectorSession> | null = null;
   private workInFlight: Promise<boolean> | null = null;
+  private explicitScopedBatch = false;
   private workFollowup = false;
   private nextClaimAt = Infinity;
   private wakeTrigger?: () => void;
@@ -862,6 +869,10 @@ export class EnvoiConnector {
           throw error;
         });
       },
+      processWorkBatch: (expectations: readonly ScopedWorkExpectation[], signal?: AbortSignal) => {
+        assertScoped();
+        return this.processScopedWorkBatch(expectations, signal);
+      },
       revalidateLiveLeases: async (signal?: AbortSignal) => {
         assertScoped();
         signal?.throwIfAborted();
@@ -885,6 +896,7 @@ export class EnvoiConnector {
 
   /** Handles canonical work. True means work was consumed, including a permanent failure; consult its receipt for success. */
   processWorkOnce(signal?: AbortSignal): Promise<boolean> {
+    if (this.explicitScopedBatch) return Promise.reject(new EnvoiError('An explicit scoped batch owns work processing', undefined, 'SCOPED_BATCH_IN_FLIGHT'));
     if (this.workInFlight) { this.workFollowup = true; return this.workInFlight; }
     this.workInFlight = (async () => {
       let worked = false;
@@ -897,34 +909,74 @@ export class EnvoiConnector {
     return this.workInFlight;
   }
 
+  private async processScopedWorkBatch(expectations: readonly ScopedWorkExpectation[], signal?: AbortSignal): Promise<readonly ScopedWorkOutcome[]> {
+    if (this.explicitScopedBatch || this.workInFlight) throw new EnvoiError('Work processing is already in flight', undefined, 'SCOPED_BATCH_IN_FLIGHT');
+    if (!Array.isArray(expectations) || expectations.length < 1 || expectations.length > 2
+      || expectations.some(e => !e || !/^msg_[A-Za-z0-9_-]+$/.test(e.workId) || !/^case_[A-Za-z0-9_-]+$/.test(e.caseId))
+      || new Set(expectations.map(e => e.workId)).size !== expectations.length || new Set(expectations.map(e => e.caseId)).size !== expectations.length)
+      throw new TypeError('At most two distinct exact scoped work/case expectations are required');
+    const expected = expectations.map(e => Object.freeze({workId:e.workId,caseId:e.caseId}));
+    this.explicitScopedBatch = true;
+    const stop = new AbortController(), batchSignal = AbortSignal.any([stop.signal,...(signal ? [signal] : [])]);
+    let admit!: () => void, refuseAdmission!: (reason: unknown) => void;
+    const barrier = new Promise<void>((resolve,reject) => {admit=resolve;refuseAdmission=reject;});void barrier.catch(()=>{});
+    const flights: Promise<boolean>[] = [];
+    try {
+      for (const item of expected) {
+        batchSignal.throwIfAborted();
+        const work = await this.claimWorkAttempt(batchSignal);
+        if (!work || work.workId !== item.workId || work.message.caseId !== item.caseId)
+          throw new EnvoiError('Claim does not match the explicit scoped batch', undefined, 'SCOPED_BATCH_CLAIM_MISMATCH');
+        // Start the existing per-work lease lifecycle now, but neither admit nor
+        // run a handler until every serial claim has been validated.
+        const flight = this.processClaimedWork(work,batchSignal,()=>barrier);void flight.catch(()=>{});flights.push(flight);
+      }
+      batchSignal.throwIfAborted();admit();
+      const outcomes = await Promise.allSettled(flights);
+      return outcomes.map((outcome,index) => outcome.status === 'fulfilled'
+        ? {...expected[index],status:'fulfilled' as const,worked:outcome.value}
+        : {...expected[index],status:'rejected' as const,error:outcome.reason});
+    } catch (error) {
+      refuseAdmission(error);stop.abort(error);
+      await Promise.allSettled(flights);
+      throw error;
+    } finally {this.explicitScopedBatch=false;}
+  }
+
   private async processWorkAttempt(signal?: AbortSignal): Promise<boolean> {
+    const work = await this.claimWorkAttempt(signal);
+    return work ? this.processClaimedWork(work,signal) : false;
+  }
+
+  private async claimWorkAttempt(signal?: AbortSignal): Promise<WorkLease | null> {
     const scoped = this.options.caseSessionHandler;
     const handler = scoped ?? this.options.handler;
     if (!handler) throw new TypeError('A durable work handler is required');
-    if (signal?.aborted) return false;
+    if (signal?.aborted) return null;
     await this.guard();
-    if ((await this.lifecycle()).paused) return false;
+    if ((await this.lifecycle()).paused) return null;
     if (scoped) {
       await this.checkStatus();
       if (!this.caseSessionsAvailable) throw new EnvoiError('Case sessions are unavailable', 404, 'FEATURE_DISABLED');
-      if ((await this.lifecycle()).paused) return false;
+      if ((await this.lifecycle()).paused) return null;
     }
     let claimed: { work: WorkLease | null; state?: string; nextAvailableInMs?: number };
-    try { claimed = await this.postWork<{ work: WorkLease | null; state?: string }>('/api/agent/work/claim', { acceptHumanInstructions: true }); }
+    if (scoped) signal?.throwIfAborted();
+    try { claimed = await this.postWork<{ work: WorkLease | null; state?: string }>('/api/agent/work/claim', { acceptHumanInstructions: true }, undefined, scoped ? signal : undefined); }
     catch (error) {
       if (error instanceof EnvoiError && [404, 405, 501].includes(error.status || 0)) throw new ConnectorContractError();
       throw error;
     }
     this.lastWorkClaimAt = new Date().toISOString();
-    if (claimed.state === 'paused') { await this.observeError(new EnvoiError('Paused', undefined, 'AGENT_PAUSED')); return false; }
+    if (claimed.state === 'paused') { await this.observeError(new EnvoiError('Paused', undefined, 'AGENT_PAUSED')); return null; }
     this.nextClaimAt = Infinity;
     if (claimed.work === null) {
       if (claimed.state === 'idle' && Number.isSafeInteger(claimed.nextAvailableInMs) && claimed.nextAvailableInMs! >= 0)
         this.nextClaimAt = Date.now() + Math.max(1000, claimed.nextAvailableInMs!);
-      return false;
+      return null;
     }
     const work = claimed.work;
-    if (!work || typeof work.workId !== 'string' || typeof work.leaseToken !== 'string' || !Number.isFinite(Date.parse(work.leaseExpiresAt)) || typeof work.message?.id !== 'string' || !work.message.id) {
+    if (!work || typeof work.workId !== 'string' || typeof work.leaseToken !== 'string' || !Number.isFinite(Date.parse(work.leaseExpiresAt)) || typeof work.message?.id !== 'string' || !work.message.id || scoped && work.message.id !== work.workId) {
       throw new EnvoiError('Envoi returned an invalid work claim');
     }
     const session = validSession(await this.store.load());
@@ -941,6 +993,12 @@ export class EnvoiConnector {
     if (work.message.recipientAgentId !== session.agentId || work.message.status === 'processed') {
       throw new EnvoiError('Envoi returned work for the wrong recipient');
     }
+    return work;
+  }
+
+  private async processClaimedWork(work: WorkLease, signal?: AbortSignal, admission?: () => Promise<void>): Promise<boolean> {
+    const scoped = this.options.caseSessionHandler, handler = scoped ?? this.options.handler;
+    if (!handler) throw new TypeError('A durable work handler is required');
     const workPath = `/api/agent/work/${encodeURIComponent(work.workId)}`;
     // The server scopes idempotency by agent, so a reclaimed lease needs new
     // request keys; reuse these keys only within this claim attempt.
@@ -1018,6 +1076,7 @@ export class EnvoiConnector {
     let humanReplyError: unknown = null;
     try {
       if (workAbort.signal.aborted) throw new EnvoiError('Work claim was interrupted before admission');
+      if (admission) await abortableTurn(admission,workAbort.signal);
       await this.guard(true);
       await handler.admit(work.message);
       if (workAbort.signal.aborted) throw new EnvoiError('Work lease was interrupted before acknowledgement');
