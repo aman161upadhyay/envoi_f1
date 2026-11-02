@@ -29,7 +29,7 @@ function fixture(name: string): Fixture {
     ? new Date(Date.parse(value) + offset).toISOString() : value);
 }
 
-async function setup() {
+async function setup(options:{declinedDecision?:boolean}={}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'envoi-hermes-scoped-'));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const home = path.join(directory, 'profile'); await mkdir(home);
@@ -39,12 +39,13 @@ async function setup() {
   const config = await selectScopedHermes({ env });
   const status = fixture('case-session/agent-status-case-sessions').response!;
   const flow = fixture('http-wake/wake-then-claim-and-mint');
-  const claim = flow.steps!.find(step => step.request?.path === '/api/agent/work/claim')!.response!;
-  const minted = fixture('case-session/session-created').response!;
+  const claim = options.declinedDecision ? fixture('case-session/claimed-human-decision').response! : flow.steps!.find(step => step.request?.path === '/api/agent/work/claim')!.response!;
+  const minted = fixture(options.declinedDecision ? 'case-session/session-created-human-decision' : 'case-session/session-created').response!;
   const ended = fixture('case-session/session-end').response!;
-  const snapshot = fixture('case-tools/snapshot-agent-work').response!;
+  const snapshot = fixture(options.declinedDecision ? 'case-tools/snapshot-human-decision-declined' : 'case-tools/snapshot-agent-work').response!;
   const reply = fixture('case-tools/reply-agent-work');
   const work = claim.body.work;
+  if(options.declinedDecision){work.message.outcome='declined';work.message.text='Declined: leave the synthetic case open.';}
   work.leaseExpiresAt = new Date(Date.now() + 120000).toISOString();
   minted.body.lease.leaseExpiresAt = work.leaseExpiresAt;
   minted.body.session.createdAt = new Date().toISOString();
@@ -210,10 +211,11 @@ async function setup() {
   });
   const open = async (requestedEnv: NodeJS.ProcessEnv = {}, timeoutMs = 1000,
     guard?: import('./native-binding').NativeSubmissionGuard,
-    gate?: import('./request-gate-attestation').NativeRequestGateExpectation) => {
+    gate?: import('./request-gate-attestation').NativeRequestGateExpectation,
+    beforeScopedTurn?:import('./native-binding').ScopedPreparationGuard) => {
     const bridge = await createHermesBridge({ apiUrl: origin, stateDir: directory, hermesUrl: '', hermesKey: '', runtime: config! },
       { env: requestedEnv, fetch: fetcher, pollMs: 1, timeoutMs, onRuntimeEvent: event => { runtimeEvents.push(event); },
-        beforeNativeSubmit: guard, nativeRequestGate: gate });
+        beforeNativeSubmit: guard, nativeRequestGate: gate,beforeScopedTurn });
     cleanups.push(bridge.close); return bridge;
   };
   return { directory, home, config: config!, env, store, fetcher, minted, work, toolRequests, rpcRequests, modelText, bootstrap, sockets,
@@ -242,6 +244,34 @@ async function setup() {
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('production Hermes scoped composition with inert authenticated daemon transport', () => {
+  it('holds a real scoped snapshot for controls before creating any native session or journal',async()=>{
+    const scenario=await setup();let reached=false;
+    const bridge=await scenario.open({},10000,undefined,undefined,async(workId)=>{
+      expect(workId).toBe(scenario.work.workId);expect(scenario.toolRequests.map(r=>r.params.name)).toEqual(['envoi_case_snapshot']);
+      expect(await scenario.journal()).toBeNull();reached=true;throw Error('INERT_PRE_NATIVE_CONTROL');
+    });
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toThrow('INERT_PRE_NATIVE_CONTROL');
+    expect(reached).toBe(true);expect(scenario.rpcRequests.some(r=>['session.create','prompt.submit'].includes(r.method))).toBe(false);
+    expect(await scenario.journal()).toBeNull();
+  });
+  it('resumes actual declined decision work through one fresh native admission without accepting, replying or completing',async()=>{
+    const scenario=await setup({declinedDecision:true});
+    scenario.onPrompt(async()=>{
+      const text=scenario.modelText.at(-1)!;
+      expect(text).toContain('human_decision');expect(text).toContain('decline');
+      expect(text).toContain('"pendingHumanDecision":false');
+      expect(text).not.toContain('"humanApproval":"approved"');
+      expect(scenario.toolRequests.map(r=>r.params.name)).toEqual(['envoi_case_snapshot']);
+    });
+    const bridge=await scenario.open({},10000);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).resolves.toBe(true);
+    expect(scenario.rpcRequests.filter(r=>r.method==='prompt.submit')).toHaveLength(1);
+    expect((await scenario.journal())?.completed).toBe(true);
+    expect((await scenario.journal())?.providerCalls).toBe(1);
+    expect(scenario.effects.size).toBe(0);
+    expect(scenario.toolRequests.map(r=>r.params.name)).toEqual(['envoi_case_snapshot']);
+    expect(scenario.fetcher.mock.calls.some(([url])=>String(url).endsWith('/complete'))).toBe(true);
+  });
   it('requires fresh same-instance gate proof before creation and again before submission', async () => {
     const scenario=await setup(); let count=0;
     const expected={policySha256:'a'.repeat(64),moduleSha256:'b'.repeat(64),factoriesSha256:'c'.repeat(64),profileHash:'d'.repeat(64),window:'e'.repeat(64),role:'je1' as const,meterToken:'f'.repeat(64)};

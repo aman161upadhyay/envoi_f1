@@ -8,6 +8,7 @@ import { openClawRuntimeEnvironment, saveOpenClawScopedMode } from './scoped-adm
 import { scopedTurnHandler } from '../agent-bridges/scoped-turn';
 import { FileScopedRunStore } from '../grok/scoped-store';
 import { openClawScopedTurn } from './scoped-turn';
+import { guardScopedPreparation,type ScopedPreparationGuard } from '../hermes/native-binding';
 
 export interface BridgeConfiguration {
   apiUrl: string;
@@ -19,7 +20,7 @@ export interface BridgeConfiguration {
 }
 
 /** Legacy setup and Quick Connect share the durable work and reply implementation. */
-export async function createOpenClawBridge(config: BridgeConfiguration, options: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number } = {}) {
+export async function createOpenClawBridge(config: BridgeConfiguration, options: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number;beforeScopedTurn?:ScopedPreparationGuard } = {}) {
   const env = await openClawRuntimeEnvironment(config.stateDir, options.env ?? process.env, config);
   if (env.ENVOI_SCOPED_TOOLS === 'true') {
     const store = new FileBridgeStore(config.stateDir);
@@ -32,7 +33,8 @@ export async function createOpenClawBridge(config: BridgeConfiguration, options:
       ...(options.pollIntervalMs ? { pollIntervalMs: options.pollIntervalMs } : {}),
       caseSessionHandler: scopedTurnHandler({
         admit: message => store.admit(message),
-        run: openClawScopedTurn({ gatewayUrl: config.gatewayUrl, gatewayToken: config.gatewayToken, agentId: config.agentId, store: runs, fetch: options.fetch }),
+        run: async(turn,host)=>{await guardScopedPreparation(options.beforeScopedTurn,host.workId,turn.signal);
+          return openClawScopedTurn({ gatewayUrl: config.gatewayUrl, gatewayToken: config.gatewayToken, agentId: config.agentId, store: runs, fetch: options.fetch })(turn,host);},
         async beforeEndTurn(host) {
           if (!host.workId) throw new Error('Scoped runtime needs trusted work identity');
           const record = await runs.load(host.workId);

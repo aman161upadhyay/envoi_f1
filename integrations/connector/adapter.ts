@@ -21,6 +21,7 @@ export interface AdapterOptions {
   /** Trusted-host, allowlisted runtime diagnostics; never part of model input. */
   onRuntimeEvent?: ScopedRuntimeObserver;
   beforeNativeSubmit?: import('../hermes/native-binding').NativeSubmissionGuard;
+  beforeScopedTurn?: import('../hermes/native-binding').ScopedPreparationGuard;
   nativeRequestGate?: import('../hermes/request-gate-attestation').NativeRequestGateExpectation;
 }
 export interface AdapterContext extends AdapterOptions {

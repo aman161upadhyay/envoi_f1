@@ -10,6 +10,7 @@ import { privateJson } from '../connector/store';
 import { optionalText, type HermesConfiguration } from './config';
 import { hermesScopedTurn, validateHermesHost, type HermesScopedHost } from './scoped-host';
 import { observeRuntime, type ScopedRuntimeObserver } from '../agent-bridges/runtime-events';
+import { guardScopedPreparation } from './native-binding';
 
 export type HermesRuntimeConfiguration = HermesConfiguration & { scopedTools?: true; daemonOrigin?: string; scopedCwd?: string };
 
@@ -96,6 +97,7 @@ export async function createScopedHermesBridge(config: { apiUrl: string; stateDi
   env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number;
   timeoutMs?: number; pollMs?: number; onRuntimeEvent?: ScopedRuntimeObserver;
   beforeNativeSubmit?: import('./native-binding').NativeSubmissionGuard;
+  beforeScopedTurn?: import('./native-binding').ScopedPreparationGuard;
   nativeRequestGate?: import('./request-gate-attestation').NativeRequestGateExpectation;
 } = {}) {
   if ((options.env ?? process.env).ENVOI_HERMES_GATE_REQUIRED === '1' && !options.nativeRequestGate)
@@ -115,7 +117,9 @@ export async function createScopedHermesBridge(config: { apiUrl: string; stateDi
     caseSessionHandler: scopedTurnHandler({
       admit: message => store.admit(message),
       async run(turn, host) {
-        const operation = run({ ...turn, signal: AbortSignal.any([turn.signal, stopping.signal]) }, host);
+        const scopedSignal=AbortSignal.any([turn.signal,stopping.signal]);
+        const operation = (async()=>{await guardScopedPreparation(options.beforeScopedTurn,host.workId,scopedSignal);
+          await run({ ...turn, signal:scopedSignal }, host);})();
         active.add(operation);
         try { await operation; } finally { active.delete(operation); }
       },

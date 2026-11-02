@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { nativeWorkToken, RequestBudgetLedger, requestBudgetMeter } from './request-budget';
+import { nativeWorkToken, RequestBudgetLedger, requestBudgetMeter, type ModelBudgetAmendment } from './request-budget';
+import { continuationAllocation,continuationRequirements } from './continuation-plan';
 import { bindNativeBudget, cumulativeBudgetReport } from './request-budget-binding';
 
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -13,7 +14,7 @@ const seed = () => ({ actualCalls: 30, actualHermesApiCalls: 24, openClawProvide
 const defaultFlows = [{ id: 'private', role: 'je2' as const, requests: 6, workHash: h('c') },
   { id: 'asset', role: 'testowner' as const, requests: 6, workHash: null },
   { id: 'openclaw', role: 'openclaw' as const, requests: 6, workHash: h('d') }];
-async function setup(flows = defaultFlows, bind = true) {
+async function setup(flows = defaultFlows, bind = true, amendment?:ModelBudgetAmendment) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'envoi-request-budget-'));
   cleanups.push(async () => {
     const resolved = path.resolve(directory), parent = path.resolve(os.tmpdir()) + path.sep;
@@ -21,7 +22,7 @@ async function setup(flows = defaultFlows, bind = true) {
     await fs.rm(resolved, { recursive: true, force: true });
   });
   const filename = path.join(directory, 'requests.jsonl');
-  const prior = seed(), ledger = await RequestBudgetLedger.prepare(filename, prior, flows, h('a'));
+  const prior = seed(), ledger = await RequestBudgetLedger.prepare(filename, prior, flows, h('a'),amendment);
   const tokens = { je2: h('b'), testowner: h('e'), openclaw: h('f') };
   const work = { je2: nativeWorkToken(tokens.je2, ledger.window, 'je2', 'native_private'),
     testowner: nativeWorkToken(tokens.testowner, ledger.window, 'testowner', 'native_asset'),
@@ -35,6 +36,30 @@ async function setup(flows = defaultFlows, bind = true) {
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
 
 describe('durable physical-attempt budget', () => {
+  it('keeps default48 and requires explicit bounded approval before an expanded flow can be seeded',async()=>{
+    await expect(setup([{id:'private',role:'je2',requests:19,workHash:h('c')}])).rejects.toThrow('FLOW_ALLOCATION_REFUSED');
+    for(const amendment of [{purpose:'phase-c-decline-continuation',models:62,approvalReceiptSha256:''},
+      {purpose:'other',models:62,approvalReceiptSha256:h('1')},{purpose:'phase-c-decline-continuation',models:65,approvalReceiptSha256:h('1')}])
+      await expect(setup(defaultFlows,true,amendment as ModelBudgetAmendment)).rejects.toThrow('MODEL_BUDGET_APPROVAL_REQUIRED');
+    expect((await setup()).ledger.modelCap).toBe(48);
+  });
+  it('charges all34 amended attempts and denies65 without changing other caps or historical use',async()=>{
+    const proof={purpose:'phase-c-decline-continuation' as const,models:64,approvalReceiptSha256:h('7')};
+    const s=await setup([{id:'private',role:'je2',requests:34,workHash:h('c')}],true,proof);
+    await s.ledger.selectPhase('hermes',['private'],Date.now()+10000);
+    for(let n=0;n<34;n++){const id=await s.ledger.reserve('je2',s.work.je2);await s.ledger.finish(id,'response');}
+    await expect(s.ledger.reserve('je2',s.work.je2)).rejects.toThrow('MODEL_REQUEST_CAP_REACHED');
+    const reopened=await RequestBudgetLedger.open(s.filename);
+    expect(reopened.snapshot()).toMatchObject({chargedAttempts:64,modelCap:64,remainingModelAttempts:0,carriedMessageReservations:22,carriedNewInstallations:5});
+    expect(JSON.parse((await fs.readFile(s.filename,'utf8')).split('\n')[0]).modelBudgetAmendment).toEqual(proof);
+  });
+  it('provides20 nominal,24 sequential and34 bounded attempts including decline resume and FIFO receipt review',()=>{
+    expect(continuationRequirements()).toMatchObject({nominalBatched:20,sequential:24,contingency:10,sequentialTotalCap:54,boundedTotalCap:64,budgetApproved:false,executionAllowed:false});
+    const flows=continuationAllocation('bounded-contingency');expect(flows.reduce((n,f)=>n+f.requests,0)).toBe(34);
+    expect(flows.find(f=>f.id==='declined-resume')).toMatchObject({role:'testowner',requests:2});
+    expect(flows.find(f=>f.id==='private-receipt-review')).toMatchObject({role:'je1',requests:2});
+    expect(continuationAllocation('sequential').reduce((n,f)=>n+f.requests,0)).toBe(24);
+  });
   it('binds the exact trusted canonical work through the before-submit hook and keeps one deadline',async()=>{
     const s=await setup(defaultFlows,false);const guard=bindNativeBudget({ledger:s.ledger,flowId:'asset',canonicalWorkId:'canonical_asset_work',canonicalReceiptSha256:h('3'),meterToken:s.tokens.testowner});
     const signal=new AbortController().signal;
@@ -119,19 +144,24 @@ describe('durable physical-attempt budget', () => {
 });
 
 describe('authenticated physical request meter with a mocked fixed HTTPS upstream',()=>{
-  async function meter(options: { deadlineMs?:number; upstream?:typeof fetch }={}) {
+  async function meter(options: { deadlineMs?:number; upstream?:typeof fetch;allowWork?:(role:string,token:string)=>boolean }={}) {
     const s=await setup();await s.ledger.selectPhase('hermes',['private'],Date.now()+(options.deadlineMs??10000));const controller=new AbortController();let current=true;
     const upstream=options.upstream??vi.fn(async(url,init)=>{
       expect(url).toBe('https://api.anthropic.com/v1/messages');expect(init?.redirect).toBe('error');expect(s.ledger.snapshot().chargedAttempts).toBeGreaterThan(30);
       expect((await fs.readFile(s.filename,'utf8')).includes('"kind":"attempt"')).toBe(true);return Response.json({id:'inert'});
     });
-    const server=await requestBudgetMeter({ledger:s.ledger,bindings:[{role:'je2',token:s.tokens.je2,models:['inert-model']}],active:()=>current,signal:controller.signal,fetch:upstream});
+    const server=await requestBudgetMeter({ledger:s.ledger,bindings:[{role:'je2',token:s.tokens.je2,models:['inert-model']}],active:()=>current,signal:controller.signal,fetch:upstream,allowWork:options.allowWork});
     cleanups.push(async()=>{controller.abort();await server.close();});
     const send=(headers:Record<string,string>={},body=JSON.stringify({model:'inert-model',messages:[]}))=>fetch(server.origin+'/v1/messages',{method:'POST',headers:{'content-type':'application/json','x-phase-c-meter':s.tokens.je2,'x-envoi-meter-role':'je2','x-envoi-meter-window':s.ledger.window,'x-envoi-meter-work':s.work.je2,...headers},body});
     return {...s,server,controller,upstream,send,stop:()=>{current=false;}};
   }
   it('authenticates and fsyncs exactly one charge before the fixed upstream sees bytes',async()=>{
     const s=await meter();expect((await s.send()).status).toBe(200);await vi.waitFor(()=>expect(s.ledger.snapshot().pending).toBe(0));expect(s.ledger.snapshot().chargedAttempts).toBe(31);expect(s.upstream).toHaveBeenCalledTimes(1);
+  });
+  it('denies a closed work fence even while another cohort flow keeps the model phase live',async()=>{
+    let allowed=true;const s=await meter({allowWork:()=>allowed});
+    expect((await s.send()).status).toBe(200);await vi.waitFor(()=>expect(s.ledger.snapshot().pending).toBe(0));allowed=false;
+    expect((await s.send()).status).toBe(403);expect(s.ledger.snapshot().chargedAttempts).toBe(31);expect(s.upstream).toHaveBeenCalledTimes(1);
   });
   it('rejects wrong role/token/window/model and cross-work calls without forwarding',async()=>{
     const s=await meter();for(const headers of [{'x-phase-c-meter':h('9')},{'x-envoi-meter-window':h('9')},{'x-envoi-meter-role':'testowner'},{'x-envoi-meter-work':s.work.testowner}])expect((await s.send(headers)).status).toBeGreaterThanOrEqual(400);
