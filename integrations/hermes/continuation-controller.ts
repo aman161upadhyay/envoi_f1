@@ -172,13 +172,15 @@ export class ContinuationController {
   }
   /** Proof is read by the trusted runner from the real saved journal + canonical settlement. */
   finishWork(flowId:string,proof:{workId:string;canonicalStatus:'processed';journalCompleted:true;journalSha256:string;nativeOutcome:'completed'|'ended_for_human';
-    caseStillOpen?:true;newCanonicalEffects?:0;decisionOutcome?:'declined'}) {
+    caseStillOpen?:true;caseState?:'inProgress'|'completed';newCanonicalEffects?:0;decisionOutcome?:'declined'}) {
     this.live();const b=this.bindings.get(flowId);
     if(!b?.submitted||b.finished||proof.workId!==b.workId||proof.canonicalStatus!=='processed'||proof.journalCompleted!==true
       ||!digest(proof.journalSha256)||!['completed','ended_for_human'].includes(proof.nativeOutcome)||this.ledger.snapshot().pending)refuse('ACTUAL_NATIVE_SETTLEMENT_PROOF_REQUIRED');
     const policy=this.flowPolicy(flowId);
     if(proof.nativeOutcome==='ended_for_human'&&!policy.allowHumanEnd)refuse('UNEXPECTED_HUMAN_END');
-    if(policy.noAction&&(proof.caseStillOpen!==true||proof.newCanonicalEffects!==0
+    const expectedState=policy.expectedCaseState??'inProgress',provedState=proof.caseState??(proof.caseStillOpen===true?'inProgress':undefined);
+    if(policy.noAction&&(provedState!==expectedState||proof.newCanonicalEffects!==0
+      ||expectedState==='completed'&&proof.caseStillOpen!==undefined
       ||policy.decisionOutcome==='declined'&&proof.decisionOutcome!=='declined'))refuse('NO_ACTION_RESUMPTION_PROOF_REQUIRED');
     this.closeNativeForwarding(flowId,proof);
     b.finished=true;

@@ -11,11 +11,12 @@ import { FileScopedRunStore } from '../grok/scoped-store';
 import type { RuntimeBridge } from '../connector/adapter';
 import type { NativeRequestGateExpectation } from './request-gate-attestation';
 import { ContinuationController } from './continuation-controller';
+import type {ContinuationFlowPolicy} from './continuation-plan';
 
 type Role='je1'|'je2'|'testowner'|'openclaw';
 export type ContinuationWork=Readonly<{flowId:string;workId:string;caseId:string;evidenceSha256:string}>;
 type ActiveWork=ContinuationWork & {humanEnd:boolean;settled:boolean;failed:boolean;deadline?:number;nativeBinding?:Promise<void>;held?:boolean;workStop?:AbortController;beforeIds?:Set<unknown>;completedJournalHash?:string};
-type FlowPolicy={noAction:boolean;decisionOutcome:'approved'|'declined'|null;allowHumanEnd:boolean};
+type FlowPolicy=ContinuationFlowPolicy;
 const hash=(x:string|Buffer)=>createHash('sha256').update(x).digest('hex');
 function refuse(code:string):never{throw Object.assign(new Error(code),{code});}
 const readEnvelope=async(response:Response)=>{const p=await response.clone().json();return p.result?.content?.[0]?.text?JSON.parse(p.result.content[0].text):null;};
@@ -138,7 +139,9 @@ export async function createContinuationReceiver(options:{
       if(journal.workId!==state.workId||journal.completed!==true||journal.pending?.length)refuse('ACTUAL_NATIVE_COMPLETION_REQUIRED');
       const digest=hash(bytes);if(!state.completedJournalHash||state.completedJournalHash!==digest)refuse('NATIVE_COMPLETION_JOURNAL_CHANGED');
       const result={workId:state.workId,canonicalStatus:'processed' as const,journalCompleted:true as const,journalSha256:digest,nativeOutcome:state.humanEnd?'ended_for_human' as const:'completed' as const};
-      if(state.beforeIds){const after=await bridge!.connector.listCaseMessages(state.caseId),record=await bridge!.connector.getCase(state.caseId);if(after.length>=50||after.some(m=>!state.beforeIds!.has(m.id))||new Set(after.map(m=>m.id)).size!==state.beforeIds.size||record.state!=='inProgress')refuse('NO_ACTION_RESUMPTION_CHANGED_CASE');return{...result,caseStillOpen:true as const,newCanonicalEffects:0 as const,...(policy(state.flowId).decisionOutcome==='declined'?{decisionOutcome:'declined' as const}:{})};}
+      if(state.beforeIds){const after=await bridge!.connector.listCaseMessages(state.caseId),record=await bridge!.connector.getCase(state.caseId),expectedState=policy(state.flowId).expectedCaseState??'inProgress';
+        if(after.length>=50||after.some(m=>!state.beforeIds!.has(m.id))||new Set(after.map(m=>m.id)).size!==state.beforeIds.size||record.state!==expectedState)refuse('NO_ACTION_RESUMPTION_CHANGED_CASE');
+        return{...result,caseState:expectedState,...(expectedState==='inProgress'?{caseStillOpen:true as const}:{}),newCanonicalEffects:0 as const,...(policy(state.flowId).decisionOutcome==='declined'?{decisionOutcome:'declined' as const}:{})};}
       return result;
     };
     const runMany=async(flows:readonly ContinuationWork[])=>{

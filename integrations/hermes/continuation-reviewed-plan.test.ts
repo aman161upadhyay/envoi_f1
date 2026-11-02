@@ -186,3 +186,30 @@ it('rejects same-case or mixed-host cohorts and keeps exact human-decision/no-ac
  expect(()=>c.finishWork('oc-decline',proofValue)).toThrow('NO_ACTION_RESUMPTION_PROOF_REQUIRED');
  c.finishWork('oc-decline',{...proofValue,caseStillOpen:true,newCanonicalEffects:0,decisionOutcome:'declined'});expect(c.summary().finished).toEqual(['oc-decline']);
 });
+
+it('requires explicit reviewed completed-state no-action proof for an ordinary receipt without claiming the case is open',async()=>{
+ const s=await setup(),base=plan(s);
+ const flow:ReviewedContinuationFlow={id:'oc-completed-review',role:'openclaw',requests:1,workHash:null,policy:{noAction:true,decisionOutcome:null,allowHumanEnd:false,expectedCaseState:'completed'}};
+ const p=sign({...base,flows:[...base.flows.map(f=>f.id==='approved-accept-complete'?{...f,requests:f.requests-1}:f),flow],flowCases:{...base.flowCases,[flow.id]:'case_assets'}});
+ expect(validateReviewedContinuationPlan(p).flows.at(-1)?.policy.expectedCaseState).toBe('completed');
+ const changedHash=hashReviewedContinuationPlan({...p,flows:p.flows.map(f=>f.id===flow.id?{...f,policy:{...f.policy,expectedCaseState:'inProgress'}}:f)});expect(changedHash).not.toBe(p.planSha256);
+ const c=await adopt(s,p,async b=>({...b}));c.releaseGroup([flow.id]);const workId=claim(c,p,flow.id);
+ await c.nativeGuard('openclaw',h('6'))({workId,sessionId:'native_completed_receipt',deadlineUnixMs:Date.now()+10000},new AbortController().signal);
+ const proofValue={workId,canonicalStatus:'processed' as const,journalCompleted:true as const,journalSha256:h('8'),nativeOutcome:'completed' as const,newCanonicalEffects:0 as const};
+ for(const bad of [{...proofValue,caseState:'inProgress' as const},{...proofValue,caseStillOpen:true as const},{...proofValue,caseState:'completed' as const,caseStillOpen:true as const}])expect(()=>c.finishWork(flow.id,bad)).toThrow('NO_ACTION_RESUMPTION_PROOF_REQUIRED');
+ c.finishWork(flow.id,{...proofValue,caseState:'completed'});expect(c.summary().finished).toEqual([flow.id]);expect(c.ledger.snapshot().chargedAttempts).toBe(30);
+});
+
+it('keeps historical open no-action policies and refuses completed decline or a later state-policy broadening',async()=>{
+ const s=await setup(),p=plan(s);
+ expect(defaultContinuationFlowPolicy('declined-resume')).toEqual({noAction:true,decisionOutcome:'declined',allowHumanEnd:false});
+ for(const bad of [sign({...p,flows:p.flows.map(f=>f.id==='oc-decline'?{...f,policy:{...f.policy,expectedCaseState:'completed'}}:f)}),
+  sign({...p,flows:p.flows.map(f=>f.id==='green'?{...f,policy:{...f.policy,expectedCaseState:'completed'}}:f)})])expect(()=>validateReviewedContinuationPlan(bad)).toThrow();
+ const c=await adopt(s,p,async b=>({...b}));c.releaseGroup(['declined-resume']);const workId=claim(c,p,'declined-resume');
+ await c.nativeGuard('testowner',h('6'))({workId,sessionId:'native_legacy_open',deadlineUnixMs:Date.now()+10000},new AbortController().signal);
+ const proofValue={workId,canonicalStatus:'processed' as const,journalCompleted:true as const,journalSha256:h('8'),nativeOutcome:'completed' as const,newCanonicalEffects:0 as const,decisionOutcome:'declined' as const};
+ expect(()=>c.finishWork('declined-resume',{...proofValue,caseState:'completed',caseStillOpen:true})).toThrow('NO_ACTION_RESUMPTION_PROOF_REQUIRED');
+ c.finishWork('declined-resume',{...proofValue,caseStillOpen:true});expect(c.summary().finished).toEqual(['declined-resume']);
+ const broaden=sign({...p,ownerApprovalHash:h('7'),flows:p.flows.map(f=>f.id==='private-receipt-review'?{...f,policy:{...f.policy,expectedCaseState:'completed'}}:f)});
+ await expect(c.ledger.amendReviewedPlan(broaden,proof(c.ledger))).rejects.toThrow('REVIEWED_GRAPH_HISTORY_CHANGED');
+});

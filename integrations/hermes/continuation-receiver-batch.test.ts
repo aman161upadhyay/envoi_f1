@@ -16,12 +16,12 @@ const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>{re
 const cleanups:Array<()=>Promise<unknown>>=[];
 beforeEach(()=>{vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-17T12:00:06Z'));});
 afterEach(async()=>{for(const fn of cleanups.splice(0).reverse())await fn();vi.useRealTimers();vi.restoreAllMocks();});
-async function setup({role='je1',process,tokenReuse=false,noAction=false,removeAfter=false,tamperAfterEnd=false}:{role?:'je1'|'testowner'|'openclaw';process?:(channel:any,context:any)=>Promise<void>;tokenReuse?:boolean;noAction?:boolean;removeAfter?:boolean;tamperAfterEnd?:boolean}={}){
+async function setup({role='je1',process,tokenReuse=false,noAction=false,removeAfter=false,tamperAfterEnd=false,expectedCaseState,returnedCaseState='inProgress',decisionOutcome}:{role?:'je1'|'testowner'|'openclaw';process?:(channel:any,context:any)=>Promise<void>;tokenReuse?:boolean;noAction?:boolean;removeAfter?:boolean;tamperAfterEnd?:boolean;expectedCaseState?:'inProgress'|'completed';returnedCaseState?:'inProgress'|'completed';decisionOutcome?:'declined'|null}={}){
  const dir=await fs.mkdtemp(path.join(tmpdir(),'envoi-rx-batch-'));cleanups.push(async()=>{const target=path.resolve(dir);if(!target.startsWith(path.resolve(tmpdir())+path.sep)||!path.basename(target).startsWith('envoi-rx-batch-'))throw Error('CLEANUP_REFUSED');await fs.rm(target,{recursive:true,force:true});});
  const expected={address:'example@envoi.mail',agentId:'agent_example',inboxId:'inbox_example',installationId:'installation_example'};
  state.saved={version:1,runtime:role==='openclaw'?'openclaw':'hermes',apiUrl:origin,address:expected.address,configuration:{gatewayUrl:'http://127.0.0.1:19002',agentId:'inert'},activationSetup:{agentId:expected.agentId,inboxId:expected.inboxId,installationId:expected.installationId}};
  const fenceOrder:Array<{kind:string;workId:string}>=[];
- const native=vi.fn(async()=>{}),controller={active:()=>true,receipt:{serverSource:'2ae'},control:new AbortController(),ledger:{window:'a'.repeat(64),snapshot:()=>({chargedAttempts:30,pending:0})},expectWork:vi.fn(),observeClaim:vi.fn(),assertScopedTool:vi.fn(),closeNativeForwarding:vi.fn((_id:string,p:{workId:string})=>{fenceOrder.push({kind:'provider_closed',workId:p.workId});}),nativeGuard:()=>native,flowPolicy:()=>({noAction,decisionOutcome:noAction?'declined':null,allowHumanEnd:true})} as unknown as ContinuationController;
+ const native=vi.fn(async()=>{}),controller={active:()=>true,receipt:{serverSource:'2ae'},control:new AbortController(),ledger:{window:'a'.repeat(64),snapshot:()=>({chargedAttempts:30,pending:0})},expectWork:vi.fn(),observeClaim:vi.fn(),assertScopedTool:vi.fn(),closeNativeForwarding:vi.fn((_id:string,p:{workId:string})=>{fenceOrder.push({kind:'provider_closed',workId:p.workId});}),nativeGuard:()=>native,flowPolicy:()=>({noAction,decisionOutcome:decisionOutcome===undefined?(noAction?'declined':null):decisionOutcome,allowHumanEnd:true,...(expectedCaseState?{expectedCaseState}:{})})} as unknown as ContinuationController;
  const works=['a','b'].map(id=>({workId:'msg_'+id,leaseToken:'INERT_LEASE_'+id,leaseExpiresAt:new Date(Date.now()+120000).toISOString(),message:{id:'msg_'+id,caseId:'case_'+id,recipientAgentId:expected.agentId,senderAgentId:'agent_counterparty',from:{agentId:'agent_counterparty',address:'counterparty@envoi.mail'},text:'inert '+id}}));
  let claims=0;const tokens=new Map<string,string>(),record=vi.fn(async()=>{}),reserveOperation=vi.fn(async()=>{}),calls:Array<{method:string;workId?:string;tool?:string}>=[];
  const fetcher=vi.fn<typeof fetch>(async(input,init)=>{
@@ -36,7 +36,7 @@ async function setup({role='je1',process,tokenReuse=false,noAction=false,removeA
   if(op==='renew')return Response.json({workId:id,leaseToken:work!.leaseToken,leaseExpiresAt:new Date(Date.now()+120000).toISOString()});
   if(op==='mcp'){const token=new Headers(init?.headers).get('authorization')!,body=JSON.parse(String(init?.body)),tool=body.params?.name,workId=tokens.get(token);calls.push({method:body.method,workId,tool});return Response.json({jsonrpc:'2.0',id:1,result:{content:[{type:'text',text:JSON.stringify({ok:true,result:{workId,...(tool==='envoi_request_human'?{endTurn:true}:{})}})}]}});}
   if(op==='messages'){const caseId=url.searchParams.get('caseId');return Response.json(removeAfter&&calls.some(c=>c.method==='complete')?[]:[{id:'msg_prior_'+caseId,caseId}]);}
-  if(pathname.includes('/cases/'))return Response.json({id:op,state:'inProgress'});
+  if(pathname.includes('/cases/'))return Response.json({id:op,state:returnedCaseState});
   throw Error('UNEXPECTED_INERT_ROUTE');
  });
  state.create=async(ctx:any)=>{
@@ -87,4 +87,15 @@ it('uses reviewed flow policy for independent declined no-action proofs and reje
 });
 it('refuses a native journal changed after its provider forwarding fence was closed',async()=>{
  const s=await setup({tamperAfterEnd:true});await expect(s.receiver.runMany(s.flows)).rejects.toMatchObject({code:'EXPLICIT_NATIVE_BATCH_INCOMPLETE',completedWorkIds:[]});expect(s.controller.closeNativeForwarding).toHaveBeenCalledTimes(2);expect(s.record).toHaveBeenCalledWith(expect.objectContaining({kind:'canonical_settlement',status:'processed'}));
+});
+
+it('proves an explicitly reviewed completed ordinary receipt as no-action without inventing an open-case proof',async()=>{
+ const s=await setup({noAction:true,decisionOutcome:null,expectedCaseState:'completed',returnedCaseState:'completed'}),f=s.flows[0];
+ const result=await s.receiver.runOne(f.flowId,f.workId,f.caseId,f.evidenceSha256);
+ expect(result).toMatchObject({canonicalStatus:'processed',nativeOutcome:'completed',caseState:'completed',newCanonicalEffects:0});
+ expect(result).not.toHaveProperty('caseStillOpen');expect(result).not.toHaveProperty('decisionOutcome');expect(s.reserveOperation).not.toHaveBeenCalled();
+ const wrongState=await setup({noAction:true,decisionOutcome:null,expectedCaseState:'completed',returnedCaseState:'inProgress'}),wrong=wrongState.flows[0];
+ await expect(wrongState.receiver.runOne(wrong.flowId,wrong.workId,wrong.caseId,wrong.evidenceSha256)).rejects.toMatchObject({code:'NO_ACTION_RESUMPTION_CHANGED_CASE'});
+ const changed=await setup({noAction:true,decisionOutcome:null,expectedCaseState:'completed',returnedCaseState:'completed',removeAfter:true}),effect=changed.flows[0];
+ await expect(changed.receiver.runOne(effect.flowId,effect.workId,effect.caseId,effect.evidenceSha256)).rejects.toMatchObject({code:'NO_ACTION_RESUMPTION_CHANGED_CASE'});
 });

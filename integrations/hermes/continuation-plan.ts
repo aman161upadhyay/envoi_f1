@@ -26,7 +26,7 @@ export function continuationRequirements() {
 }
 
 export type ContinuationRole='je1'|'je2'|'testowner'|'openclaw';
-export type ContinuationFlowPolicy=Readonly<{noAction:boolean;decisionOutcome:'approved'|'declined'|null;allowHumanEnd:boolean}>;
+export type ContinuationFlowPolicy=Readonly<{noAction:boolean;decisionOutcome:'approved'|'declined'|null;allowHumanEnd:boolean;expectedCaseState?:'inProgress'|'completed'}>;
 export type ReviewedContinuationFlow=Readonly<{id:string;role:ContinuationRole;requests:number;workHash:string|null;policy:ContinuationFlowPolicy}>;
 export type ReviewedContinuationPlan=Readonly<{purpose:'phase-c-reviewed-graph';version:1;ownerApprovalHash:string;planSha256:string;
   allowSameRoleCohorts:boolean;flows:readonly ReviewedContinuationFlow[];flowCases:Readonly<Record<string,string>>;actorIds:Readonly<Record<ContinuationRole,string>>}>;
@@ -49,10 +49,12 @@ export function validateReviewedContinuationPlan(value:unknown):ReviewedContinua
     if(!f||typeof f!=='object'||Array.isArray(f)||!closed(f,['id','role','requests','workHash','policy'])
       ||typeof f.id!=='string'||!/^[a-z0-9-]{1,80}$/.test(f.id)||!['je1','je2','testowner','openclaw'].includes(f.role)
       ||!Number.isSafeInteger(f.requests)||f.requests<1||f.workHash!==null&&!digest(f.workHash)
-      ||!f.policy||typeof f.policy!=='object'||Array.isArray(f.policy)||!closed(f.policy,['noAction','decisionOutcome','allowHumanEnd'])
+      ||!f.policy||typeof f.policy!=='object'||Array.isArray(f.policy)||!closed(f.policy,['noAction','decisionOutcome','allowHumanEnd',...(Object.hasOwn(f.policy,'expectedCaseState')?['expectedCaseState']:[])])
       ||typeof f.policy.noAction!=='boolean'||typeof f.policy.allowHumanEnd!=='boolean'
       ||f.policy.decisionOutcome!==null&&!['approved','declined'].includes(f.policy.decisionOutcome)
-      ||f.policy.noAction&&f.policy.allowHumanEnd)refuse();
+      ||f.policy.noAction&&f.policy.allowHumanEnd
+      ||Object.hasOwn(f.policy,'expectedCaseState')&&(!f.policy.noAction||!['inProgress','completed'].includes(f.policy.expectedCaseState!)
+        ||f.policy.expectedCaseState==='completed'&&f.policy.decisionOutcome!==null))refuse();
   }
   if(!p.flowCases||typeof p.flowCases!=='object'||Array.isArray(p.flowCases)||!closed(p.flowCases,p.flows.map(f=>f.id))
     ||p.flows.some(f=>typeof p.flowCases[f.id]!=='string'||!/^case_[A-Za-z0-9_-]+$/.test(p.flowCases[f.id]))||new Set(Object.values(p.flowCases)).size>9
@@ -62,7 +64,8 @@ export function validateReviewedContinuationPlan(value:unknown):ReviewedContinua
   return structuredClone(p);
 }
 export function sameContinuationFlowPolicy(a:ContinuationFlowPolicy,b:ContinuationFlowPolicy){
-  return a.noAction===b.noAction&&a.decisionOutcome===b.decisionOutcome&&a.allowHumanEnd===b.allowHumanEnd;
+  return a.noAction===b.noAction&&a.decisionOutcome===b.decisionOutcome&&a.allowHumanEnd===b.allowHumanEnd
+    &&(a.expectedCaseState??'inProgress')===(b.expectedCaseState??'inProgress');
 }
 /** Existing flows keep their historical semantics even when quotas are amended. */
 export function defaultContinuationFlowPolicy(id:string):ContinuationFlowPolicy {
