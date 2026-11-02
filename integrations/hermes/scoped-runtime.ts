@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { lstat, readFile } from 'node:fs/promises';
 import { EnvoiConnector } from '../../sdk/typescript/src/connector';
+import { EnvoiError } from '../../sdk/typescript/src/index';
 import { FileBridgeStore } from '../agent-bridges/file-store';
 import { scopedTurnHandler } from '../agent-bridges/scoped-turn';
 import { FileScopedRunStore } from '../grok/scoped-store';
@@ -94,7 +95,11 @@ export async function saveHermesScopedMode(stateDir: string, config: HermesRunti
 export async function createScopedHermesBridge(config: { apiUrl: string; stateDir: string; runtime: HermesRuntimeConfiguration }, options: {
   env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number;
   timeoutMs?: number; pollMs?: number; onRuntimeEvent?: ScopedRuntimeObserver;
+  beforeNativeSubmit?: import('./native-binding').NativeSubmissionGuard;
+  nativeRequestGate?: import('./request-gate-attestation').NativeRequestGateExpectation;
 } = {}) {
+  if ((options.env ?? process.env).ENVOI_HERMES_GATE_REQUIRED === '1' && !options.nativeRequestGate)
+    throw new EnvoiError('Required native request gate was not configured', undefined, 'HERMES_REQUEST_GATE_NOT_PROVEN');
   await assertScopedHermes(config.runtime, options.env ?? process.env);
   const selected = await selectScopedHermes({ env: options.env ?? process.env, stateDir: config.stateDir }, config.runtime);
   if (!selected) throw refuse();

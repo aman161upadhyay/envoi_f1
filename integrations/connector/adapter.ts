@@ -20,6 +20,8 @@ export interface AdapterOptions {
   signal?: AbortSignal;
   /** Trusted-host, allowlisted runtime diagnostics; never part of model input. */
   onRuntimeEvent?: ScopedRuntimeObserver;
+  beforeNativeSubmit?: import('../hermes/native-binding').NativeSubmissionGuard;
+  nativeRequestGate?: import('../hermes/request-gate-attestation').NativeRequestGateExpectation;
 }
 export interface AdapterContext extends AdapterOptions {
   apiUrl: string;

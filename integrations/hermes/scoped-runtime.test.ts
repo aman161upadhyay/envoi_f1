@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -66,6 +66,7 @@ async function setup() {
   const inputs = new Set<string>();
   let lostSubmit = false, loseReceipt = false, receiptDrops = 0, receiptFault: string | undefined;
   let instanceId = 'instance_fixture', replaceInstanceOnDrop = false;
+  let gateAnswer: ((params: Record<string, any>) => unknown) | undefined;
   let sendCloses = false;
   let sourceCapabilities = ['acp-editor-policy-v1', 'acp-session-mcp-v1'];
   let controlCapabilities = ['session-authority-v1', 'durable-admission-v1', 'event-replay-v1'];
@@ -77,7 +78,7 @@ async function setup() {
       const request = JSON.parse(text); bootstrap.push(request);
       const result = request.verb === 'identify' ? { runtime_protocol: 1, state: 'ready', api_origin: daemon, instance_id: instanceId, capabilities: controlCapabilities,
         served_profiles: [{ home, profile_id: home }] } : { runtime_protocol: 1, instance_id: instanceId, profile_id: home, ticket: 'PRIVATE_FIXTURE_TICKET_1234567890' };
-      socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result }) + '\n');
+      socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: request.verb === 'envoi-request-gate-status' && gateAnswer ? gateAnswer(request.params) : result }) + '\n');
     });
   });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(netTarget, resolve); });
@@ -207,14 +208,18 @@ async function setup() {
     const state = operation === 'acknowledge' ? 'acknowledged' : operation === 'complete' ? 'processed' : 'failed';
     return Response.json({ workId: work.workId, status: state, receipt: { messageId: work.workId, state } });
   });
-  const open = async (requestedEnv: NodeJS.ProcessEnv = {}, timeoutMs = 1000) => {
+  const open = async (requestedEnv: NodeJS.ProcessEnv = {}, timeoutMs = 1000,
+    guard?: import('./native-binding').NativeSubmissionGuard,
+    gate?: import('./request-gate-attestation').NativeRequestGateExpectation) => {
     const bridge = await createHermesBridge({ apiUrl: origin, stateDir: directory, hermesUrl: '', hermesKey: '', runtime: config! },
-      { env: requestedEnv, fetch: fetcher, pollMs: 1, timeoutMs, onRuntimeEvent: event => { runtimeEvents.push(event); } });
+      { env: requestedEnv, fetch: fetcher, pollMs: 1, timeoutMs, onRuntimeEvent: event => { runtimeEvents.push(event); },
+        beforeNativeSubmit: guard, nativeRequestGate: gate });
     cleanups.push(bridge.close); return bridge;
   };
   return { directory, home, config: config!, env, store, fetcher, minted, work, toolRequests, rpcRequests, modelText, bootstrap, sockets,
     effects, open, mcp, runtimeEvents, replyArgs: reply.request!.body!.params.arguments,
     snapshot: snapshot.body,
+    gateAnswer: (answer: typeof gateAnswer) => { gateAnswer = answer; },
     onPrompt: (action: typeof onPrompt) => { onPrompt = action; },
     detachedExecution: () => { detachedExecution = true; },
     failRenewal: () => { renewalFailure = true; },
@@ -237,6 +242,43 @@ async function setup() {
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('production Hermes scoped composition with inert authenticated daemon transport', () => {
+  it('requires fresh same-instance gate proof before creation and again before submission', async () => {
+    const scenario=await setup(); let count=0;
+    const expected={policySha256:'a'.repeat(64),moduleSha256:'b'.repeat(64),factoriesSha256:'c'.repeat(64),profileHash:'d'.repeat(64),window:'e'.repeat(64),role:'je1' as const,meterToken:'f'.repeat(64)};
+    scenario.gateAnswer(params=>{
+      count++; const fields=[1,params.instance_id,params.challenge,expected.policySha256,expected.moduleSha256,
+        expected.factoriesSha256,expected.profileHash,expected.window,expected.role,Date.now()+60000,true];
+      return {version:1,required:true,ready:true,fields,mac:createHmac('sha256',Buffer.from(expected.meterToken,'hex')).update(JSON.stringify(fields)).digest('hex')};
+    });
+    const bridge=await scenario.open({},10000,undefined,expected);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).resolves.toBe(true);
+    expect(count).toBe(2); expect(scenario.rpcRequests.filter(r=>r.method==='prompt.submit')).toHaveLength(1);
+  });
+  it('binds the exact saved native session and current work before the first model submission', async () => {
+    const scenario = await setup(); let reviewed = false;
+    const bridge = await scenario.open({}, 10000, async (binding, signal) => {
+      expect(signal.aborted).toBe(false); expect(binding.workId).toBe(scenario.work.workId);
+      expect(binding.sessionId).toBe('hermes_session_fixture');
+      expect(binding.deadlineUnixMs).toBeGreaterThan(Date.now()); expect(binding.deadlineUnixMs).toBeLessThanOrEqual(Date.now()+10000);
+      expect(scenario.rpcRequests.some(r => r.method === 'prompt.submit')).toBe(false);
+      const journal = await scenario.journal(); expect(journal?.completed).toBe(false);
+      expect(journal?.providerCalls).toBe(0); reviewed = true;
+    });
+    await bridge.connector.scopedWakeWorkDriver().processWorkOnce(); expect(reviewed).toBe(true);
+    expect(scenario.rpcRequests.filter(r => r.method === 'prompt.submit')).toHaveLength(1);
+  });
+  it('does not submit a native prompt if the private binding guard refuses', async () => {
+    const scenario = await setup(); const bridge = await scenario.open({}, 10000, async () => { throw Error('INERT_BINDING_REFUSED'); });
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toThrow('INERT_BINDING_REFUSED');
+    expect(scenario.rpcRequests.some(r => r.method === 'prompt.submit')).toBe(false); expect((await scenario.journal())?.providerCalls).toBe(0);
+  });
+  it('refuses an old runtime with no loaded gate proof before session creation or prompt', async () => {
+    const scenario = await setup();
+    const expected = { policySha256:'a'.repeat(64), moduleSha256:'b'.repeat(64), factoriesSha256:'c'.repeat(64), profileHash:'d'.repeat(64), window:'e'.repeat(64), role:'je1' as const, meterToken:'f'.repeat(64) };
+    const bridge = await scenario.open({}, 10000, undefined, expected);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toThrow();
+    expect(scenario.rpcRequests.some(r => r.method === 'session.create' || r.method === 'prompt.submit')).toBe(false);
+  });
   it.each(['before-poll', 'during-send'] as const)('recovers a status socket closed %s before its close event is delivered', async mode => {
     const scenario = await setup(); scenario.detachedExecution();
     scenario.onPrompt(async () => {

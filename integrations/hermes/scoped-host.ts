@@ -1,5 +1,5 @@
 import { connect } from 'node:net';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { lstat, readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -9,6 +9,8 @@ import { PermanentWorkError } from '../../sdk/typescript/src/connector';
 import type { ScopedModelTurn } from '../agent-bridges/scoped-turn';
 import type { ScopedRunRecord, ScopedRunStore } from '../grok/scoped-store';
 import { startScopedMcpRelay } from './scoped-relay';
+import { guardNativeSubmission } from './native-binding';
+import { verifyNativeGateAttestation, type NativeRequestGateExpectation } from './request-gate-attestation';
 import { observeRuntime, type ScopedRuntimeEvent, type ScopedRuntimeObserver } from '../agent-bridges/runtime-events';
 
 const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -303,10 +305,22 @@ export async function inspectHermesTerminalTurn(host: HermesScopedHost, run: Sco
   }
 }
 
+export async function checkHermesRequestGate(host: HermesScopedHost, expected: NativeRequestGateExpectation,
+  signal: AbortSignal, expectedInstanceId?: string) {
+  const identity = await control(host.home, 'identify', {}, signal);
+  selectedHermesProfile(identity, host);
+  if (expectedInstanceId !== undefined && identity.instance_id !== expectedInstanceId) throw failure('HERMES_INSTANCE_CHANGED');
+  const challenge = randomBytes(16).toString('hex');
+  const attestation = await control(host.home, 'envoi-request-gate-status', { instance_id: identity.instance_id, challenge }, signal);
+  return verifyNativeGateAttestation(attestation, expected, identity.instance_id, challenge);
+}
+
 export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, options: {
   timeoutMs?: number;
   pollMs?: number;
   onRuntimeEvent?: ScopedRuntimeObserver;
+  beforeNativeSubmit?: import('./native-binding').NativeSubmissionGuard;
+  nativeRequestGate?: NativeRequestGateExpectation;
 } = {}) {
   validateHermesHost(host);
   const timeoutMs = options.timeoutMs ?? 120000, pollMs = options.pollMs ?? 250;
@@ -356,6 +370,7 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
         relay = recovered ? null : await startScopedMcpRelay({ ...turn, signal });
         wire = await connectHermesHost(host, signal);
         originalInstanceId = wire.instanceId;
+        if (options.nativeRequestGate) await checkHermesRequestGate(host, options.nativeRequestGate, signal, originalInstanceId);
         if (!recovered) {
           await runs.save(record);
           signal.throwIfAborted();
@@ -373,6 +388,10 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
         }
         const sessionId = state.sessionId!;
         if (!state.admissionId) {
+          if (options.nativeRequestGate) await checkHermesRequestGate(host, options.nativeRequestGate, signal, originalInstanceId);
+          await guardNativeSubmission(options.beforeNativeSubmit, Object.freeze({ workId, sessionId,
+            deadlineUnixMs: Math.floor(Date.now() + Math.max(0, timeoutMs - (performance.now() - startedAt))) }), signal);
+          signal.throwIfAborted();
           record.providerCalls = 1;
           await runs.save(record);
           signal.throwIfAborted();

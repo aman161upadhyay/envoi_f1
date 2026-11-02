@@ -23,7 +23,9 @@ export interface HermesBridgeConfiguration {
 /** Shared by the existing manual bridge and the unified installer. Recovery stays intact. */
 export async function createHermesBridge(config: HermesBridgeConfiguration,
   options: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number; onSuccessfulToolCall?: (name: string) => void;
-    timeoutMs?: number; pollMs?: number; onRuntimeEvent?: ScopedRuntimeObserver } = {}) {
+    timeoutMs?: number; pollMs?: number; onRuntimeEvent?: ScopedRuntimeObserver;
+    beforeNativeSubmit?: import('./native-binding').NativeSubmissionGuard;
+    nativeRequestGate?: import('./request-gate-attestation').NativeRequestGateExpectation } = {}) {
   const env = options.env ?? process.env;
   const scoped = await selectScopedHermes({ env, stateDir: config.stateDir }, config.runtime);
   if (scoped) {
