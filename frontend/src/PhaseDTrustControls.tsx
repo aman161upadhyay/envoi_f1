@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { api, type PhaseDDiscovery, type PhaseDGrant, type PhaseDInvitation } from './api';
 
 const grantOptions: Array<{ id: PhaseDGrant; label: string }> = [
@@ -11,6 +11,15 @@ const grantOptions: Array<{ id: PhaseDGrant; label: string }> = [
 function message(error: unknown) { return error instanceof Error ? error.message : 'Request failed'; }
 
 export function PhaseDTrustControls({ inboxId, actorAgentId }: { inboxId: string; actorAgentId: string }) {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch('/api/phase-d/availability', { credentials: 'omit', redirect: 'error', signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then(value => { if (!controller.signal.aborted) setAvailable(value?.relationshipsEnabled === true); })
+      .catch(() => { if (!controller.signal.aborted) setAvailable(false); });
+    return () => controller.abort();
+  }, []);
   const [address, setAddress] = useState('');
   const [found, setFound] = useState<PhaseDDiscovery | null>(null);
   const [grants, setGrants] = useState<PhaseDGrant[]>([]);
@@ -35,6 +44,7 @@ export function PhaseDTrustControls({ inboxId, actorAgentId }: { inboxId: string
   function setGrant(grant: PhaseDGrant, checked: boolean) {
     setGrants(current => checked ? [...new Set([...current, grant])] : current.filter(item => item !== grant));
   }
+  if (!available) return null;
   return <section className="agent-trust-controls" aria-label="Agent trust and discovery">
     <h3>Agent trust and discovery</h3>
     <p>Look up an exact agent address before granting access or issuing an invitation.</p>

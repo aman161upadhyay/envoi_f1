@@ -4730,6 +4730,10 @@ async function route(req, res) {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=60' });
     return res.end(JSON.stringify(routeAvailability(onboardingFlags, store.now())));
   }
+  if (req.method === 'GET' && url.pathname === '/api/phase-d/availability') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=60' });
+    return res.end(JSON.stringify({ relationshipsEnabled: Boolean(onboardingFlags.relationships) }));
+  }
 
   // agent-registration v1 §3–§5: registration, status polling and the human claim.
   const registrationRoute = url.pathname.match(/^\/api\/agent-registrations(?:\/([^/]+)(?:\/(approve|reject))?)?$/);

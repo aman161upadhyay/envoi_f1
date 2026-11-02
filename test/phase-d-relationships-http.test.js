@@ -5,6 +5,9 @@ import { api, launch, owner, readData } from './a3-harness.js';
 test('[FileStore] Phase D relationships are flagged, managed, directed, and reversible', { timeout: 60000 }, async t => {
   const server = await launch({ ENVOI_RELATIONSHIPS_V2: 'true', ENVOI_INSTALLATIONS_V2: 'true' });
   t.after(() => server.stop());
+  const availability = await api(server.baseUrl, '/api/phase-d/availability');
+  assert.equal(availability.status, 200);
+  assert.deepEqual(availability.payload, { relationshipsEnabled: true });
   const [alice, bob] = await Promise.all([owner(server.baseUrl, '7401'), owner(server.baseUrl, '7402')]);
   const route = `/api/inboxes/${alice.inbox.id}`;
   const exact = await api(server.baseUrl, `/api/agent/discovery?address=${encodeURIComponent(bob.agent.address)}`, { token: alice.agentApiToken });
@@ -40,6 +43,9 @@ test('[FileStore] Phase D relationships are flagged, managed, directed, and reve
 test('[FileStore] Phase D discovery is absent when its flag is off', { timeout: 30000 }, async t => {
   const server = await launch();
   t.after(() => server.stop());
+  const availability = await api(server.baseUrl, '/api/phase-d/availability');
+  assert.equal(availability.status, 200);
+  assert.deepEqual(availability.payload, { relationshipsEnabled: false });
   const who = await owner(server.baseUrl, '7403');
   const result = await api(server.baseUrl, `/api/agent/discovery?address=${encodeURIComponent(who.agent.address)}`, { token: who.agentApiToken });
   assert.equal(result.status, 404, result.text);

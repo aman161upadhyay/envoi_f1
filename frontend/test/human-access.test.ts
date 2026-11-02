@@ -133,14 +133,13 @@ describe('human action visibility', () => {
     expect(frozen).not.toContain('Revoke agent access');
   });
 
-  it('shows Phase D trust controls only to the administrator of the agent inbox', () => {
+  it('keeps Phase D trust controls hidden until availability is confirmed', () => {
     const agent = { id: 'agent_1', name: 'Milo', address: 'milo@agents.envoi-agents.com', principalHumanId: 'human_1', status: 'active', onboardingStatus: 'approved', permissions: ['send_agent_messages'] } as Agent;
     const workspace = { id: 'inbox_1', kind: 'agent', ownerAgentId: 'agent_1', ownerHumanId: 'human_1' } as Inbox;
     const props = { agent, workspace, emailTransport: null, humanId: 'human_1', onRefresh: vi.fn(), notify: vi.fn() };
     const manager = renderToStaticMarkup(createElement(AgentCard, { ...props, canManageInbox: true }));
     const observer = renderToStaticMarkup(createElement(AgentCard, { ...props, canManageInbox: false }));
-    expect(manager).toContain('Agent trust and discovery');
-    expect(manager).toContain('Invitation ID to revoke');
+    expect(manager).not.toContain('Agent trust and discovery');
     expect(observer).not.toContain('Agent trust and discovery');
   });
 
