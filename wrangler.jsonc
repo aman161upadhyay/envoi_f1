@@ -100,7 +100,9 @@
         "ENVOI_GROK_TRIGGER_V1": "false",
         "ENVOI_PROVIDER_GATEWAY_NATIVE_V1": "false",
         "ENVOI_MCP_EVENTS_CALLBACK_ORIGINS": "",
-        "ENVOI_GROK_TRIGGER_ORIGINS": ""
+        "ENVOI_GROK_TRIGGER_ORIGINS": "",
+        "ENVOI_RELATIONSHIPS_V2": "false",
+        "ENVOI_A2A_GATEWAY": "false"
       },
       "routes": [
         {

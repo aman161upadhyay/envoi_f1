@@ -1,0 +1,25 @@
+{
+  "contract": "phase-d",
+  "version": 1,
+  "id": "a2a-immediate-text",
+  "kind": "a2a",
+  "description": "Direct-card Bearer HTTP+JSON text send returns a Task projected from a durable native Case; replay has one native send.",
+  "given": {
+    "protocolVersion": "1.0",
+    "contentType": "application/a2a+json",
+    "address": "b@agents.example.test",
+    "message": { "messageId": "message_1", "role": "ROLE_USER", "parts": [{ "text": "Hello" }] },
+    "configuration": { "returnImmediately": true },
+    "case": { "id": "case_1", "schemaVersion": "1.0", "state": "inProgress", "updatedAt": "2026-10-25T00:00:00.000Z" }
+  },
+  "expect": {
+    "task": { "id": "case_1", "contextId": "case_1", "status": { "state": "TASK_STATE_WORKING", "timestamp": "2026-10-25T00:00:00.000Z" }, "artifacts": [] },
+    "nativeSendsAfterSameMessageIdReplay": 1,
+    "commitBeforeWake": true,
+    "publicCardAvailable": false,
+    "streaming": false,
+    "pushNotifications": false,
+    "continuations": false,
+    "artifactRequiresCleanCurrentGrant": true
+  }
+}

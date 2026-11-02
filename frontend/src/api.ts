@@ -79,6 +79,11 @@ export interface MonadPermissionEvidence {
 }
 export interface MonadSettings { available: boolean; entitled: boolean; enabled: boolean }
 
+export type PhaseDGrant = 'shareAssets' | 'autoAcceptSelectedTasks' | 'richerProfileVisibility' | 'allowInvitations';
+export interface PhaseDDiscovery { agentId: string; address: string; trust: string; grants: PhaseDGrant[]; a2aCardUrl?: string }
+export interface PhaseDRelationship { id: string; inboxId: string; actorAgentId: string; targetAgentId: string; status: 'active' | 'revoked'; grants: PhaseDGrant[] }
+export interface PhaseDInvitation { id: string; invitation: string; expiresAt: string }
+
 export async function request<T>(pathname: string, options: RequestInit = {}, notifySessionExpired = true): Promise<T> {
   const requestHumanId = expectedHumanId;
   const session = trackSessionRequest();
@@ -157,6 +162,11 @@ export function safeDownloadUrl(value: string, baseUrl = typeof window === 'unde
 }
 
 export const api = {
+  discoverAgentForOwner: (inboxId: string, address: string, actorAgentId: string) => request<PhaseDDiscovery>(`/api/inboxes/${encodeURIComponent(inboxId)}/discovery?address=${encodeURIComponent(address)}&actorAgentId=${encodeURIComponent(actorAgentId)}`),
+  grantRelationship: (inboxId: string, actorAgentId: string, targetAddress: string, grants: PhaseDGrant[]) => request<PhaseDRelationship>(`/api/inboxes/${encodeURIComponent(inboxId)}/relationships`, { method: 'POST', body: JSON.stringify({ actorAgentId, targetAddress, grants }) }),
+  revokeRelationship: (inboxId: string, actorAgentId: string, targetAgentId: string) => request<PhaseDRelationship>(`/api/inboxes/${encodeURIComponent(inboxId)}/relationships/${encodeURIComponent(actorAgentId)}/${encodeURIComponent(targetAgentId)}/revoke`, { method: 'POST', body: '{}' }),
+  issueDiscoveryInvitation: (inboxId: string, actorAgentId: string, recipientAddress: string) => request<PhaseDInvitation>(`/api/inboxes/${encodeURIComponent(inboxId)}/discovery-invitations`, { method: 'POST', body: JSON.stringify({ actorAgentId, recipientAddress }) }),
+  revokeDiscoveryInvitation: (inboxId: string, invitationId: string) => request<{ id: string; status: 'revoked'; revokedAt: string }>(`/api/inboxes/${encodeURIComponent(inboxId)}/discovery-invitations/${encodeURIComponent(invitationId)}/revoke`, { method: 'POST', body: '{}' }),
   authConfig: async () => {
     const config = await request<AuthConfig>('/api/auth/config');
     setCsrfCookieName(config.csrfCookieName);

@@ -99,6 +99,14 @@ it('covers the literal data events emitted by the server and keeps control event
   expect(PROGRESS_ONLY_EVENTS.has('work.available')).toBe(true);
 });
 
+it('subscribes to the approved Phase D owner audit events', () => {
+  const schema = JSON.parse(readFileSync(new URL('../../test/contract-fixtures/phase-d/schemas.json', import.meta.url), 'utf8')) as { 'x-owner-events': string[] };
+  for (const type of schema['x-owner-events']) {
+    expect(WORKSPACE_EVENT_TYPES).toContain(type);
+    expect(PROGRESS_ONLY_EVENTS.has(type)).toBe(false);
+  }
+});
+
 it('refreshes visible native work, owner scope and provider target state rather than treating them as progress-only', () => {
   const store = createEventCursorStore();
   const scope = store.scope('owner', 'workspace', () => true);

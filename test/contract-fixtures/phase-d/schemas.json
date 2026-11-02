@@ -1,0 +1,40 @@
+{
+  "$id": "https://envoi.example/contracts/phase-d/v1/schemas.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Canonical Phase D v1; handoffs.md#phase-d-v1. Published, pending version-specific human approval.",
+  "x-grants": ["shareAssets", "autoAcceptSelectedTasks", "richerProfileVisibility", "allowInvitations"],
+  "x-trust-precedence": ["relationship", "approved_contact", "same_organization", "signed_invitation", "exact_address"],
+  "x-authorization-order": ["INVALID_REQUEST", "IDENTITY_INACTIVE", "INSTALLATION_INACTIVE", "INSTALLATION_REQUIRED", "PERMISSION_DENIED", "RELATIONSHIP_DENIED", "CASE_MEMBERSHIP_DENIED", "CASE_REQUIRED", "RESOURCE_DENIED", "RESOURCE_REQUIRED", "POLICY_DENIED", "HUMAN_APPROVAL_REQUIRED", "ALLOW"],
+  "x-action-permissions": {
+    "agent.discover": "send_agent_messages",
+    "a2a.send": "send_agent_messages",
+    "a2a.taskRead": "send_agent_messages",
+    "case.create": "execute_cases",
+    "case.appendEvent": "execute_cases",
+    "case.evaluatePolicy": "execute_cases",
+    "case.propose": "execute_cases",
+    "case.counterProposal": "execute_cases",
+    "case.acceptProposal": "execute_cases",
+    "case.act": "execute_cases",
+    "case.complete": "execute_cases",
+    "asset.grant": "create_assets"
+  },
+  "x-owner-events": ["discovery_invitation.issued", "discovery_invitation.revoked", "relationship.granted", "relationship.revoked"],
+  "x-a2a-methods": ["GET card", "POST message:send", "GET tasks/{caseId}"],
+  "definitions": {
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "version", "id", "kind", "description", "given", "expect"],
+      "properties": {
+        "contract": { "const": "phase-d" },
+        "version": { "const": 1 },
+        "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "kind": { "enum": ["relationship", "discovery", "authorization", "a2a"] },
+        "description": { "type": "string", "minLength": 1 },
+        "given": { "type": "object" },
+        "expect": { "type": "object" }
+      }
+    }
+  }
+}

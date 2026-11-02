@@ -292,6 +292,14 @@
 .app-shell .agent-more > div { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 8px; }
 .app-shell .agent-more button { padding: 6px 8px; border: 0; border-radius: 6px; background: var(--fill); font-size: 12px; }
 .app-shell .agent-more .danger { color: var(--red); }
+.app-shell .agent-trust-controls { margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); }
+.app-shell .agent-trust-controls h3 { margin: 0 0 6px; font-size: 14px; }
+.app-shell .agent-trust-controls p { margin: 6px 0 10px; }
+.app-shell .agent-trust-controls form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.app-shell .agent-trust-controls input[type="email"], .app-shell .agent-trust-controls input[readOnly], .app-shell .agent-trust-controls form input:not([type]) { min-width: 220px; max-width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; }
+.app-shell .agent-trust-controls fieldset { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.app-shell .agent-trust-controls fieldset label { display: inline-flex; align-items: center; gap: 5px; }
+.app-shell .agent-trust-controls .dialog-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .app-shell .add-agent-tile { min-height: 200px; display: grid; place-content: center; gap: 8px; justify-items: center; border: 1px dashed var(--line2); border-radius: 16px; background: #fff; color: var(--ink2); font-weight: 500; }
 .app-shell .add-agent-tile:hover { background: var(--fill); }
 .app-shell .files-page { max-width: 1080px; margin: 0 auto; padding: 2px 4px 48px; }
