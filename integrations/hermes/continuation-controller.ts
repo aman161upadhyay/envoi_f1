@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { assertHumanDecisionMessage, type HumanDecisionWorkMessage } from '../../sdk/typescript/src/connector';
-import { continuationAllocation,defaultContinuationFlowPolicy,validateReviewedContinuationPlan,type ReviewedContinuationPlan } from './continuation-plan';
+import { continuationAllocation,defaultContinuationFlowPolicy,validateReviewedContinuationPlan,validateReviewedGraphApproval,type ReviewedContinuationPlan } from './continuation-plan';
 import { RequestBudgetLedger, nativeWorkToken } from './request-budget';
 import { guardNativeSubmission, type NativeSubmissionGuard } from './native-binding';
 
@@ -69,6 +69,8 @@ export class ContinuationController {
     }
     if(ledger.window!==window||ledger.modelCap!==r.modelCap||ledger.snapshot().pending||JSON.stringify(ledger.flows)!==JSON.stringify(flows)
       ||JSON.stringify(ledger.reviewedPlan)!==JSON.stringify(reviewed)) refuse('CANONICAL_CONTINUATION_RECONCILIATION_REQUIRED');
+    if(reviewed){const approval=validateReviewedGraphApproval(ledger.reviewedGraphApprovalRaw,{planSha256:reviewed.planSha256,window,clientSource:r.clientSource,serverSource:r.serverSource,packetSha256:r.packetSha256});
+      if(approval.approvalHash!==reviewed.ownerApprovalHash)refuse('GRAPH_SOURCE_APPROVAL_HASH_MISMATCH');}
     return new ContinuationController(ledger,Object.freeze({...r}),Object.freeze({...options.flowCases}),Object.freeze({...options.actorIds}),options.sameRoleNativeAttribution);
   }
   active(){return !this.control.signal.aborted&&Date.now()<Date.parse(this.receipt.hardStopUtc);}

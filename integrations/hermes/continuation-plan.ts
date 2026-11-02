@@ -30,9 +30,28 @@ export type ContinuationFlowPolicy=Readonly<{noAction:boolean;decisionOutcome:'a
 export type ReviewedContinuationFlow=Readonly<{id:string;role:ContinuationRole;requests:number;workHash:string|null;policy:ContinuationFlowPolicy}>;
 export type ReviewedContinuationPlan=Readonly<{purpose:'phase-c-reviewed-graph';version:1;ownerApprovalHash:string;planSha256:string;
   allowSameRoleCohorts:boolean;flows:readonly ReviewedContinuationFlow[];flowCases:Readonly<Record<string,string>>;actorIds:Readonly<Record<ContinuationRole,string>>}>;
+export type ReviewedGraphApprovalSubject=Readonly<{planSha256:string;window:string;clientSource:string;serverSource:string;packetSha256:string}>;
+export type ReviewedGraphApproval=ReviewedGraphApprovalSubject&Readonly<{purpose:'phase-c-reviewed-graph-source-approval';version:1;ownerApproved:true;approvalId:string}>;
 const closed=(value:object,keys:string[])=>Object.keys(value).sort().join()===keys.sort().join();
 const digest=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
 function refuse():never{throw Object.assign(new Error('Reviewed continuation plan is invalid'),{code:'REVIEWED_CONTINUATION_PLAN_INVALID'});}
+
+/** Exact raw human decision binding, not chat authentication or native capability attestation.
+ * The trusted execution owner must independently establish actual human provenance. */
+export function validateReviewedGraphApproval(raw:unknown,subject:ReviewedGraphApprovalSubject){
+  const fail=(code:string):never=>{throw Object.assign(new Error(code),{code});};
+  if(typeof raw!=='string')return fail('EXPLICIT_GRAPH_SOURCE_APPROVAL_REQUIRED');
+  if(Buffer.byteLength(raw,'utf8')>32768)fail('EXPLICIT_GRAPH_SOURCE_APPROVAL_REQUIRED');
+  let value:ReviewedGraphApproval;
+  try{value=JSON.parse(raw.replace(/^\uFEFF/,''));}catch{return fail('EXPLICIT_GRAPH_SOURCE_APPROVAL_REQUIRED');}
+  if(!value||typeof value!=='object'||Array.isArray(value)||!closed(value,['purpose','version','ownerApproved','approvalId','planSha256','window','clientSource','serverSource','packetSha256'])
+    ||value.purpose!=='phase-c-reviewed-graph-source-approval'||value.version!==1||value.ownerApproved!==true
+    ||typeof value.approvalId!=='string'||!value.approvalId.trim()||value.approvalId.length>256||/[\x00-\x1f\x7f]/.test(value.approvalId)
+    ||![value.planSha256,value.window,value.packetSha256].every(digest)||!/^[a-f0-9]{40}$/.test(value.clientSource)||!/^[a-f0-9]{40}$/.test(value.serverSource))fail('EXPLICIT_GRAPH_SOURCE_APPROVAL_REQUIRED');
+  if(![subject.planSha256,subject.window,subject.packetSha256].every(digest)||!/^[a-f0-9]{40}$/.test(subject.clientSource)||!/^[a-f0-9]{40}$/.test(subject.serverSource)
+    ||Object.entries(subject).some(([key,expected])=>value[key as keyof ReviewedGraphApprovalSubject]!==expected))fail('GRAPH_SOURCE_APPROVAL_SUBJECT_MISMATCH');
+  return {decision:structuredClone(value),approvalHash:createHash('sha256').update(raw).digest('hex')};
+}
 
 /** The approved hash covers order, quotas, host roles, work pin and all flow policies. */
 export function hashReviewedContinuationPlan(plan:Omit<ReviewedContinuationPlan,'planSha256'|'ownerApprovalHash'>):string {

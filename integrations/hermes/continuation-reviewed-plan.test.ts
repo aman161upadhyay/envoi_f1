@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {afterEach,expect,it,vi} from 'vitest';
 import {ContinuationController,type ContinuationReceipt,type SameRoleNativeAttributionGuard} from './continuation-controller';
 import {RequestBudgetLedger,nativeWorkToken} from './request-budget';
-import {DECLINE_CONTINUATION,continuationAllocation,defaultContinuationFlowPolicy,hashReviewedContinuationPlan,validateReviewedContinuationPlan,type ReviewedContinuationPlan,type ReviewedContinuationFlow} from './continuation-plan';
+import {DECLINE_CONTINUATION,continuationAllocation,defaultContinuationFlowPolicy,hashReviewedContinuationPlan,validateReviewedContinuationPlan,validateReviewedGraphApproval,type ReviewedContinuationPlan,type ReviewedContinuationFlow} from './continuation-plan';
 
 const h=(s:string)=>s.repeat(64),hash=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex');
 const directories:string[]=[],controllers:ContinuationController[]=[];
@@ -30,12 +30,18 @@ function plan(s:Awaited<ReturnType<typeof setup>>):ReviewedContinuationPlan{
    policy:{noAction:id==='oc-decline',decisionOutcome:id==='oc-decline'?'declined' as const:id==='oc-accept'?'approved' as const:null,allowHumanEnd:false}}))];
  const flowCases={...s.flowCases,'oc-private':'case_oc_private','oc-negotiation':'case_oc_negotiation','oc-accept':'case_oc_negotiation','oc-decline':'case_oc_decline','oc-outcome':'case_oc_negotiation'};
  const payload={purpose:'phase-c-reviewed-graph' as const,version:1 as const,allowSameRoleCohorts:true,flows,flowCases,actorIds:s.actorIds};
- return {...payload,ownerApprovalHash:h('9'),planSha256:hashReviewedContinuationPlan(payload)};
+ return approved(s,{...payload,ownerApprovalHash:h('9'),planSha256:hashReviewedContinuationPlan(payload)});
 }
 function sign(p:ReviewedContinuationPlan):ReviewedContinuationPlan{return {...p,planSha256:hashReviewedContinuationPlan(p)};}
-const proof=(ledger:RequestBudgetLedger)=>({expectedWindow:ledger.window,allHostsStopped:true,canonicalLeasesZero:true,previousNativeTerminal:true,chargedAttempts:ledger.snapshot().chargedAttempts});
+function approvalRaw(s:Awaited<ReturnType<typeof setup>>,p:ReviewedContinuationPlan,change:Record<string,unknown>={}){
+ return JSON.stringify({purpose:'phase-c-reviewed-graph-source-approval',version:1,ownerApproved:true,approvalId:'inert-graph-'+p.planSha256,planSha256:p.planSha256,
+  window:s.c.ledger.window,clientSource:s.receipt.clientSource,serverSource:s.receipt.serverSource,packetSha256:s.receipt.packetSha256,...change});
+}
+function approved(s:Awaited<ReturnType<typeof setup>>,p:ReviewedContinuationPlan){const signed=sign(p);return{...signed,ownerApprovalHash:hash(approvalRaw(s,signed))};}
+const proof=(s:Awaited<ReturnType<typeof setup>>,p:ReviewedContinuationPlan,ledger=s.c.ledger)=>({expectedWindow:ledger.window,allHostsStopped:true,canonicalLeasesZero:true,previousNativeTerminal:true,chargedAttempts:ledger.snapshot().chargedAttempts,
+ graphApprovalRaw:approvalRaw(s,p),clientSource:s.receipt.clientSource,serverSource:s.receipt.serverSource,packetSha256:s.receipt.packetSha256});
 async function adopt(s:Awaited<ReturnType<typeof setup>>,p=plan(s),guard?:SameRoleNativeAttributionGuard){
- await s.c.ledger.amendReviewedPlan(p,proof(s.c.ledger));
+ p=approved(s,p);await s.c.ledger.amendReviewedPlan(p,proof(s,p));
  const c=await ContinuationController.open({...s,flowCases:p.flowCases,actorIds:p.actorIds,reviewedPlan:p,...(guard?{sameRoleNativeAttribution:guard}:{})});controllers.push(c);return c;
 }
 function claim(c:ContinuationController,p:ReviewedContinuationPlan,id:string,outcome:'approved'|'declined'='declined'){
@@ -50,12 +56,12 @@ it('retains the default ten-flow graph and requires explicit exact reviewed meta
  const s=await setup(),before=await fs.readFile(s.filename),anchor=await fs.readFile(path.join(s.releaseRoot,'phase-c-request-ledger.anchor')),p=plan(s);
  expect(s.c.ledger.reviewedPlan).toBeUndefined();expect(s.c.ledger.flows).toEqual(continuationAllocation('bounded-contingency'));
  await expect(ContinuationController.open({...s,flowCases:p.flowCases,reviewedPlan:p})).rejects.toThrow('CANONICAL_CONTINUATION_RECONCILIATION_REQUIRED');
- await s.c.ledger.amendReviewedPlan(p,proof(s.c.ledger));const after=await fs.readFile(s.filename);expect(after.subarray(0,before.length)).toEqual(before);expect(await fs.readFile(path.join(s.releaseRoot,'phase-c-request-ledger.anchor'))).toEqual(anchor);
+ await s.c.ledger.amendReviewedPlan(p,proof(s,p));const after=await fs.readFile(s.filename);expect(after.subarray(0,before.length)).toEqual(before);expect(await fs.readFile(path.join(s.releaseRoot,'phase-c-request-ledger.anchor'))).toEqual(anchor);
  expect(s.c.ledger.snapshot()).toMatchObject({chargedAttempts:30,modelCap:64,remainingModelAttempts:34,carriedMessageReservations:22,carriedNewInstallations:5});
  const reopened=await RequestBudgetLedger.open(s.filename);expect(reopened.reviewedPlan).toEqual(p);expect(reopened.flows).toHaveLength(15);expect(reopened.flows.reduce((n,f)=>n+f.requests,0)).toBe(34);
  await expect(ContinuationController.open(s)).rejects.toThrow('CANONICAL_CONTINUATION_RECONCILIATION_REQUIRED');
  const c=await ContinuationController.open({...s,flowCases:p.flowCases,reviewedPlan:p});controllers.push(c);expect(c.flowPolicy('oc-decline')).toEqual({noAction:true,decisionOutcome:'declined',allowHumanEnd:false});
- await reopened.amendReviewedPlan(p,proof(reopened));expect(await fs.readFile(s.filename)).toEqual(after);
+ await reopened.amendReviewedPlan(p,proof(s,p,reopened));expect(await fs.readFile(s.filename)).toEqual(after);
 });
 
 it('hashes exact roles/quotas/cases/recipients/policy and rejects malformed, extra-key or unapproved graph metadata before writing',async()=>{
@@ -63,7 +69,7 @@ it('hashes exact roles/quotas/cases/recipients/policy and rejects malformed, ext
  for(const bad of [{...p,ownerApprovalHash:''},{...p,planSha256:h('0')},{...p,extra:true},
   {...p,flowCases:{...p.flowCases,openclaw:'case_other'}},{...p,actorIds:{...p.actorIds,openclaw:'agent_other'}},
   sign({...p,flows:p.flows.map((f,i)=>i?f:{...f,policy:{...f.policy,noAction:'yes' as unknown as boolean}})})]){
-  expect(()=>validateReviewedContinuationPlan(bad)).toThrow();await expect(s.c.ledger.amendReviewedPlan(bad as ReviewedContinuationPlan,proof(s.c.ledger))).rejects.toThrow();
+  expect(()=>validateReviewedContinuationPlan(bad)).toThrow();await expect(s.c.ledger.amendReviewedPlan(bad as ReviewedContinuationPlan,proof(s,p))).rejects.toThrow();
  }
  expect(await fs.readFile(s.filename)).toEqual(before);
  await expect(adopt(s,p)).resolves.toBeDefined();
@@ -77,23 +83,24 @@ it('refuses budget/identity/policy broadening, removed history, wrong window, pe
   sign({...p,flows:p.flows.map((f,i)=>i?f:{...f,role:'je1'})}),sign({...p,flows:p.flows.map((f,i)=>i?f:{...f,workHash:h('8')})}),
   sign({...p,flows:p.flows.map(f=>f.id==='declined-resume'?{...f,policy:{noAction:false,decisionOutcome:'declined',allowHumanEnd:false}}:f)}),
   sign({...p,flows:p.flows.map(f=>f.id==='green'?{...f,requests:99}:f)})];
- for(const bad of variants)await expect(s.c.ledger.amendReviewedPlan(bad,proof(s.c.ledger))).rejects.toThrow();
- for(const bad of [{...proof(s.c.ledger),allHostsStopped:false},{...proof(s.c.ledger),canonicalLeasesZero:false},{...proof(s.c.ledger),previousNativeTerminal:false},{...proof(s.c.ledger),expectedWindow:h('0')},{...proof(s.c.ledger),chargedAttempts:29}])await expect(s.c.ledger.amendReviewedPlan(p,bad)).rejects.toThrow('REVIEWED_GRAPH_RECONCILIATION_REQUIRED');
+ for(const bad of variants)await expect(s.c.ledger.amendReviewedPlan(bad,proof(s,p))).rejects.toThrow();
+ for(const bad of [{...proof(s,p),allHostsStopped:false},{...proof(s,p),canonicalLeasesZero:false},{...proof(s,p),previousNativeTerminal:false},{...proof(s,p),expectedWindow:h('0')},{...proof(s,p),chargedAttempts:29}])await expect(s.c.ledger.amendReviewedPlan(p,bad)).rejects.toThrow('REVIEWED_GRAPH_RECONCILIATION_REQUIRED');
  expect(await fs.readFile(s.filename)).toEqual(before);
  await s.c.ledger.bindWork('private-backlog',{canonicalWorkHash:h('3'),nativeToken:h('4'),evidenceHash:h('5')});await s.c.ledger.selectPhase('hermes',['private-backlog'],Date.now()+10000);await s.c.ledger.reserve('je2',h('4'));
- await expect(s.c.ledger.amendReviewedPlan(p,proof(s.c.ledger))).rejects.toThrow('REVIEWED_GRAPH_RECONCILIATION_REQUIRED');expect(s.c.ledger.snapshot()).toMatchObject({chargedAttempts:31,pending:1});
+ await expect(s.c.ledger.amendReviewedPlan(p,proof(s,p))).rejects.toThrow('FIRST_REVIEWED_GRAPH_REQUIRES_UNUSED_NATIVE_HISTORY');expect(s.c.ledger.snapshot()).toMatchObject({chargedAttempts:31,pending:1});
 });
 
 it('never refunds completed calls, reduces below charged quota, resets native deadlines, rebinds old work or reuses a plan approval',async()=>{
- const s=await setup(),p=plan(s);await s.c.ledger.bindWork('private-backlog',{canonicalWorkHash:h('3'),nativeToken:h('4'),evidenceHash:h('5')});await s.c.ledger.selectPhase('hermes',['private-backlog'],Date.now()+10000);
+ const s=await setup(),p=plan(s);await s.c.ledger.amendReviewedPlan(p,proof(s,p));await s.c.ledger.bindWork('private-backlog',{canonicalWorkHash:h('3'),nativeToken:h('4'),evidenceHash:h('5')});await s.c.ledger.selectPhase('hermes',['private-backlog'],Date.now()+10000);
  for(let n=0;n<3;n++){const a=await s.c.ledger.reserve('je2',h('4'));await s.c.ledger.markDispatched(a);await s.c.ledger.finish(a,'response');}
- await expect(s.c.ledger.amendReviewedPlan(sign({...p,flows:p.flows.map(f=>f.id==='private-backlog'?{...f,requests:2}:f)}),proof(s.c.ledger))).rejects.toThrow('REVIEWED_GRAPH_HISTORY_CHANGED');
- await s.c.ledger.amendReviewedPlan(p,proof(s.c.ledger));expect((await RequestBudgetLedger.open(s.filename)).snapshot()).toMatchObject({chargedAttempts:33,remainingModelAttempts:31});
+ const reduced=approved(s,{...p,flows:p.flows.map(f=>f.id==='private-backlog'?{...f,requests:2}:f)});
+ await expect(s.c.ledger.amendReviewedPlan(reduced,proof(s,reduced))).rejects.toThrow('REVIEWED_GRAPH_HISTORY_CHANGED');
+ await s.c.ledger.amendReviewedPlan(p,proof(s,p));expect((await RequestBudgetLedger.open(s.filename)).snapshot()).toMatchObject({chargedAttempts:33,remainingModelAttempts:31});
  await expect(s.c.ledger.selectPhase('hermes',['private-backlog'],Date.now()+11000)).rejects.toThrow('NATIVE_DEADLINE_CANNOT_RESET');
  await expect(s.c.ledger.bindWork('private-backlog',{canonicalWorkHash:h('6'),nativeToken:h('7'),evidenceHash:h('8')})).rejects.toThrow('CANONICAL_WORK_BINDING_CHANGED');
- await expect(s.c.ledger.amendReviewedPlan(sign({...p,allowSameRoleCohorts:false}),proof(s.c.ledger))).rejects.toThrow('REVIEWED_GRAPH_RECONCILIATION_REQUIRED');
- const newApproval=sign({...p,ownerApprovalHash:h('8'),flowCases:{...p.flowCases,'private-backlog':'case_drift'}});
- await expect(s.c.ledger.amendReviewedPlan(newApproval,proof(s.c.ledger))).rejects.toThrow('REVIEWED_GRAPH_HISTORY_CHANGED');
+ await expect(s.c.ledger.amendReviewedPlan(sign({...p,allowSameRoleCohorts:false}),proof(s,p))).rejects.toThrow('GRAPH_SOURCE_APPROVAL_SUBJECT_MISMATCH');
+ const newApproval=approved(s,{...p,flowCases:{...p.flowCases,'private-backlog':'case_drift'}});
+ await expect(s.c.ledger.amendReviewedPlan(newApproval,proof(s,newApproval))).rejects.toThrow('REVIEWED_GRAPH_HISTORY_CHANGED');
 });
 
 it('requires actual per-session native attribution beyond an approved same-role graph',async()=>{
@@ -210,6 +217,54 @@ it('keeps historical open no-action policies and refuses completed decline or a 
  const proofValue={workId,canonicalStatus:'processed' as const,journalCompleted:true as const,journalSha256:h('8'),nativeOutcome:'completed' as const,newCanonicalEffects:0 as const,decisionOutcome:'declined' as const};
  expect(()=>c.finishWork('declined-resume',{...proofValue,caseState:'completed',caseStillOpen:true})).toThrow('NO_ACTION_RESUMPTION_PROOF_REQUIRED');
  c.finishWork('declined-resume',{...proofValue,caseStillOpen:true});expect(c.summary().finished).toEqual(['declined-resume']);
- const broaden=sign({...p,ownerApprovalHash:h('7'),flows:p.flows.map(f=>f.id==='private-receipt-review'?{...f,policy:{...f.policy,expectedCaseState:'completed'}}:f)});
- await expect(c.ledger.amendReviewedPlan(broaden,proof(c.ledger))).rejects.toThrow('REVIEWED_GRAPH_HISTORY_CHANGED');
+ const broaden=approved(s,{...p,flows:p.flows.map(f=>f.id==='private-receipt-review'?{...f,policy:{...f.policy,expectedCaseState:'completed'}}:f)});
+ await expect(c.ledger.amendReviewedPlan(broaden,proof(s,broaden,c.ledger))).rejects.toThrow('REVIEWED_GRAPH_HISTORY_CHANGED');
+});
+
+it('refuses the first graph over any legacy native binding or completed charged history before writing and on replay',async()=>{
+ for(const charged of [false,true]){
+  const s=await setup();await s.c.ledger.bindWork('private-backlog',{canonicalWorkHash:h('3'),nativeToken:h('4'),evidenceHash:h('5')});
+  if(charged){await s.c.ledger.selectPhase('hermes',['private-backlog'],Date.now()+10000);const a=await s.c.ledger.reserve('je2',h('4'));await s.c.ledger.markDispatched(a);await s.c.ledger.finish(a,'response');}
+  const before=await fs.readFile(s.filename),anchor=await fs.readFile(path.join(s.releaseRoot,'phase-c-request-ledger.anchor')),base=plan(s);
+  const relabeled=approved(s,{...base,flowCases:{...base.flowCases,'private-backlog':'case_relabel'},actorIds:{...base.actorIds,je2:'agent_relabel'}}),p=proof(s,relabeled);
+  await expect(s.c.ledger.amendReviewedPlan(relabeled,p)).rejects.toThrow('FIRST_REVIEWED_GRAPH_REQUIRES_UNUSED_NATIVE_HISTORY');
+  expect(await fs.readFile(s.filename)).toEqual(before);expect(await fs.readFile(path.join(s.releaseRoot,'phase-c-request-ledger.anchor'))).toEqual(anchor);
+  expect((await RequestBudgetLedger.open(s.filename)).snapshot().chargedAttempts).toBe(charged?31:30);
+  // Simulate an old writer trying to append an otherwise valid, chained approval.
+  const last=before.toString('utf8').trimEnd().split('\n').at(-1)!;
+  await fs.appendFile(s.filename,JSON.stringify({previous:hash(last+'\n'),kind:'plan',window:s.c.ledger.window,plan:relabeled,proof:p,approvalHash:relabeled.ownerApprovalHash})+'\n');
+  await expect(RequestBudgetLedger.open(s.filename)).rejects.toThrow('FIRST_REVIEWED_GRAPH_REQUIRES_UNUSED_NATIVE_HISTORY');
+ }
+});
+
+it('persists an exact raw new graph/source decision and opens the actual controller without changing seed, counters or clock',async()=>{
+ const s=await setup(),base=plan(s),raw=approvalRaw(s,base)+'\n',p={...base,ownerApprovalHash:hash(raw)},decision=validateReviewedGraphApproval(raw,{planSha256:p.planSha256,window:s.c.ledger.window,clientSource:s.receipt.clientSource,serverSource:s.receipt.serverSource,packetSha256:s.receipt.packetSha256});
+ expect(decision.approvalHash).toBe(p.ownerApprovalHash);const seed=await fs.readFile(path.join(s.releaseRoot,'budget-7c522b08c11f.terminal-dd4debf.json'));
+ await s.c.ledger.amendReviewedPlan(p,{...proof(s,p),graphApprovalRaw:raw});const reopened=await RequestBudgetLedger.open(s.filename);
+ expect(reopened.reviewedGraphApprovalRaw).toBe(raw);expect(reopened.snapshot()).toMatchObject({chargedAttempts:30,modelCap:64,remainingModelAttempts:34,carriedMessageReservations:22,carriedNewInstallations:5});
+ const c=await ContinuationController.open({...s,flowCases:p.flowCases,reviewedPlan:p});controllers.push(c);expect(c.receipt).toEqual(s.receipt);expect(c.modelActive()).toBe(false);expect(await fs.readFile(path.join(s.releaseRoot,'budget-7c522b08c11f.terminal-dd4debf.json'))).toEqual(seed);
+ const row=JSON.parse((await fs.readFile(s.filename,'utf8')).trimEnd().split('\n').at(-1)!);expect(row.approvalHash).toBe(hash(raw));expect(row.proof.graphApprovalRaw).toBe(raw);
+ // Harmless-looking raw-byte formatting drift still changes the approval hash.
+ row.proof.graphApprovalRaw+=' ';const lines=(await fs.readFile(s.filename,'utf8')).trimEnd().split('\n');lines[lines.length-1]=JSON.stringify(row);await fs.writeFile(s.filename,lines.join('\n')+'\n');
+ await expect(RequestBudgetLedger.open(s.filename)).rejects.toThrow('GRAPH_SOURCE_APPROVAL_HASH_MISMATCH');
+});
+
+it('rejects changed graph/window/source/purpose and old cap or time decisions before any plan append',async()=>{
+ const s=await setup(),p=plan(s),before=await fs.readFile(s.filename);
+ const variants=[approvalRaw(s,p,{planSha256:h('0')}),approvalRaw(s,p,{window:h('0')}),approvalRaw(s,p,{clientSource:'e'.repeat(40)}),approvalRaw(s,p,{serverSource:'e'.repeat(40)}),approvalRaw(s,p,{packetSha256:h('0')}),
+  approvalRaw(s,p,{purpose:'phase-c-additional-interval'}),approvalRaw(s,p,{ownerApproved:false}),approvalRaw(s,p,{version:2}),
+  JSON.stringify({purpose:'phase-c-decline-continuation',models:64,approvalReceiptSha256:s.receipt.approvalReceiptSha256}),JSON.stringify(s.receipt)];
+ for(const raw of variants){const candidate={...p,ownerApprovalHash:hash(raw)};await expect(s.c.ledger.amendReviewedPlan(candidate,{...proof(s,p),graphApprovalRaw:raw})).rejects.toThrow();expect(await fs.readFile(s.filename)).toEqual(before);}
+ await expect(s.c.ledger.amendReviewedPlan({...p,ownerApprovalHash:h('0')},proof(s,p))).rejects.toThrow('GRAPH_SOURCE_APPROVAL_HASH_MISMATCH');expect(await fs.readFile(s.filename)).toEqual(before);
+});
+
+it('compares a self-labelled ledger graph decision with actual controller receipt source and packet pins',async()=>{
+ for(const [key,value]of [['clientSource','e'.repeat(40)],['serverSource','f'.repeat(40)],['packetSha256',h('0')]] as const){
+  const s=await setup(),base=plan(s),raw=approvalRaw(s,base,{[key]:value}),p={...base,ownerApprovalHash:hash(raw)};
+  // A ledger can record a decision without knowing the execution receipt; opening
+  // the controller must independently compare its actual immutable source pins.
+  await s.c.ledger.amendReviewedPlan(p,{...proof(s,p),[key]:value,graphApprovalRaw:raw});
+  const reopened=await RequestBudgetLedger.open(s.filename);expect(reopened.reviewedGraphApprovalRaw).toBe(raw);
+  await expect(ContinuationController.open({...s,flowCases:p.flowCases,reviewedPlan:p})).rejects.toThrow('GRAPH_SOURCE_APPROVAL_SUBJECT_MISMATCH');expect(reopened.snapshot().chargedAttempts).toBe(30);
+ }
 });

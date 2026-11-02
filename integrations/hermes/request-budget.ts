@@ -4,7 +4,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import {defaultContinuationFlowPolicy,sameContinuationFlowPolicy,validateReviewedContinuationPlan,type ReviewedContinuationPlan} from './continuation-plan';
+import {defaultContinuationFlowPolicy,sameContinuationFlowPolicy,validateReviewedContinuationPlan,validateReviewedGraphApproval,type ReviewedContinuationPlan} from './continuation-plan';
 
 export const REQUEST_CAPS = Object.freeze({ models: 48, messages: 60, cases: 9, installations: 5, assets: 6 });
 export type ModelBudgetAmendment = Readonly<{ purpose:'phase-c-decline-continuation'; models:number; approvalReceiptSha256:string }>;
@@ -14,6 +14,9 @@ type Prior = { actualCalls: number; actualHermesApiCalls: number; openClawProvid
   possibleHostMessageEffects: number; canonicalEffects: number; caseIds: string[]; newInstallationsUsed: number;
   priorUploadedAssets: number; stopped: boolean; failure: string; [key: string]: unknown };
 type RecordLine = { previous: string; kind: string; [key: string]: unknown };
+export type ReviewedGraphAmendmentProof=Readonly<{expectedWindow:string;allHostsStopped:boolean;canonicalLeasesZero:boolean;previousNativeTerminal:boolean;chargedAttempts:number;
+  graphApprovalRaw:string;clientSource:string;serverSource:string;packetSha256:string}>;
+const nativeHistoryKinds=new Set(['binding','phase','attempt','dispatched','finished']);
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 function refuse(code: string): never { throw Object.assign(new Error(code), { code }); }
 const exactHash = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
@@ -82,6 +85,7 @@ export class RequestBudgetLedger {
 
   get window() { return (this.lines.filter(l => l.kind === 'window').at(-1)?.window ?? this.lines[0].window) as string; }
   get reviewedPlan() { return structuredClone(this.lines.filter(l=>l.kind==='plan').at(-1)?.plan) as ReviewedContinuationPlan|undefined; }
+  get reviewedGraphApprovalRaw(){return (this.lines.filter(l=>l.kind==='plan').at(-1)?.proof as ReviewedGraphAmendmentProof|undefined)?.graphApprovalRaw;}
   get flows() { const plan=this.reviewedPlan;return plan?plan.flows.map(({policy:_policy,...flow})=>flow):structuredClone(this.lines[0].flows) as Flow[]; }
   get prior() { return structuredClone(this.lines[0].prior) as Prior; }
   get modelCap() { return approvedCaps(this.lines[0].modelBudgetAmendment).models; }
@@ -123,8 +127,11 @@ export class RequestBudgetLedger {
       const row=this.lines[index];if(row.kind==='window')window=row.window;
       if(row.kind!=='plan')continue;
       const plan=validateReviewedContinuationPlan(row.plan);
-      const proof=row.proof as {expectedWindow?:unknown;allHostsStopped?:unknown;canonicalLeasesZero?:unknown;previousNativeTerminal?:unknown;chargedAttempts?:unknown};
+      const proof=row.proof as ReviewedGraphAmendmentProof;
       const prefix=this.lines.slice(0,index),attempts=prefix.filter(r=>r.kind==='attempt');
+      if(!previousPlan&&prefix.some(r=>nativeHistoryKinds.has(r.kind)))refuse('FIRST_REVIEWED_GRAPH_REQUIRES_UNUSED_NATIVE_HISTORY');
+      const approval=validateReviewedGraphApproval(proof?.graphApprovalRaw,{planSha256:plan.planSha256,window:String(window),clientSource:proof?.clientSource,serverSource:proof?.serverSource,packetSha256:proof?.packetSha256});
+      if(approval.approvalHash!==plan.ownerApprovalHash||row.approvalHash!==approval.approvalHash)refuse('GRAPH_SOURCE_APPROVAL_HASH_MISMATCH');
       if(row.window!==window||proof?.expectedWindow!==window||proof.allHostsStopped!==true||proof.canonicalLeasesZero!==true||proof.previousNativeTerminal!==true
         ||proof.chargedAttempts!==30+attempts.length||approvals.has(plan.ownerApprovalHash)
         ||attempts.some(a=>!prefix.some(f=>f.kind==='finished'&&f.attempt===a.attempt))
@@ -185,9 +192,12 @@ export class RequestBudgetLedger {
     });
   }
   /** Explicit reviewed graph metadata only: no implicit adoption, new seed, budget increase or deadline reset. */
-  async amendReviewedPlan(value:ReviewedContinuationPlan,proof:{expectedWindow:string;allHostsStopped:boolean;canonicalLeasesZero:boolean;previousNativeTerminal:boolean;chargedAttempts:number}){
+  async amendReviewedPlan(value:ReviewedContinuationPlan,proof:ReviewedGraphAmendmentProof){
     return this.serialized(async()=>{
       const plan=validateReviewedContinuationPlan(value),current=this.reviewedPlan,s=this.snapshot();
+      if(!current&&this.lines.some(r=>nativeHistoryKinds.has(r.kind)))refuse('FIRST_REVIEWED_GRAPH_REQUIRES_UNUSED_NATIVE_HISTORY');
+      const approval=validateReviewedGraphApproval(proof.graphApprovalRaw,{planSha256:plan.planSha256,window:this.window,clientSource:proof.clientSource,serverSource:proof.serverSource,packetSha256:proof.packetSha256});
+      if(approval.approvalHash!==plan.ownerApprovalHash)refuse('GRAPH_SOURCE_APPROVAL_HASH_MISMATCH');
       if(proof.expectedWindow!==this.window||proof.allHostsStopped!==true||proof.canonicalLeasesZero!==true||proof.previousNativeTerminal!==true
         ||proof.chargedAttempts!==s.chargedAttempts||s.pending||s.unresolvedDispatches)refuse('REVIEWED_GRAPH_RECONCILIATION_REQUIRED');
       if(current&&JSON.stringify(current)===JSON.stringify(plan))return;
@@ -199,7 +209,7 @@ export class RequestBudgetLedger {
           ||!sameContinuationFlowPolicy(next.policy,policy)||current&&next&&plan.flowCases[old.id]!==current.flowCases[old.id])refuse('REVIEWED_GRAPH_HISTORY_CHANGED');
       }
       if(current&&Object.keys(current.actorIds).some(role=>current.actorIds[role as Role]!==plan.actorIds[role as Role]))refuse('REVIEWED_GRAPH_HISTORY_CHANGED');
-      await this.append('plan',{window:this.window,plan,proof:structuredClone(proof)});
+      await this.append('plan',{window:this.window,plan,proof:structuredClone(proof),approvalHash:approval.approvalHash});
     });
   }
   async selectPhase(phase: 'hermes' | 'openclaw', active: readonly string[], absoluteDeadline: number) {
