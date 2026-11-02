@@ -25,10 +25,10 @@ async function scanner() {
   return { url: `http://127.0.0.1:${server.address().port}/scan`, stop: () => new Promise(resolve => server.close(resolve)) };
 }
 
-async function launch(dataDir, scannerUrl) {
+async function launch(dataDir, scannerUrl, extraEnv = {}) {
   const child = spawn(process.execPath, ['src/server.js'], {
     cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: '', ENVOI_PORT: '0', ENVOI_AUTH_MODE: 'development', ENVOI_DATA_DIR: dataDir, ENVOI_MALWARE_SCANNER_URL: scannerUrl },
+    env: { ...process.env, DATABASE_URL: '', ENVOI_PORT: '0', ENVOI_AUTH_MODE: 'development', ENVOI_DATA_DIR: dataDir, ENVOI_MALWARE_SCANNER_URL: scannerUrl, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stderr = '';
@@ -81,10 +81,10 @@ async function eventually(check) {
   throw new Error('Expected recipient case did not become visible');
 }
 
-test('case asset grants remain private until explicit, clean, current counterparty authorization', async t => {
+for (const [label, extraEnv] of [['legacy gates', {}], ['Phase D authorization', { ENVOI_INSTALLATIONS_V2: 'true', ENVOI_RELATIONSHIPS_V2: 'true' }]]) test(`case asset grants remain private until explicit, clean, current counterparty authorization (${label})`, async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'sinaloa-case-grants-'));
   const scan = await scanner();
-  let server = await launch(dataDir, scan.url);
+  let server = await launch(dataDir, scan.url, extraEnv);
   t.after(async () => { await server.stop(); await scan.stop(); await rm(dataDir, { recursive: true, force: true }); });
   const migrations = await loadMigrations();
   assert.deepEqual(migrations.map(item => item.name), ['001_documents.sql', '002_object_storage.sql', '003_delivery.sql', '004_history_indexes.sql']);
@@ -187,7 +187,7 @@ test('case asset grants remain private until explicit, clean, current counterpar
   assert.equal((await complete(alice, oldStyle.payload.object.id)).payload.state, 'clean');
   assert.equal((await download(bob, oldStyle.payload.object.id)).status, 404);
   await server.stop();
-  server = await launch(dataDir, scan.url);
+  server = await launch(dataDir, scan.url, extraEnv);
   baseUrl = server.baseUrl;
   assert.equal((await download(bob, assetId)).status, 200);
   assert.equal((await list(bob)).payload.filter(item => item.id === assetId).length, 1);

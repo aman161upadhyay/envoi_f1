@@ -109,9 +109,9 @@ var I = class extends Error {
 async function de(e, t) {
 	let n = await e.text(), r = ue(n);
 	if (!e.ok) {
-		let n = r && !Array.isArray(r) ? r : null, i = typeof n?.message == "string" && n.message.length > 0 && n.message.length <= 500 ? n.message : typeof n?.error == "string" ? n.error : null, a = i && i.length <= 500 ? i : `${t} with HTTP ${e.status}`, o = e.headers.get("retry-after"), s = o ? /^\d+$/.test(o) ? Number(o) : Math.max(0, (Date.parse(o) - Date.now()) / 1e3) : 0, c = typeof n?.retryAfterSeconds == "number" ? n.retryAfterSeconds : 0, l = Math.max(Number.isFinite(s) ? s : 0, Number.isFinite(c) ? c : 0);
-		throw new L(a, e.status, typeof n?.code == "string" ? n.code : void 0, {
-			...l > 0 ? { retryAfterSeconds: l } : {},
+		let n = r && !Array.isArray(r) ? r : null, i = n?.error && typeof n.error == "object" && !Array.isArray(n.error) ? n.error : null, a = typeof n?.message == "string" && n.message.length > 0 && n.message.length <= 500 ? n.message : typeof i?.message == "string" && i.message.length <= 500 ? i.message : typeof n?.error == "string" ? n.error : null, o = a && a.length <= 500 ? a : `${t} with HTTP ${e.status}`, s = e.headers.get("retry-after"), c = s ? /^\d+$/.test(s) ? Number(s) : Math.max(0, (Date.parse(s) - Date.now()) / 1e3) : 0, l = typeof n?.retryAfterSeconds == "number" ? n.retryAfterSeconds : 0, u = Math.max(Number.isFinite(c) ? c : 0, Number.isFinite(l) ? l : 0);
+		throw new L(o, e.status, typeof n?.code == "string" ? n.code : typeof i?.code == "string" ? i.code : void 0, {
+			...u > 0 ? { retryAfterSeconds: u } : {},
 			...typeof n?.reason == "string" && [
 				"revoked",
 				"replaced",
@@ -248,6 +248,46 @@ var pe = class {
 			...t ? { cursor: t } : {}
 		});
 		return this.request(`/api/inboxes/${encodeURIComponent(e)}/events/delta?${r}`);
+	}
+	discoverAgent(e) {
+		return this.request(`/api/agent/discovery?address=${encodeURIComponent(e)}`);
+	}
+	discoverOrganization(e = 25, t) {
+		if (!Number.isSafeInteger(e) || e < 1 || e > 50) throw RangeError("Discovery limit must be 1–50");
+		let n = new URLSearchParams({
+			scope: "organization",
+			limit: String(e),
+			...t ? { after: t } : {}
+		});
+		return this.request(`/api/agent/discovery?${n}`);
+	}
+	redeemDiscoveryInvitation(e) {
+		if (!e) throw TypeError("An invitation is required");
+		return this.request("/api/agent/discovery/invitation", {
+			method: "POST",
+			body: JSON.stringify({ invitation: e })
+		});
+	}
+	getA2ACard(e) {
+		return this.request(`/api/agent/a2a/agents/${encodeURIComponent(e)}/card`);
+	}
+	sendA2AText(e, t, n) {
+		if (!t || !n.trim()) throw TypeError("A persisted messageId and nonempty text are required");
+		return this.request(`/api/agent/a2a/agents/${encodeURIComponent(e)}/message:send`, {
+			method: "POST",
+			headers: { "content-type": "application/a2a+json" },
+			body: JSON.stringify({
+				message: {
+					messageId: t,
+					role: "ROLE_USER",
+					parts: [{ text: n }]
+				},
+				configuration: { returnImmediately: !0 }
+			})
+		});
+	}
+	getA2ATask(e, t) {
+		return this.request(`/api/agent/a2a/agents/${encodeURIComponent(e)}/tasks/${encodeURIComponent(t)}`);
 	}
 };
 async function me(e, t, n = {}) {

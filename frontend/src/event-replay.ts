@@ -26,6 +26,8 @@ export const WORKSPACE_EVENT_TYPES = [
   'email.queued', 'asset.created', 'asset.granted', 'asset.upload_started',
   'asset.scan_clean', 'asset.scan_infected', 'asset.scan_error',
   'contact.blocked', 'contact.unblocked', 'contact.approved',
+  'discovery_invitation.issued', 'discovery_invitation.revoked',
+  'relationship.granted', 'relationship.revoked',
   'calendar.connected', 'calendar.connection_started', 'calendar.disconnected',
   'invitation.accepted', 'invitation.declined'
 ] as const;

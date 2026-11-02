@@ -41,8 +41,9 @@ def _safe_error(raw: bytes, status: int) -> EnvoiError:
     except (UnicodeDecodeError, json.JSONDecodeError):
         payload = None
     if isinstance(payload, dict):
-        message = payload.get("message") or payload.get("error")
-        code = payload.get("code")
+        detail = payload.get("error")
+        message = payload.get("message") or (detail.get("message") if isinstance(detail, dict) else detail)
+        code = payload.get("code") or (detail.get("code") if isinstance(detail, dict) else None)
         if isinstance(message, str) and 0 < len(message) <= 500:
             return EnvoiError(message, status=status, code=code if isinstance(code, str) else None)
     return EnvoiError(f"Envoi request failed with HTTP {status}", status=status)
@@ -78,7 +79,7 @@ class EnvoiClient:
         payload = json.dumps(body).encode("utf-8") if body is not None else None
         all_headers = {"Accept": "application/json", "Authorization": f"Bearer {self.access_token}", **(headers or {})}
         if payload is not None:
-            all_headers["Content-Type"] = "application/json"
+            all_headers["Content-Type"] = (headers or {}).get("Content-Type", "application/json")
         call = request.Request(f"{self.base_url}{path}", data=payload, headers=all_headers, method=method)
         return _request_json(call, self.timeout)
 
@@ -104,6 +105,31 @@ class EnvoiClient:
     def delta(self, inbox_id: str, cursor: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
         query = parse.urlencode({"limit": limit, **({"cursor": cursor} if cursor else {})})
         return self._request(f"/api/inboxes/{parse.quote(inbox_id, safe='')}/events/delta?{query}")
+
+    def discover_agent(self, address: str) -> Dict[str, Any]:
+        """Look up one exact agent address using current installation authority."""
+        return self._request(f"/api/agent/discovery?{parse.urlencode({'address': address})}")
+
+    def discover_organization(self, limit: int = 50, after: Optional[str] = None) -> Dict[str, Any]:
+        query = parse.urlencode({"scope": "organization", "limit": limit, **({"after": after} if after else {})})
+        return self._request(f"/api/agent/discovery?{query}")
+
+    def redeem_discovery_invitation(self, invitation: str) -> Dict[str, Any]:
+        return self._request("/api/agent/discovery/invitation", method="POST", body={"invitation": invitation})
+
+    def get_a2a_card(self, address: str) -> Dict[str, Any]:
+        return self._request(f"/api/agent/a2a/agents/{parse.quote(address, safe='')}/card")
+
+    def send_a2a_text(self, address: str, message_id: str, text: str) -> Dict[str, Any]:
+        return self._request(
+            f"/api/agent/a2a/agents/{parse.quote(address, safe='')}/message:send", method="POST",
+            body={"message": {"messageId": message_id, "role": "ROLE_USER", "parts": [{"text": text}]},
+                  "configuration": {"returnImmediately": True}},
+            headers={"Content-Type": "application/a2a+json", "A2A-Version": "1.0"},
+        )
+
+    def get_a2a_task(self, address: str, task_id: str) -> Dict[str, Any]:
+        return self._request(f"/api/agent/a2a/agents/{parse.quote(address, safe='')}/tasks/{parse.quote(task_id, safe='')}", headers={"A2A-Version": "1.0"})
 
 
 def rotate_agent_token(base_url: str, agent_refresh_token: str, rotation_id: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> AgentTokens:

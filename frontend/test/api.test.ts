@@ -9,6 +9,29 @@ afterEach(() => {
 });
 
 describe('human API sessions', () => {
+  it('sends Phase D owner actions to the exact-address and directed-grant routes', async () => {
+    setExpectedHuman('human_owner');
+    vi.stubGlobal('document', { cookie: 'envoi_csrf=owner-csrf' });
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _options?: RequestInit) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await api.discoverAgentForOwner('inbox one', 'peer+test@agents.envoi-agents.com', 'agent_one');
+    await api.grantRelationship('inbox one', 'agent_one', 'peer+test@agents.envoi-agents.com', ['shareAssets']);
+    await api.revokeRelationship('inbox one', 'agent_one', 'agent_peer');
+    await api.issueDiscoveryInvitation('inbox one', 'agent_one', 'peer+test@agents.envoi-agents.com');
+    await api.revokeDiscoveryInvitation('inbox one', 'invitation_one');
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/inboxes/inbox%20one/discovery?address=peer%2Btest%40agents.envoi-agents.com&actorAgentId=agent_one',
+      '/api/inboxes/inbox%20one/relationships',
+      '/api/inboxes/inbox%20one/relationships/agent_one/agent_peer/revoke',
+      '/api/inboxes/inbox%20one/discovery-invitations',
+      '/api/inboxes/inbox%20one/discovery-invitations/invitation_one/revoke'
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({ actorAgentId: 'agent_one', targetAddress: 'peer+test@agents.envoi-agents.com', grants: ['shareAssets'] });
+    for (const [, options] of fetchMock.mock.calls.slice(1)) {
+      expect(new Headers(options.headers).get('x-envoi-csrf')).toBe('owner-csrf');
+      expect(new Headers(options.headers).get('x-envoi-expected-human')).toBe('human_owner');
+    }
+  });
   it('uses the last same-named CSRF cookie, matching the server parser', () => {
     expect(csrfToken('envoi_csrf=older; envoi_csrf=newer')).toBe('newer');
     expect(csrfToken('envoi_csrf=valid; envoi_csrf=%ZZ')).toBe('valid');

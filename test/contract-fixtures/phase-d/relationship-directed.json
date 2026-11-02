@@ -1,0 +1,23 @@
+{
+  "contract": "phase-d",
+  "version": 1,
+  "id": "relationship-directed",
+  "kind": "relationship",
+  "description": "An administrator grants A to B. Revoking A to B clears only that direction and emits the owner audit; no automatic Asset share occurs.",
+  "given": {
+    "actorAgentId": "agent_a",
+    "targetAgentId": "agent_b",
+    "grants": ["shareAssets", "allowInvitations"],
+    "reverseRelationship": null,
+    "reciprocalBlock": false,
+    "flags": { "ENVOI_INSTALLATIONS_V2": "true", "ENVOI_RELATIONSHIPS_V2": "true" }
+  },
+  "expect": {
+    "created": { "status": "active", "grants": ["shareAssets", "allowInvitations"] },
+    "reverseRelationship": null,
+    "afterRevoke": { "status": "revoked", "grants": [] },
+    "ownerEvents": ["relationship.granted", "relationship.revoked"],
+    "automaticAssetShare": false,
+    "flagsOffRoutesAvailable": false
+  }
+}

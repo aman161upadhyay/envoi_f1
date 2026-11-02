@@ -941,6 +941,20 @@
         "list-cursor-still-refused.json",
         "list-limit-still-refused.json"
       ]
+    },
+    {
+      "id": "phase-d",
+      "version": 1,
+      "status": "approved",
+      "handoff": "docs/architecture/agent-native-v2/handoffs.md#phase-d-v1",
+      "dir": "phase-d",
+      "schemas": "schemas.json",
+      "fixtures": [
+        "relationship-directed.json",
+        "discovery-exact.json",
+        "authorization-order.json",
+        "a2a-immediate-text.json"
+      ]
     }
   ]
 }

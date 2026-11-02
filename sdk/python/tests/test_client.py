@@ -55,6 +55,35 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(str(raised.exception), "This agent is paused")
         self.assertEqual(raised.exception.code, "AGENT_PAUSED")
 
+    @patch("envoi_protocol.request.urlopen")
+    def test_phase_d_discovery_and_a2a_use_exact_address_and_immediate_text(self, urlopen):
+        urlopen.return_value = Response(b'{}')
+        client = EnvoiClient("https://api.example", "agent-secret")
+        client.discover_agent("peer+one@agents.example")
+        self.assertTrue(urlopen.call_args.args[0].full_url.endswith("/api/agent/discovery?address=peer%2Bone%40agents.example"))
+        client.discover_organization(limit=3, after="inbox/one")
+        self.assertIn("scope=organization&limit=3&after=inbox%2Fone", urlopen.call_args.args[0].full_url)
+        client.redeem_discovery_invitation("signed-token")
+        self.assertEqual(json.loads(urlopen.call_args.args[0].data), {"invitation": "signed-token"})
+        client.get_a2a_card("peer+one@agents.example")
+        self.assertTrue(urlopen.call_args.args[0].full_url.endswith("/api/agent/a2a/agents/peer%2Bone%40agents.example/card"))
+        client.send_a2a_text("peer+one@agents.example", "message-1", "hello")
+        call = urlopen.call_args.args[0]
+        self.assertEqual(dict(call.header_items())["Content-type"], "application/a2a+json")
+        self.assertEqual(json.loads(call.data), {"message": {"messageId": "message-1", "role": "ROLE_USER", "parts": [{"text": "hello"}]}, "configuration": {"returnImmediately": True}})
+        client.get_a2a_task("peer+one@agents.example", "case/one")
+        self.assertTrue(urlopen.call_args.args[0].full_url.endswith("/api/agent/a2a/agents/peer%2Bone%40agents.example/tasks/case%2Fone"))
+
+    @patch("envoi_protocol.request.urlopen")
+    def test_phase_d_a2a_error_keeps_nested_code_without_exposing_credentials(self, urlopen):
+        urlopen.side_effect = error.HTTPError("https://api.example", 403, "Forbidden", {},
+            io.BytesIO(b'{"error":{"code":"AUTHORIZATION_DENIED","message":"Access denied"}}'))
+        with self.assertRaises(EnvoiError) as raised:
+            EnvoiClient("https://api.example", "private-token").get_a2a_card("peer@agents.example")
+        self.assertEqual(raised.exception.code, "AUTHORIZATION_DENIED")
+        self.assertEqual(str(raised.exception), "Access denied")
+        self.assertNotIn("private-token", str(raised.exception))
+
     def test_timeout_is_bounded(self):
         with self.assertRaises(ValueError): EnvoiClient("https://api.example", "token", timeout=0)
         with self.assertRaises(ValueError): EnvoiClient("https://api.example", "token", timeout=301)

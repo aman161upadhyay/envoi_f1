@@ -1,0 +1,19 @@
+{
+  "contract": "phase-d",
+  "version": 1,
+  "id": "authorization-order",
+  "kind": "authorization",
+  "description": "Current facts are read inside the mutation lock; first failing gate wins and missing required facts deny.",
+  "given": {
+    "request": { "actorAgentId": "agent_a", "installationId": "installation_a", "action": "case.act", "caseId": "case_a", "resourceId": "asset_a" },
+    "allGatesPass": true,
+    "failuresInOrder": ["IDENTITY_INACTIVE", "INSTALLATION_INACTIVE", "PERMISSION_DENIED", "RELATIONSHIP_DENIED", "CASE_MEMBERSHIP_DENIED", "RESOURCE_DENIED", "POLICY_DENIED", "HUMAN_APPROVAL_REQUIRED"]
+  },
+  "expect": {
+    "allGatesPass": { "allowed": true, "reason": "ALLOW" },
+    "firstFailure": { "allowed": false, "reason": "IDENTITY_INACTIVE" },
+    "requiredPermission": "execute_cases",
+    "nextActionAfterRevocationDenied": true,
+    "flagsOffUsesExistingChecks": true
+  }
+}

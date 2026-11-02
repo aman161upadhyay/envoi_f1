@@ -86,6 +86,10 @@ import { authorizationServerMetadata, consentClient, consentRedirect, createAuth
 import { organizationMaximumPermissions } from './agent-approval.js';
 import { sha256Hex } from './agent-registration.js';
 import { createWakeDestination } from './http-wake-destination.js';
+import { relationshipPath, relationshipRecord, revokeRelationship, trustedDiscovery } from './relationships.js';
+import { authorize as authorizeV2 } from './authorization-v2.js';
+import { discoveryInvitationPath, signDiscoveryInvitation, verifyDiscoveryInvitation } from './discovery-invitations.js';
+import { a2aAgentCard, parseA2ATextMessage, projectA2ATask } from './a2a/adapter.js';
 
 const productionConfig = validateProductionConfiguration();
 // agent-registration v1 §1: fails closed in every mode, before anything starts.
@@ -321,6 +325,10 @@ const applyHeaders = (res, origin, nonce) => {
 };
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(body));
+};
+const a2aJson = (res, status, body) => {
+  res.writeHead(status, { 'content-type': 'application/a2a+json; charset=utf-8', 'cache-control': 'private, no-store' });
   res.end(JSON.stringify(body));
 };
 const redirect = (res, location, headers = {}) => { res.writeHead(302, { location, 'cache-control': 'no-store', ...headers }); res.end(); };
@@ -775,6 +783,47 @@ async function checkAgentCredential(req, url, res) {
 async function getAgentWorkIdentity(req) {
   const resolved = await resolveAgentCredential(req);
   return resolved.identity ? { agent: resolved.identity.agent, familyId: resolved.identity.familyId, inboxId: resolved.identity.inboxId, paused: resolved.identity.paused, oauth: resolved.identity.oauth } : null;
+}
+// Phase D: called only inside the route's existing mutation lock, after its legacy gates.
+// This migration adds a current installation and Case/Asset check without relaxing any old rule.
+async function requireV2Authorization(req, inboxId, actorAgentId, action, { caseRecord = null, resourceGrant = null } = {}) {
+  if (!onboardingFlags.relationships) return;
+  const identity = await getAgentWorkIdentity(req);
+  if (!identity || identity.inboxId !== inboxId || identity.agent.id !== actorAgentId) throw codedError(403, 'AUTHORIZATION_DENIED', 'Current agent identity required.');
+  const installation = await installations.forFamily(inboxId, identity.agent, identity.familyId);
+  const decision = authorizeV2({ actorAgentId, installationId: installation?.id, action, ...(caseRecord ? { caseId: caseRecord.id } : {}), ...(resourceGrant ? { resourceId: resourceGrant.resourceId } : {}) }, {
+    identity: identity.agent, installation, installationRequired: true, permissions: identity.agent.permissions,
+    caseRecord, resourceGrant, caseRequired: action !== 'case.create', resourceRequired: action === 'asset.grant'
+  });
+  if (!decision.allowed) throw codedError(403, 'AUTHORIZATION_DENIED', `Phase D authorization denied: ${decision.reason}`);
+}
+async function a2aCurrentAgent(req, action, caseRecord = null) {
+  const identity = await getAgentWorkIdentity(req);
+  if (!identity) throw codedError(401, 'AUTHENTICATION_REQUIRED', 'Active agent credential required.');
+  const installation = await installations.forFamily(identity.inboxId, identity.agent, identity.familyId);
+  const decision = authorizeV2({ actorAgentId: identity.agent.id, installationId: installation?.id, action, ...(caseRecord ? { caseId: caseRecord.id } : {}) }, {
+    identity: identity.agent, installation, installationRequired: true, permissions: identity.agent.permissions,
+    caseRecord, caseRequired: action === 'a2a.taskRead'
+  });
+  if (!decision.allowed) throw codedError(403, 'AUTHORIZATION_DENIED', `A2A authorization denied: ${decision.reason}`);
+  return identity;
+}
+function withA2ACard(discovery) {
+  if (!discovery || !onboardingFlags.a2aGateway) return discovery;
+  const origin = new URL(process.env.ENVOI_PUBLIC_URL).origin;
+  return { ...discovery, a2aCardUrl: `${origin}/api/agent/a2a/agents/${encodeURIComponent(discovery.address)}/card` };
+}
+async function a2aAuthorizedArtifacts(identity, caseRecord) {
+  const inbox = await store.getJson(path.join('inboxes', identity.inboxId, 'inbox.json'));
+  if (!inbox || inbox.status === 'removed') return [];
+  const assets = await store.queryJson(path.join('object-storage', 'metadata'), { filters: { caseId: caseRecord.id }, limit: 100 });
+  const result = [];
+  for (const asset of assets) {
+    if (asset.state !== 'clean' || !asset.key || !(await assetReadAccess(asset, inbox, { agent: identity.agent, manager: false })).allowed) continue;
+    result.push({ id: asset.id, name: asset.filename || asset.id, authorizedUrl: `${new URL(process.env.ENVOI_PUBLIC_URL).origin}/api/inboxes/${encodeURIComponent(identity.inboxId)}/assets/${encodeURIComponent(asset.id)}/content` });
+    if (result.length === 50) break;
+  }
+  return result;
 }
 async function getMcpIdentity(req) {
   const full = await getAgentWorkIdentity(req);
@@ -4314,6 +4363,145 @@ async function route(req, res) {
     return json(res, 201, await issueMcpReadToken(identity, caseId));
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/agent/discovery/invitation') {
+    if (!onboardingFlags.relationships) throw codedError(404, 'FEATURE_DISABLED', 'Discovery is not available yet.');
+    const identity = await getAgentWorkIdentity(req);
+    if (!identity) return fail(res, 401, 'Active agent access credential required');
+    const installation = await installations.forFamily(identity.inboxId, identity.agent, identity.familyId);
+    const decision = authorizeV2({ actorAgentId: identity.agent.id, installationId: installation?.id, action: 'agent.discover' }, {
+      identity: identity.agent, installation, installationRequired: true, permissions: identity.agent.permissions
+    });
+    if (!decision.allowed) return json(res, 403, { code: decision.reason, error: 'Discovery is not available to this agent' });
+    const input = await body(req, 3072);
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1 || typeof input.invitation !== 'string') return fail(res, 400, 'A signed invitation is required');
+    const token = input.invitation;
+    const invitation = verifyDiscoveryInvitation(token, connectorEncryptionKey(), new Date());
+    if (!invitation || invitation.recipientAgentId !== identity.agent.id || invitation.recipientInboxId !== identity.inboxId) return fail(res, 404, 'Invitation not found');
+    const record = await store.getJson(discoveryInvitationPath(invitation.issuerInboxId, invitation.id));
+    if (!record || record.status !== 'active' || record.tokenHash !== hashSecret(token) || record.expiresAt !== invitation.expiresAt) return fail(res, 404, 'Invitation not found');
+    const directory = await store.getJson(path.join('directory', 'agents', `${invitation.issuerAgentId}.json`));
+    if (directory?.inboxId !== invitation.issuerInboxId) return fail(res, 404, 'Invitation not found');
+    const [contact, reverseContact] = await Promise.all([
+      store.getJson(path.join('inboxes', identity.inboxId, 'contacts', `${invitation.issuerAgentId}.json`)),
+      store.getJson(path.join('inboxes', invitation.issuerInboxId, 'contacts', `${identity.agent.id}.json`))
+    ]);
+    if (contact?.blocked === true || reverseContact?.blocked === true) return fail(res, 404, 'Invitation not found');
+    const found = trustedDiscovery(directory, { signedInvitation: true });
+    return found ? json(res, 200, withA2ACard(found)) : fail(res, 404, 'Invitation not found');
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/agent/discovery') {
+    if (!onboardingFlags.relationships) throw codedError(404, 'FEATURE_DISABLED', 'Discovery is not available yet.');
+    const identity = await getAgentWorkIdentity(req);
+    if (!identity) return fail(res, 401, 'Active agent access credential required');
+    const installation = await installations.forFamily(identity.inboxId, identity.agent, identity.familyId);
+    const decision = authorizeV2({ actorAgentId: identity.agent.id, installationId: installation?.id, action: 'agent.discover' }, {
+      identity: identity.agent, installation, installationRequired: true, permissions: identity.agent.permissions
+    });
+    if (!decision.allowed) return json(res, 403, { code: decision.reason, error: 'Discovery is not available to this agent' });
+    if (url.searchParams.has('invitation')) return fail(res, 400, 'Submit invitations in a request body');
+    if (url.searchParams.get('scope') === 'organization') {
+      if (url.searchParams.has('address')) return fail(res, 400, 'Choose an exact address or organization scope');
+      const ownInbox = await store.getJson(path.join('inboxes', identity.inboxId, 'inbox.json'));
+      if (!ownInbox?.organizationId || ownInbox.organizationId !== identity.agent.organizationId || ownInbox.status === 'removed') return fail(res, 403, 'Current organization required');
+      const after = url.searchParams.get('after');
+      if (after) assertSafeIdentifier(after, 'after');
+      const requestedLimit = url.searchParams.get('limit');
+      const limit = requestedLimit == null ? 25 : Number(requestedLimit);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return fail(res, 400, 'limit must be 1–50');
+      const references = (await store.listJson(path.join('organizations', ownInbox.organizationId, 'workspaces')))
+        .filter(reference => reference?.inboxId && (!after || reference.inboxId > after))
+        .sort((left, right) => left.inboxId.localeCompare(right.inboxId));
+      const agents = [];
+      let nextCursor = null;
+      for (const reference of references) {
+        const targetInbox = await store.getJson(path.join('inboxes', reference.inboxId, 'inbox.json'));
+        if (!targetInbox || targetInbox.organizationId !== ownInbox.organizationId || !targetInbox.ownerAgentId || targetInbox.ownerAgentId === identity.agent.id || targetInbox.status === 'removed') continue;
+        const directory = await store.getJson(path.join('directory', 'agents', `${targetInbox.ownerAgentId}.json`));
+        if (directory?.inboxId !== targetInbox.id) continue;
+        const [contact, reverseContact, relationship] = await Promise.all([
+          store.getJson(path.join('inboxes', identity.inboxId, 'contacts', `${directory.agentId}.json`)),
+          store.getJson(path.join('inboxes', targetInbox.id, 'contacts', `${identity.agent.id}.json`)),
+          store.getJson(relationshipPath(identity.inboxId, identity.agent.id, directory.agentId))
+        ]);
+        const blocked = contact?.blocked === true || reverseContact?.blocked === true;
+        const found = trustedDiscovery(directory, { approvedContact: blocked ? null : contact, relationship: blocked ? null : relationship, sameOrganization: !blocked });
+        if (!found || blocked) continue;
+        if (agents.length === limit) { nextCursor = agents.at(-1).inboxId; break; }
+        agents.push({ ...withA2ACard(found), inboxId: targetInbox.id });
+      }
+      return json(res, 200, { agents, nextCursor });
+    }
+    if (url.searchParams.has('scope')) return fail(res, 400, 'Unsupported discovery scope');
+    const address = normalizedEmail(url.searchParams.get('address'));
+    if (!validEmail(address)) return fail(res, 400, 'An exact agent address is required');
+    const directory = await store.getJson(nativeAddressDirectoryPath(address));
+    if (!directory || directory.address !== address) return fail(res, 404, 'Agent not found');
+    const contact = await store.getJson(path.join('inboxes', identity.inboxId, 'contacts', `${directory.agentId}.json`));
+    const relationship = await store.getJson(relationshipPath(identity.inboxId, identity.agent.id, directory.agentId));
+    const reverseContact = await store.getJson(path.join('inboxes', directory.inboxId, 'contacts', `${identity.agent.id}.json`));
+    const targetInbox = await store.getJson(path.join('inboxes', directory.inboxId, 'inbox.json'));
+    const blocked = contact?.blocked === true || reverseContact?.blocked === true;
+    if (blocked) return fail(res, 404, 'Agent not found');
+    const found = trustedDiscovery(directory, { approvedContact: blocked ? null : contact, relationship: blocked ? null : relationship, sameOrganization: !blocked && Boolean(targetInbox?.organizationId && targetInbox.organizationId === identity.agent.organizationId) });
+    return found ? json(res, 200, withA2ACard(found)) : fail(res, 404, 'Agent not found');
+  }
+
+  const a2aEdge = url.pathname.match(/^\/api\/agent\/a2a\/agents\/([^/]+)\/(card|message:send|tasks\/([^/]+))$/);
+  if (a2aEdge) {
+    if (!onboardingFlags.a2aGateway) throw codedError(404, 'FEATURE_DISABLED', 'A2A gateway is not available yet.');
+    let address;
+    try { address = normalizedEmail(decodeURIComponent(a2aEdge[1])); } catch { return a2aJson(res, 400, { error: { code: 'INVALID_ADDRESS', message: 'Invalid agent address' } }); }
+    if (!validEmail(address) || !address.endsWith(`@${agentDomain}`)) return a2aJson(res, 400, { error: { code: 'INVALID_ADDRESS', message: 'Invalid agent address' } });
+    // Authenticate before looking up an address so a public caller cannot probe card existence.
+    const caller = await a2aCurrentAgent(req, 'agent.discover');
+    const targetDirectory = await store.getJson(nativeAddressDirectoryPath(address));
+    if (!targetDirectory || targetDirectory.address !== address || targetDirectory.verified !== true || !['active', 'paused'].includes(targetDirectory.status)) return a2aJson(res, 404, { error: { code: 'AGENT_NOT_FOUND', message: 'Agent not found' } });
+    const [contact, reverseContact] = await Promise.all([
+      store.getJson(path.join('inboxes', caller.inboxId, 'contacts', `${targetDirectory.agentId}.json`)),
+      store.getJson(path.join('inboxes', targetDirectory.inboxId, 'contacts', `${caller.agent.id}.json`))
+    ]);
+    if (contact?.blocked === true || reverseContact?.blocked === true) return a2aJson(res, 404, { error: { code: 'AGENT_NOT_FOUND', message: 'Agent not found' } });
+    if (req.headers['a2a-version'] && req.headers['a2a-version'] !== '1.0') return a2aJson(res, 400, { error: { code: 'VERSION_NOT_SUPPORTED', message: 'A2A protocol version 1.0 is required' } });
+    if (a2aEdge[2] === 'card' && req.method === 'GET') {
+      const target = await store.getJson(path.join('inboxes', targetDirectory.inboxId, 'agents', `${targetDirectory.agentId}.json`));
+      if (!target || target.address !== address) return a2aJson(res, 404, { error: { code: 'AGENT_NOT_FOUND', message: 'Agent not found' } });
+      const base = new URL(process.env.ENVOI_PUBLIC_URL).origin;
+      const card = a2aAgentCard({ name: target.name || address, description: 'Envoi agent text messaging', url: `${base}/api/agent/a2a/agents/${encodeURIComponent(address)}` });
+      return a2aJson(res, 200, card);
+    }
+    if (a2aEdge[2] === 'message:send' && req.method === 'POST') {
+      const identity = await a2aCurrentAgent(req, 'a2a.send');
+      if (String(req.headers['content-type'] || '').split(';')[0].trim() !== 'application/a2a+json') return a2aJson(res, 415, { error: { code: 'UNSUPPORTED_MEDIA_TYPE', message: 'application/a2a+json is required' } });
+      const parsed = parseA2ATextMessage(await body(req, 128 * 1024));
+      const key = `a2a-${hashSecret(`${identity.agent.id}:${address}:${parsed.messageId}`).slice(0, 48)}`;
+      const bound = server.address();
+      if (!bound || typeof bound === 'string') throw new Error('Local API is unavailable');
+      const nativeResponse = await fetch(`http://127.0.0.1:${bound.port}/api/inboxes/${identity.inboxId}/messages`, {
+        method: 'POST',
+        headers: { authorization: req.headers.authorization, 'content-type': 'application/json', 'idempotency-key': key },
+        body: JSON.stringify({ senderAgentId: identity.agent.id, recipientEmail: address, text: parsed.text, type: 'message', payload: { a2a: { messageId: parsed.messageId } } }),
+        redirect: 'error', signal: AbortSignal.timeout(Math.min(requestTimeoutMs, 25_000))
+      });
+      const native = await nativeResponse.json();
+      if (!nativeResponse.ok) return a2aJson(res, nativeResponse.status, { error: { code: native.code || 'NATIVE_SEND_FAILED', message: native.error || 'Envoi message was rejected' } });
+      const persisted = await getCase(identity.inboxId, native.caseId);
+      if (!persisted?.schemaVersion || !persisted.participants?.includes(targetDirectory.agentId)) throw new Error('Persisted native Case is unavailable after A2A send');
+      return a2aJson(res, 200, { task: projectA2ATask(persisted, { artifacts: await a2aAuthorizedArtifacts(identity, persisted) }) });
+    }
+    if (a2aEdge[3] && req.method === 'GET') {
+      const caseId = assertSafeIdentifier(a2aEdge[3], 'taskId');
+      const identity = await a2aCurrentAgent(req, 'agent.discover');
+      const persisted = await getCase(identity.inboxId, caseId);
+      if (!persisted?.schemaVersion || !persisted.participants?.includes(targetDirectory.agentId)
+        || !persisted.events?.some(event => event.actor === identity.agent.id && event.payload?.recipientEmail === address && event.payload?.data?.a2a?.messageId)) return a2aJson(res, 404, { error: { code: 'TASK_NOT_FOUND', message: 'Task not found' } });
+      await a2aCurrentAgent(req, 'a2a.taskRead', persisted);
+      return a2aJson(res, 200, projectA2ATask(persisted, { artifacts: await a2aAuthorizedArtifacts(identity, persisted) }));
+    }
+    return a2aJson(res, 501, { error: { code: 'UNSUPPORTED_OPERATION', message: 'A2A operation is not supported' } });
+  }
+  if (url.pathname.startsWith('/api/agent/a2a/')) return a2aJson(res, 501, { error: { code: 'UNSUPPORTED_OPERATION', message: 'A2A operation is not supported' } });
+
   if (req.method === 'GET' && url.pathname === '/api/agent/status') {
     const identity = await getAgentWorkIdentity(req);
     if (!identity) return fail(res, 401, 'Active agent access credential required');
@@ -4759,6 +4947,124 @@ async function route(req, res) {
   const [, inboxId, suffix = ''] = match;
   const inbox = await store.getJson(path.join('inboxes', inboxId, 'inbox.json'));
   if (!inbox) return fail(res, 404, 'Inbox not found');
+
+  if (suffix === 'discovery-invitations' && req.method === 'POST') {
+    if (!onboardingFlags.relationships) throw codedError(404, 'FEATURE_DISABLED', 'Discovery invitations are not available yet.');
+    const human = await auth.getHuman(req);
+    if (!await canManageInbox(human, inbox)) return fail(res, 403, 'Workspace administrator required');
+    const input = await body(req, 4096);
+    const actorAgentId = assertSafeIdentifier(input.actorAgentId, 'actorAgentId');
+    const recipientAddress = normalizedEmail(input.recipientAddress);
+    if (!validEmail(recipientAddress)) return fail(res, 400, 'An exact recipient address is required');
+    const targetBefore = await store.getJson(nativeAddressDirectoryPath(recipientAddress));
+    if (!targetBefore?.inboxId || targetBefore.address !== recipientAddress) return fail(res, 404, 'Recipient not found');
+    const issued = await withInboxMutation(inboxId, async writeAudit => {
+      if (!await canManageInbox(await auth.getHuman(req), inbox, { maxAgeMs: 0 })) throw Object.assign(new Error('Workspace administrator required'), { statusCode: 403 });
+      const [actor, target] = await Promise.all([
+        store.getJson(path.join('inboxes', inboxId, 'agents', `${actorAgentId}.json`)),
+        store.getJson(nativeAddressDirectoryPath(recipientAddress))
+      ]);
+      if (actor?.status !== 'active' || !target || target.inboxId !== targetBefore.inboxId || target.address !== recipientAddress || !['active', 'paused'].includes(target.status) || target.verified !== true || target.agentId === actorAgentId) throw Object.assign(new Error('Active distinct agents required'), { statusCode: 409 });
+      const [contact, reverseContact] = await Promise.all([
+        store.getJson(path.join('inboxes', inboxId, 'contacts', `${target.agentId}.json`)),
+        store.getJson(path.join('inboxes', target.inboxId, 'contacts', `${actorAgentId}.json`))
+      ]);
+      if (contact?.blocked === true || reverseContact?.blocked === true) throw Object.assign(new Error('Blocked agents cannot invite one another'), { statusCode: 403 });
+      const now = store.now();
+      const payload = { id: store.id('discovery_invitation'), issuerAgentId: actorAgentId, issuerInboxId: inboxId, recipientAgentId: target.agentId, recipientInboxId: target.inboxId, issuedAt: now, expiresAt: new Date(Date.parse(now) + 24 * 60 * 60 * 1000).toISOString() };
+      const invitation = signDiscoveryInvitation(payload, connectorEncryptionKey());
+      await store.putJson(discoveryInvitationPath(inboxId, payload.id), { ...payload, tokenHash: hashSecret(invitation), status: 'active', createdByHumanId: human.id });
+      await writeAudit('discovery_invitation.issued', { invitationId: payload.id, issuerAgentId: actorAgentId, recipientAgentId: target.agentId, humanId: human.id });
+      return { id: payload.id, invitation, expiresAt: payload.expiresAt };
+    }, [targetBefore.inboxId]);
+    return json(res, 201, issued);
+  }
+
+  const discoveryInvitationRevoke = suffix.match(/^discovery-invitations\/([^/]+)\/revoke$/);
+  if (discoveryInvitationRevoke && req.method === 'POST') {
+    if (!onboardingFlags.relationships) throw codedError(404, 'FEATURE_DISABLED', 'Discovery invitations are not available yet.');
+    const human = await auth.getHuman(req);
+    if (!await canManageInbox(human, inbox)) return fail(res, 403, 'Workspace administrator required');
+    const location = discoveryInvitationPath(inboxId, discoveryInvitationRevoke[1]);
+    const revoked = await withInboxMutation(inboxId, async writeAudit => {
+      if (!await canManageInbox(await auth.getHuman(req), inbox, { maxAgeMs: 0 })) throw Object.assign(new Error('Workspace administrator required'), { statusCode: 403 });
+      const record = await store.getJson(location);
+      if (!record) throw Object.assign(new Error('Invitation not found'), { statusCode: 404 });
+      const updated = { ...record, status: 'revoked', revokedAt: record.revokedAt || store.now(), revokedByHumanId: human.id };
+      await store.putJson(location, updated);
+      await writeAudit('discovery_invitation.revoked', { invitationId: updated.id, humanId: human.id });
+      return { id: updated.id, status: updated.status, revokedAt: updated.revokedAt };
+    });
+    return json(res, 200, revoked);
+  }
+
+  if (suffix === 'relationships' && req.method === 'POST') {
+    if (!onboardingFlags.relationships) throw codedError(404, 'FEATURE_DISABLED', 'Relationships are not available yet.');
+    const human = await auth.getHuman(req);
+    if (!await canManageInbox(human, inbox)) return fail(res, 403, 'Workspace administrator required');
+    const input = await body(req, 4096);
+    const actorAgentId = assertSafeIdentifier(input.actorAgentId, 'actorAgentId');
+    const targetAddress = normalizedEmail(input.targetAddress);
+    if (!validEmail(targetAddress)) return fail(res, 400, 'An exact target address is required');
+    const targetBefore = await store.getJson(nativeAddressDirectoryPath(targetAddress));
+    if (!targetBefore?.inboxId || targetBefore.address !== targetAddress) return fail(res, 409, 'Active unblocked agents required');
+    const result = await withInboxMutation(inboxId, async writeAudit => {
+      if (!await canManageInbox(await auth.getHuman(req), inbox, { maxAgeMs: 0 })) throw Object.assign(new Error('Workspace administrator required'), { statusCode: 403 });
+      const actor = await store.getJson(path.join('inboxes', inboxId, 'agents', `${actorAgentId}.json`));
+      const target = await store.getJson(nativeAddressDirectoryPath(targetAddress));
+      const targetAgentId = target?.agentId;
+      if (!targetAgentId || target.address !== targetAddress || target.inboxId !== targetBefore.inboxId) throw Object.assign(new Error('Active unblocked agents required'), { statusCode: 409 });
+      const [contact, reverseContact] = await Promise.all([
+        store.getJson(path.join('inboxes', inboxId, 'contacts', `${targetAgentId}.json`)),
+        store.getJson(path.join('inboxes', target.inboxId, 'contacts', `${actorAgentId}.json`))
+      ]);
+      if (actor?.status !== 'active' || !['active', 'paused'].includes(target?.status) || target.verified !== true || contact?.blocked === true || reverseContact?.blocked === true) throw Object.assign(new Error('Active unblocked agents required'), { statusCode: 409 });
+      const location = relationshipPath(inboxId, actorAgentId, targetAgentId);
+      const previous = await store.getJson(location);
+      const record = relationshipRecord({ inboxId, actorAgentId, targetAgentId, grants: input.grants, now: store.now(), previous, humanId: human.id });
+      await store.putJson(location, record);
+      await writeAudit('relationship.granted', { actorAgentId, targetAgentId, grants: record.grants, humanId: human.id });
+      return record;
+    }, [targetBefore.inboxId]);
+    return json(res, 200, result);
+  }
+
+  const relationshipRevoke = suffix.match(/^relationships\/([^/]+)\/([^/]+)\/revoke$/);
+  if (relationshipRevoke && req.method === 'POST') {
+    if (!onboardingFlags.relationships) throw codedError(404, 'FEATURE_DISABLED', 'Relationships are not available yet.');
+    const human = await auth.getHuman(req);
+    if (!await canManageInbox(human, inbox)) return fail(res, 403, 'Workspace administrator required');
+    const [, actorAgentId, targetAgentId] = relationshipRevoke;
+    const result = await withInboxMutation(inboxId, async writeAudit => {
+      if (!await canManageInbox(await auth.getHuman(req), inbox, { maxAgeMs: 0 })) throw Object.assign(new Error('Workspace administrator required'), { statusCode: 403 });
+      const location = relationshipPath(inboxId, actorAgentId, targetAgentId);
+      const record = revokeRelationship(await store.getJson(location), store.now(), human.id);
+      await store.putJson(location, record);
+      await writeAudit('relationship.revoked', { actorAgentId, targetAgentId, humanId: human.id });
+      return record;
+    });
+    return json(res, 200, result);
+  }
+
+  if (suffix === 'discovery' && req.method === 'GET') {
+    if (!onboardingFlags.relationships) throw codedError(404, 'FEATURE_DISABLED', 'Discovery is not available yet.');
+    const human = await auth.getHuman(req);
+    if (!await canManageInbox(human, inbox)) return fail(res, 403, 'Workspace administrator required');
+    const address = normalizedEmail(url.searchParams.get('address'));
+    if (!validEmail(address) || address.length > 254) return fail(res, 400, 'An exact agent address is required');
+    const directory = await store.getJson(nativeAddressDirectoryPath(address));
+    if (!directory || directory.address !== address) return fail(res, 404, 'Agent not found');
+    const contact = await store.getJson(path.join('inboxes', inboxId, 'contacts', `${directory.agentId}.json`));
+    const actorAgentId = url.searchParams.get('actorAgentId');
+    if (actorAgentId && (await store.getJson(path.join('inboxes', inboxId, 'agents', `${assertSafeIdentifier(actorAgentId, 'actorAgentId')}.json`)))?.status !== 'active') return fail(res, 404, 'Agent not found');
+    const relationship = actorAgentId ? await store.getJson(relationshipPath(inboxId, actorAgentId, directory.agentId)) : null;
+    const reverseContact = actorAgentId ? await store.getJson(path.join('inboxes', directory.inboxId, 'contacts', `${actorAgentId}.json`)) : null;
+    const targetInbox = await store.getJson(path.join('inboxes', directory.inboxId, 'inbox.json'));
+    const blocked = contact?.blocked === true || reverseContact?.blocked === true;
+    if (blocked) return fail(res, 404, 'Agent not found');
+    const found = trustedDiscovery(directory, { approvedContact: blocked ? null : contact, relationship: blocked ? null : relationship, sameOrganization: !blocked && Boolean(targetInbox?.organizationId && targetInbox.organizationId === inbox.organizationId) });
+    return found ? json(res, 200, withA2ACard(found)) : fail(res, 404, 'Agent not found');
+  }
 
   if (await inboxPreferencesHttp.handleRequest(req, res, url)) return;
 
@@ -5500,6 +5806,7 @@ async function route(req, res) {
     const value = await withInboxMutation(inboxId, async writeAudit => {
       const currentPrincipal = await getAgentPrincipal(req, inboxId);
       if (!currentPrincipal || !canAct(currentPrincipal, 'execute_cases')) throw Object.assign(new Error('Agent credential with execute_cases permission required'), { statusCode: 403 });
+      await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.create');
       const now = store.now();
       const created = createAgentCase({ id: store.id('case'), objective: input.objective, collaborationMode: input.collaborationMode || 'collaboration', principal: inbox.ownerHumanId, actingAgent: currentPrincipal.id, participants: input.participants || [], constraints: input.constraints || {}, deadline: input.deadline || null, createdAt: now });
       if (!await store.putJsonIfAbsent(caseRecordPath(inboxId, created.id), created)) throw Object.assign(new Error('Case ID already exists'), { statusCode: 409 });
@@ -5542,6 +5849,7 @@ async function route(req, res) {
       const value = await getCase(inboxId, caseRoute[1]);
       if (!value?.schemaVersion) throw Object.assign(new Error('Structured case not found'), { statusCode: 404 });
       if (!isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
+      await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.appendEvent', { caseRecord: value });
       const now = store.now();
       appendEvent(value, { id: store.id('evt'), type: input.type, actor: currentPrincipal.id, createdAt: now, payload: input.payload || {}, linkedPolicyEvaluation: input.linkedPolicyEvaluation || null, precedingEventRef: input.precedingEventRef || value.events.at(-1)?.id || null });
       await saveCase(inboxId, value);
@@ -5563,6 +5871,7 @@ async function route(req, res) {
       const value = await getCase(inboxId, caseRoute[1]);
       if (!value?.schemaVersion) throw Object.assign(new Error('Structured case not found'), { statusCode: 404 });
       if (!isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
+      await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.evaluatePolicy', { caseRecord: value });
       const now = store.now();
       const evaluationId = store.id('policy_eval');
       const evaluated = await evaluateServerPolicy(inboxId, currentPrincipal, value, { ...input, id: evaluationId }, { id: evaluationId });
@@ -5586,6 +5895,7 @@ async function route(req, res) {
       const value = await getCase(inboxId, caseRoute[1]);
       if (!value?.schemaVersion) throw Object.assign(new Error('Structured case not found'), { statusCode: 404 });
       if (!isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
+      await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.propose', { caseRecord: value });
       const now = store.now();
       const created = proposalFromInput(input, now);
       const updated = addProposal(value, created);
@@ -5652,6 +5962,7 @@ async function route(req, res) {
         if (scopedRequest) await resolveCaseHumanRequest(scopedRequest, input.actionKey === 'approveOnce' ? 'approved' : 'declined', human.id, result.case, writeAudit);
       } else {
         if (currentPrincipal.id !== value.actingAgent || !isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
+        await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.act', { caseRecord: value });
         if (value.state === 'waitingForHuman' && input.nextState && input.nextState !== 'waitingForHuman') throw Object.assign(new Error('Authenticated human case decision is required'), { statusCode: 409 });
         const requestDigest = actionRequestDigest({ ...input, actor: currentPrincipal.id });
         const replayEvent = value.events.find(event => event.payload?.action?.idempotencyKey === idempotencyKey);
@@ -5701,6 +6012,7 @@ async function route(req, res) {
       const value = await getCase(inboxId, proposalRoute[1]);
       if (!value?.schemaVersion) throw Object.assign(new Error('Structured case not found'), { statusCode: 404 });
       if (!isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
+      await requireV2Authorization(req, inboxId, currentPrincipal.id, proposalRoute[3] === 'counter' ? 'case.counterProposal' : 'case.acceptProposal', { caseRecord: value });
       const now = store.now();
       if (proposalRoute[3] === 'counter') {
         const options = proposalFromInput({ kind: value.proposals.find(item => item.id === proposalRoute[2])?.kind, options: input.options }, now).options;
@@ -5743,6 +6055,7 @@ async function route(req, res) {
       const value = await getCase(inboxId, caseRoute[1]);
       if (!value?.schemaVersion) throw Object.assign(new Error('Structured case not found'), { statusCode: 404 });
       if (!isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
+      await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.complete', { caseRecord: value });
       const now = store.now();
       const verifiedDecision = verifiedHumanCaseDecision(value, input.authorityBasis, input.result);
       const approvalRequired = value.events.some(event => event.type === 'decision' && event.payload?.messageType === 'decision' && event.payload?.data?.decision?.kind === 'accept');
@@ -6182,6 +6495,13 @@ async function route(req, res) {
       if (currentRecipientDirectory?.inboxId !== recipientInboxId || !currentRecipient || !canReceive(currentRecipient)
         || !await assetPair(currentAsset, recipientAgentId, recipientInboxId)) throw caseParticipantMismatch();
       if (await assetRelationshipBlocked(currentAsset, recipientAgentId, recipientInboxId)) throw Object.assign(new Error('The agent relationship is blocked'), { statusCode: 403, code: 'AGENT_BLOCKED' });
+      if (onboardingFlags.relationships) {
+        const caseRecord = await getCase(inboxId, caseId);
+        await requireV2Authorization(req, inboxId, currentPrincipal.id, 'asset.grant', {
+          caseRecord,
+          resourceGrant: { resourceId: currentAsset.id, agentId: currentPrincipal.id, active: currentAsset.workspaceId === inboxId && currentAsset.createdByAgentId === currentPrincipal.id }
+        });
+      }
       const priorKey = await store.getJson(keyPath);
       if (priorKey && (priorKey.principalId !== principal.id || priorKey.requestDigest !== requestDigest)) throw nativeIdempotencyConflict();
       let grant = await store.getJson(grantPath);

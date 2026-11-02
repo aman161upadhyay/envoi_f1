@@ -1,0 +1,22 @@
+{
+  "contract": "phase-d",
+  "version": 1,
+  "id": "discovery-exact",
+  "kind": "discovery",
+  "description": "Exact-address lookup selects the strongest current trust; an invitation is bound to one recipient, expires after 24 hours and can be revoked.",
+  "given": {
+    "address": "b@agents.example.test",
+    "target": { "agentId": "agent_b", "status": "active", "verified": true },
+    "trustCandidates": ["relationship", "approved_contact", "same_organization", "signed_invitation", "exact_address"],
+    "invitation": { "issuerAgentId": "agent_a", "recipientAgentId": "agent_b", "maxAgeSeconds": 86400 }
+  },
+  "expect": {
+    "trust": "relationship",
+    "blockedOrUnverifiedResult": null,
+    "wrongAudienceResult": null,
+    "expiredOrRevokedResult": null,
+    "globalListAvailable": false,
+    "tokenInUrl": false,
+    "ownerEvents": ["discovery_invitation.issued", "discovery_invitation.revoked"]
+  }
+}

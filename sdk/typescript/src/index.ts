@@ -78,6 +78,31 @@ export interface AssetGrant {
   updatedAt: string;
 }
 
+export type RelationshipGrant = 'shareAssets' | 'autoAcceptSelectedTasks' | 'richerProfileVisibility' | 'allowInvitations';
+export type DiscoveryTrust = 'relationship' | 'approved_contact' | 'same_organization' | 'signed_invitation' | 'exact_address';
+export interface AgentDiscovery {
+  agentId: string;
+  address: string;
+  trust: DiscoveryTrust;
+  grants: RelationshipGrant[];
+  a2aCardUrl?: string;
+  inboxId?: string;
+}
+export interface A2ATask {
+  id: string;
+  contextId: string;
+  status: { state: string; timestamp: string };
+  artifacts: Array<{ artifactId: string; name: string; parts: Array<{ url: string }> }>;
+}
+export interface A2AAgentCard {
+  name: string;
+  supportedInterfaces: Array<{ url: string; protocolBinding: 'HTTP+JSON'; protocolVersion: '1.0' }>;
+  capabilities: { streaming: false; pushNotifications: false; extendedAgentCard: false };
+  securitySchemes: Record<string, unknown>;
+  defaultInputModes: string[];
+  defaultOutputModes: string[];
+}
+
 export interface SignedAssetRequest { url: string; method: 'PUT' | 'GET'; headers?: Record<string, string> }
 export interface AssetUploadInput { filename: string; mimeType: string; size: number; checksumSha256: string; caseId?: string }
 
@@ -118,13 +143,14 @@ export async function responsePayload<T>(response: Response, fallback: string): 
   const payload = safePayload(text);
   if (!response.ok) {
     const errorBody = payload && !Array.isArray(payload) ? payload : null;
-    const remoteMessage = typeof errorBody?.message === 'string' && errorBody.message.length > 0 && errorBody.message.length <= 500 ? errorBody.message : typeof errorBody?.error === 'string' ? errorBody.error : null;
+    const a2aError = errorBody?.error && typeof errorBody.error === 'object' && !Array.isArray(errorBody.error) ? errorBody.error as Record<string, unknown> : null;
+    const remoteMessage = typeof errorBody?.message === 'string' && errorBody.message.length > 0 && errorBody.message.length <= 500 ? errorBody.message : typeof a2aError?.message === 'string' && a2aError.message.length <= 500 ? a2aError.message : typeof errorBody?.error === 'string' ? errorBody.error : null;
     const message = remoteMessage && remoteMessage.length <= 500 ? remoteMessage : `${fallback} with HTTP ${response.status}`;
     const header = response.headers.get('retry-after');
     const headerSeconds = header ? (/^\d+$/.test(header) ? Number(header) : Math.max(0, (Date.parse(header) - Date.now()) / 1000)) : 0;
     const bodySeconds = typeof errorBody?.retryAfterSeconds === 'number' ? errorBody.retryAfterSeconds : 0;
     const retryAfterSeconds = Math.max(Number.isFinite(headerSeconds) ? headerSeconds : 0, Number.isFinite(bodySeconds) ? bodySeconds : 0);
-    throw new EnvoiError(message, response.status, typeof errorBody?.code === 'string' ? errorBody.code : undefined, {
+    throw new EnvoiError(message, response.status, typeof errorBody?.code === 'string' ? errorBody.code : typeof a2aError?.code === 'string' ? a2aError.code : undefined, {
       ...(retryAfterSeconds > 0 ? { retryAfterSeconds } : {}),
       ...(typeof errorBody?.reason === 'string' && ['revoked', 'replaced', 'refresh_replay'].includes(errorBody.reason) ? { reason: errorBody.reason } : {}),
       ...(typeof errorBody?.requestId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(errorBody.requestId) ? { requestId: errorBody.requestId } : {})
@@ -266,6 +292,40 @@ export class EnvoiClient {
   delta(inboxId: string, cursor?: string, limit = 100) {
     const query = new URLSearchParams({ limit: String(limit), ...(cursor ? { cursor } : {}) });
     return this.request<{ events: Array<Record<string, unknown>>; nextCursor: string | null; hasMore: boolean }>(`/api/inboxes/${encodeURIComponent(inboxId)}/events/delta?${query}`);
+  }
+
+  /** Exact-address discovery conveys visibility, never permission to send or share. */
+  discoverAgent(address: string) {
+    return this.request<AgentDiscovery>(`/api/agent/discovery?address=${encodeURIComponent(address)}`);
+  }
+
+  discoverOrganization(limit = 25, after?: string) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new RangeError('Discovery limit must be 1–50');
+    const query = new URLSearchParams({ scope: 'organization', limit: String(limit), ...(after ? { after } : {}) });
+    return this.request<{ agents: AgentDiscovery[]; nextCursor: string | null }>(`/api/agent/discovery?${query}`);
+  }
+
+  redeemDiscoveryInvitation(invitation: string) {
+    if (!invitation) throw new TypeError('An invitation is required');
+    return this.request<AgentDiscovery>('/api/agent/discovery/invitation', { method: 'POST', body: JSON.stringify({ invitation }) });
+  }
+
+  /** The authenticated card is address-specific; there is no public directory. */
+  getA2ACard(address: string) {
+    return this.request<A2AAgentCard>(`/api/agent/a2a/agents/${encodeURIComponent(address)}/card`);
+  }
+
+  /** Persist messageId before first send and reuse it after an uncertain response. */
+  sendA2AText(address: string, messageId: string, text: string) {
+    if (!messageId || !text.trim()) throw new TypeError('A persisted messageId and nonempty text are required');
+    return this.request<{ task: A2ATask }>(`/api/agent/a2a/agents/${encodeURIComponent(address)}/message:send`, {
+      method: 'POST', headers: { 'content-type': 'application/a2a+json' },
+      body: JSON.stringify({ message: { messageId, role: 'ROLE_USER', parts: [{ text }] }, configuration: { returnImmediately: true } })
+    });
+  }
+
+  getA2ATask(address: string, caseId: string) {
+    return this.request<A2ATask>(`/api/agent/a2a/agents/${encodeURIComponent(address)}/tasks/${encodeURIComponent(caseId)}`);
   }
 }
 
