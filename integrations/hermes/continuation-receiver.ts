@@ -12,10 +12,11 @@ import type { RuntimeBridge } from '../connector/adapter';
 import type { NativeRequestGateExpectation } from './request-gate-attestation';
 import { ContinuationController } from './continuation-controller';
 import type {ContinuationFlowPolicy} from './continuation-plan';
+import {OpenClawTargetRegistry,type OpenClawTargetResolver,type OpenClawTargetSelectionAuthority} from '../openclaw/scoped-target';
 
 type Role='je1'|'je2'|'testowner'|'openclaw';
 export type ContinuationWork=Readonly<{flowId:string;workId:string;caseId:string;evidenceSha256:string}>;
-type ActiveWork=ContinuationWork & {humanEnd:boolean;settled:boolean;failed:boolean;deadline?:number;nativeBinding?:Promise<void>;held?:boolean;workStop?:AbortController;beforeIds?:Set<unknown>;completedJournalHash?:string};
+type ActiveWork=ContinuationWork & {humanEnd:boolean;settled:boolean;failed:boolean;deadline?:number;nativeBinding?:Promise<void>;held?:boolean;workStop?:AbortController;beforeIds?:Set<unknown>;completedJournalHash?:string;caseSession?:{id:string;fence:number;expiresAt:string;toolChannelSha256:string}};
 type FlowPolicy=ContinuationFlowPolicy;
 const hash=(x:string|Buffer)=>createHash('sha256').update(x).digest('hex');
 function refuse(code:string):never{throw Object.assign(new Error(code),{code});}
@@ -31,6 +32,9 @@ export async function createContinuationReceiver(options:{
   beforeScopedControl?(workId:string,signal:AbortSignal):Promise<never>;
   verifyHeldControl?(workId:string):Promise<{lateScopeDenied:true;lateSettlementDenied:true;heldWorkResumable:true;evidenceSha256:string}>;
   record(event:Readonly<Record<string,unknown>>):Promise<void>;fetch?:typeof fetch;
+  /** Trusted local plumbing only; never relaxes the native attribution admission guard. */
+  openClawTargetResolver?:OpenClawTargetResolver;
+  openClawTargetSelection?:OpenClawTargetSelectionAuthority;
 }) {
   const {controller,role}=options,origin=controller.receipt.serverSource&&'https://sinaloa-staging.rachelgonsalves821.workers.dev';
   if(!controller.active())refuse('CONTINUATION_WINDOW_CLOSED');
@@ -40,10 +44,22 @@ export async function createContinuationReceiver(options:{
     ||saved.activationSetup?.installationId!==options.expected.installationId)refuse('EXISTING_ENROLLMENT_BINDING_MISMATCH');
   if(runtime==='hermes'&&(!options.nativeGate||options.nativeGate.role!==role||options.nativeGate.meterToken!==options.meterToken
     ||options.nativeGate.window!==controller.ledger.window||options.env.ENVOI_HERMES_GATE_REQUIRED!=='1'))refuse('REQUIRED_NATIVE_GATE_EXPECTATION_MISSING');
+  if(options.openClawTargetResolver&&role!=='openclaw')refuse('FOREIGN_OPENCLAW_TARGET_REFUSED');
+  if(options.openClawTargetResolver&&(!options.openClawTargetSelection||options.openClawTargetSelection.clientSource!==controller.receipt.clientSource||options.openClawTargetSelection.window!==controller.ledger.window))refuse('PERSONAL_OPENCLAW_TARGET_REVIEW_REQUIRED');
   const unlock=await acquireConnectorLock(options.stateDir),local=new AbortController();
   const signal=AbortSignal.any([local.signal,controller.control.signal]);let bridge:RuntimeBridge|undefined,control:Awaited<ReturnType<typeof startControl>>|undefined;
   const runs=new FileScopedRunStore(options.stateDir),upstream=options.fetch??fetch;
   const active=new Map<string,ActiveWork>(),scopedTokens=new Map<string,string>(),issuedTokens=new Map<string,string>();
+  const targets=options.openClawTargetResolver?new OpenClawTargetRegistry(async(workId,bounded)=>{
+    const value=await options.openClawTargetResolver!(workId,bounded);ensure();
+    const state=active.get(workId),b=value?.binding,s=state?.caseSession;
+    if(!state||state.settled||state.failed||!s||!b||b.workId!==workId||b.caseId!==state.caseId
+      ||b.caseSessionId!==s.id||b.fence!==s.fence||b.window!==controller.ledger.window
+      ||value.toolChannelSha256!==s.toolChannelSha256
+      ||b.recipientAgentId!==options.expected.agentId||b.installationId!==options.expected.installationId
+      ||value.deadlineUnixMs>Date.parse(s.expiresAt)||value.deadlineUnixMs>Date.parse(controller.receipt.hardStopUtc))refuse('OPENCLAW_CANONICAL_TARGET_MISMATCH');
+    return value;
+  },options.openClawTargetSelection):undefined;
   let claims:string[]=[],claimIndex=0,recovery:{workId:string;caseId:string;journalSha256:string}|undefined;
   const ensure=()=>{signal.throwIfAborted();if(!controller.active())refuse('CONTINUATION_WINDOW_CLOSED');};
   const policy=(flowId:string):FlowPolicy=>{
@@ -51,23 +67,26 @@ export async function createContinuationReceiver(options:{
     return current.flowPolicy?current.flowPolicy.call(controller,flowId):{noAction:['declined-resume','private-receipt-review'].includes(flowId),decisionOutcome:flowId==='declined-resume'?'declined':null,allowHumanEnd:['accept-authority','asset-decline'].includes(flowId)};
   };
   const workForToken=(init:RequestInit):ActiveWork=>{const token=new Headers(init.headers).get('authorization'),workId=token&&scopedTokens.get(token),state=workId&&active.get(workId);if(!state||state.settled||state.failed)refuse('EXACT_SCOPED_WORK_TOKEN_REQUIRED');return state;};
-  const forget=(workId:string)=>{active.delete(workId);for(const [token,id]of scopedTokens)if(id===workId)scopedTokens.delete(token);};
+  const forget=(workId:string)=>{targets?.close(workId);active.delete(workId);for(const [token,id]of scopedTokens)if(id===workId)scopedTokens.delete(token);};
   const direct:typeof fetch=async(input,init={})=>{
     ensure();const url=new URL(input instanceof Request?input.url:String(input));
     if(url.origin!==origin){
       const selected=saved.configuration as {gatewayUrl?:string;agentId?:string};
-      if(role!=='openclaw'||!selected.gatewayUrl||url.origin!==new URL(selected.gatewayUrl).origin||url.pathname!=='/v1/responses'||init.method!=='POST'||!active.size||recovery)refuse('FOREIGN_RUNTIME_REQUEST_REFUSED');
+      if(role!=='openclaw'||(!targets&&(!selected.gatewayUrl||url.origin!==new URL(selected.gatewayUrl).origin))||url.pathname!=='/v1/responses'||url.search||url.hash||url.username||url.password||init.method!=='POST'||!active.size||recovery)refuse('FOREIGN_RUNTIME_REQUEST_REFUSED');
       let body;try{body=JSON.parse(String(init.body));}catch{refuse('INVALID_OPERATOR_REQUEST_BODY');}
       const matches:ActiveWork[]=[];
       for(const state of active.values()){
+        const target=targets?.get(state.workId);
+        if(targets&&(!target||target.gatewayUrl!==url.origin||new Headers(init.headers).get('authorization')!==`Bearer ${target.gatewayToken}`))continue;
         const journal=await runs.load(state.workId);
-        if(journal&&journal.workId===state.workId&&!journal.completed&&body.model===`openclaw/${selected.agentId}`
+        if(!state.settled&&!state.failed&&journal&&journal.workId===state.workId&&!journal.completed&&body.model===`openclaw/${target?.agentId??selected.agentId}`
           &&JSON.stringify(body.input)===JSON.stringify(journal.input.map(item=>item.type===undefined&&typeof item.role==='string'?{type:'message',...item}:item)))matches.push(state);
       }
       if(matches.length!==1)refuse(matches.length?'AMBIGUOUS_OPENCLAW_NATIVE_WORK':'EXACT_OPENCLAW_JOURNAL_REQUIRED');
       const state=matches[0];
-      if(!state.nativeBinding){state.deadline=Date.now()+120000;state.nativeBinding=controller.nativeGuard('openclaw',options.meterToken)({workId:state.workId,sessionId:'openclaw:'+state.workId,deadlineUnixMs:state.deadline},signal);}
+      if(!state.nativeBinding){state.deadline=targets?.get(state.workId)?.deadlineUnixMs??Date.now()+120000;state.nativeBinding=controller.nativeGuard('openclaw',options.meterToken)({workId:state.workId,sessionId:'openclaw:'+state.workId,deadlineUnixMs:state.deadline},signal);}
       await state.nativeBinding;if(!state.deadline||Date.now()>=state.deadline)refuse('NATIVE_DEADLINE_EXPIRED');
+      if(targets)return targets.dispatch(state.workId,input,{...init,signal:AbortSignal.any([signal,...(init.signal?[init.signal]:[])])},upstream);
       return upstream(input,{...init,redirect:'error',signal:AbortSignal.any([signal,...(init.signal?[init.signal]:[]),AbortSignal.timeout(Math.max(1,state.deadline-Date.now()))])});
     }
     let body:Record<string,any>|undefined;if(typeof init.body==='string'){try{body=JSON.parse(init.body);}catch{refuse('INVALID_OPERATOR_REQUEST_BODY');}}
@@ -91,6 +110,7 @@ export async function createContinuationReceiver(options:{
     if(route?.[2]==='session'&&response.ok){const p=await response.clone().json(),session=p.session;
       if(!session||session.workId!==routed!.workId||session.caseId!==routed!.caseId||session.agentId!==options.expected.agentId||session.installationId!==options.expected.installationId||typeof session.token!=='string')refuse('SCOPED_TOKEN_WORK_BINDING_MISMATCH');
       const token='Bearer '+session.token,prior=issuedTokens.get(token);if(prior&&prior!==routed!.workId)refuse('SCOPED_TOKEN_WORK_BINDING_MISMATCH');issuedTokens.set(token,routed!.workId);scopedTokens.set(token,routed!.workId);
+      if(targets){if(typeof session.id!=='string'||!Number.isSafeInteger(session.fence)||session.fence<1||!Number.isFinite(Date.parse(session.expiresAt)))refuse('OPENCLAW_CANONICAL_TARGET_MISMATCH');routed!.caseSession={id:session.id,fence:session.fence,expiresAt:session.expiresAt,toolChannelSha256:hash(JSON.stringify([controller.ledger.window,routed!.workId,routed!.caseId,session.id,session.fence,session.token,session.transport]))};}
     }
     if(route?.[2]==='session/end'&&response.ok)for(const[token,id]of scopedTokens)if(id===routed!.workId)scopedTokens.delete(token);
     if(tool&&response.ok){const e=await readEnvelope(response);if(e?.ok===true&&tool==='envoi_request_human'&&e.result?.endTurn===true)scoped!.humanEnd=true;}
@@ -110,7 +130,7 @@ export async function createContinuationReceiver(options:{
     const journal=JSON.parse(bytes.toString('utf8'));if(journal.workId!==state.workId)refuse('EXACT_NATIVE_COMPLETION_PROOF_REQUIRED');
     if(journal.completed!==true)return;if(journal.pending?.length)refuse('ACTUAL_NATIVE_COMPLETION_REQUIRED');
     const digest=hash(bytes);if(state.completedJournalHash&&state.completedJournalHash!==digest)refuse('NATIVE_COMPLETION_JOURNAL_CHANGED');
-    controller.closeNativeForwarding(state.flowId,{workId:state.workId,journalCompleted:true,journalSha256:digest});state.completedJournalHash=digest;
+    controller.closeNativeForwarding(state.flowId,{workId:state.workId,journalCompleted:true,journalSha256:digest});targets?.close(state.workId);state.completedJournalHash=digest;
   };
   // Fence provider forwarding before the outer observer performs its pre-end
   // scope/idempotency probes, even while another work's request is pending.
@@ -118,6 +138,7 @@ export async function createContinuationReceiver(options:{
   try{
     const adapter=adapterFor(runtime),context={apiUrl:origin,stateDir:options.stateDir,env:options.env,signal,fetch:fetcher,
       nativeRequestGate:options.nativeGate,beforeNativeSubmit:controller.nativeGuard(role,options.meterToken),
+      ...(targets?{openClawTargetResolver:(workId:string,bounded:AbortSignal)=>targets.resolve(workId,bounded),openClawTargetSelection:options.openClawTargetSelection}:{}),
       beforeScopedTurn:async(workId:string,scopedSignal:AbortSignal)=>{const state=active.get(workId);if(!state)refuse('EXPLICIT_WORK_STEP_REQUIRED');if(state.held){if(!options.beforeScopedControl)refuse('DECLARED_CONTROL_CHECKPOINT_REQUIRED');await options.beforeScopedControl(workId,scopedSignal);refuse('CONTROL_CHECKPOINT_MUST_NOT_START_NATIVE');}}};
     const config=await adapter.discover(context,saved.configuration);if(!adapter.startupCheck)refuse('READONLY_STARTUP_CHECK_REQUIRED');await adapter.startupCheck(config,context);
     bridge=await adapter.createBridge(config,context);await bridge.connector.start();await bridge.connector.checkStatus();
@@ -182,6 +203,6 @@ export async function createContinuationReceiver(options:{
     return{runOne,runMany,runHeldControl,recoverRetainedFailure,connector:bridge.connector,
       cancelHeldWork:(workId?:string)=>{if(workId)active.get(workId)?.workStop?.abort();else{if(active.size>1)refuse('EXACT_HELD_WORK_REQUIRED');for(const state of active.values())state.workStop?.abort();}},
       async awaitMeterIdle(){while(controller.ledger.snapshot().pending){ensure();await delay(20,undefined,{signal});}},
-      async close(){local.abort();await control?.close();await bridge?.close();active.clear();scopedTokens.clear();issuedTokens.clear();await unlock();}};
-  }catch(error){local.abort();await control?.close();await bridge?.close();await unlock();throw error;}
+      async close(){local.abort();targets?.closeAll();await control?.close();await bridge?.close();active.clear();scopedTokens.clear();issuedTokens.clear();await unlock();}};
+  }catch(error){local.abort();targets?.closeAll();await control?.close();await bridge?.close();await unlock();throw error;}
 }
