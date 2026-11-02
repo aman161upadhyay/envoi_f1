@@ -73,8 +73,16 @@ describe('Hermes production daemon wire', () => {
   it('bounds silent daemon requests', async () => {
     vi.useFakeTimers();
     const socket = new InertSocket(); const wire = hermesSocketWire(socket as unknown as WebSocket);
-    const result = expect(wire.rpc('prompt.submit', {}, new AbortController().signal)).rejects.toThrow();
+    const result = expect(wire.rpc('prompt.submit', {}, new AbortController().signal)).rejects.toMatchObject({ reason: 'rpc_deadline' });
     await vi.advanceTimersByTimeAsync(30000); await result;
     expect(vi.getTimerCount()).toBe(0); expect(socket.readyState).toBe(3);
+  });
+  it('distinguishes a socket error from peer closure without exposing raw event data', async () => {
+    const socket = new InertSocket(), wire = hermesSocketWire(socket as unknown as WebSocket);
+    const result = wire.rpc('prompt.receipt', {}, new AbortController().signal);
+    socket.dispatchEvent(Object.assign(new Event('error'), { message: 'PRIVATE_TRANSPORT_DETAILS' }));
+    const error = await result.catch(error => error);
+    expect(error).toMatchObject({ code: 'HERMES_SCOPED_UNAVAILABLE', reason: 'socket_error' });
+    expect(JSON.stringify(error)).not.toContain('PRIVATE_TRANSPORT_DETAILS');
   });
 });

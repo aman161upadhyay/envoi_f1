@@ -1,5 +1,6 @@
 import type { EnvoiConnector } from '../../sdk/typescript/src/connector';
 import type { ConnectorRuntime } from '../../sdk/typescript/src/quick-connect';
+import type { ScopedRuntimeObserver } from '../agent-bridges/runtime-events';
 
 export class ConnectorSetupError extends Error {
   constructor(public readonly code: string, message: string) { super(message); this.name = 'ConnectorSetupError'; }
@@ -17,6 +18,8 @@ export interface AdapterOptions {
   prepareRuntime?: boolean;
   fetch?: typeof fetch;
   signal?: AbortSignal;
+  /** Trusted-host, allowlisted runtime diagnostics; never part of model input. */
+  onRuntimeEvent?: ScopedRuntimeObserver;
 }
 export interface AdapterContext extends AdapterOptions {
   apiUrl: string;

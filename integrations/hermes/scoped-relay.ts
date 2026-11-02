@@ -74,6 +74,7 @@ export async function startScopedMcpRelay(turn: ScopedModelTurn) {
     close,
     get active() { return active(); },
     get discovered() { return [...bindings.values()].some(binding => binding.discovered); },
+    get pendingCalls() { return queue.pending; },
     mcpServer: Object.freeze({ name: `envoi_turn_${randomBytes(8).toString('hex')}`, command: process.execPath,
       args: ['--input-type=module', '-e', scopedMcpStdioSource],
       env: [{ name: 'ENVOI_SCOPED_MCP_URL', value: url }, { name: 'ENVOI_SCOPED_MCP_TOKEN', value: token }] })

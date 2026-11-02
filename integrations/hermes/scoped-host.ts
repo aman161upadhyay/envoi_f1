@@ -9,6 +9,7 @@ import { PermanentWorkError } from '../../sdk/typescript/src/connector';
 import type { ScopedModelTurn } from '../agent-bridges/scoped-turn';
 import type { ScopedRunRecord, ScopedRunStore } from '../grok/scoped-store';
 import { startScopedMcpRelay } from './scoped-relay';
+import { observeRuntime, type ScopedRuntimeEvent, type ScopedRuntimeObserver } from '../agent-bridges/runtime-events';
 
 const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const failure = (code = 'HERMES_SCOPED_UNAVAILABLE') => new EnvoiError('Hermes scoped execution unavailable; preserve the turn journal for recovery', undefined, code);
@@ -118,17 +119,34 @@ export interface HermesWire {
   rpc(method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, any>>;
   close(): void;
 }
+interface HermesHostWire extends HermesWire { readonly instanceId: string; readonly profileId: string }
+
+/** Only genuine status socket loss/deadline is reconnectable, never protocol rejection. */
+class HermesStatusTransportError extends EnvoiError {
+  constructor(reason: 'rpc_deadline' | 'socket_error' | 'peer_close') {
+    super('Hermes status transport was lost', undefined, 'HERMES_SCOPED_UNAVAILABLE', { reason });
+  }
+}
 
 export function hermesSocketWire(socket: WebSocket): HermesWire {
   let sequence = 0, active = true, total = 0;
+  let closedReason: unknown;
+  const closing = () => socket.readyState === 2 || socket.readyState === 3;
   const pending = new Map<number, { resolve(value: Record<string, any>): void; reject(error: unknown): void; cleanup(): void }>();
-  const close = () => {
+  const close = (error: unknown = failure()) => {
     if (!active) return;
-    active = false;
-    for (const operation of pending.values()) { operation.cleanup(); operation.reject(failure()); }
+    active = false; closedReason = error;
+    for (const operation of pending.values()) { operation.cleanup(); operation.reject(error); }
     pending.clear();
-    socket.removeEventListener('message', receive); socket.removeEventListener('error', close); socket.removeEventListener('close', close);
+    socket.removeEventListener('message', receive); socket.removeEventListener('error', lost); socket.removeEventListener('close', lost);
     socket.close();
+  };
+  const lost = (event?: Event) => {
+    const code = event?.type === 'close' ? (event as CloseEvent).code : undefined;
+    // Protocol/policy close frames are refusals, not a temporary status outage.
+    if (code !== undefined && ![1000, 1001, 1005, 1006, 1011, 1012, 1013].includes(code))
+      close(failure('HERMES_SCOPED_REFUSED'));
+    else close(new HermesStatusTransportError(event?.type === 'close' ? 'peer_close' : event?.type === 'error' ? 'socket_error' : 'rpc_deadline'));
   };
   const receive = (event: MessageEvent) => {
     try {
@@ -146,27 +164,33 @@ export function hermesSocketWire(socket: WebSocket): HermesWire {
       else { operation.reject(failure()); close(); }
     } catch { close(); }
   };
-  socket.addEventListener('message', receive); socket.addEventListener('error', close); socket.addEventListener('close', close);
-  return { close, rpc(method, params, signal) {
+  socket.addEventListener('message', receive); socket.addEventListener('error', lost); socket.addEventListener('close', lost);
+  return { close: () => close(), rpc(method, params, signal) {
     signal.throwIfAborted();
     return new Promise((resolve, reject) => {
-      if (!active || pending.size >= 4 || socket.readyState !== 1) return reject(failure());
+      if (!active) return reject(closedReason);
+      if (pending.size >= 4 || socket.readyState === 0) return reject(failure());
       const id = ++sequence;
-      const abort = () => { close(); reject(signal.reason); };
-      const timer = setTimeout(close, 30000);
+      const abort = () => { close(signal.reason); reject(signal.reason); };
+      // A closing socket's CloseEvent owns the protocol/policy verdict. Wait
+      // for it instead of classifying its not-yet-delivered code as an outage.
+      const timer = setTimeout(() => { if (closing()) close(); else lost(); }, 30000);
       const cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); };
       pending.set(id, { resolve, reject, cleanup }); signal.addEventListener('abort', abort, { once: true });
+      if (closing()) { if (signal.aborted) abort(); return; }
       const text = JSON.stringify({ jsonrpc: '2.0', id, method, params });
       if (Buffer.byteLength(text) > 524288 || socket.bufferedAmount > 524288) return close();
-      try { socket.send(text); } catch { close(); }
+      try { socket.send(text); }
+      catch { if (active && !closing()) close(); }
       if (signal.aborted) abort();
     });
   } };
 }
 
-export async function connectHermesHost(host: HermesScopedHost, signal: AbortSignal): Promise<HermesWire> {
+export async function connectHermesHost(host: HermesScopedHost, signal: AbortSignal, expectedInstanceId?: string): Promise<HermesHostWire> {
   validateHermesHost(host);
   const identity = await control(host.home, 'identify', {}, signal);
+  if (expectedInstanceId !== undefined && identity.instance_id !== expectedInstanceId) throw failure('HERMES_INSTANCE_CHANGED');
   const profileId = selectedHermesProfile(identity, host);
   const grant = await control(host.home, 'session-ticket', { profile_id: profileId, instance_id: identity.instance_id, purpose: 'interactive' }, signal);
   if (grant.runtime_protocol !== 1 || grant.profile_id !== profileId || grant.instance_id !== identity.instance_id
@@ -193,7 +217,7 @@ export async function connectHermesHost(host: HermesScopedHost, signal: AbortSig
       if (descriptor.profile_id !== profileId || descriptor.instance_id !== identity.instance_id
         || !Array.isArray(descriptor.capabilities) || requiredCapabilities.some(capability => !descriptor.capabilities.includes(capability))
         || !object(descriptor.session_create) || !descriptor.session_create.sources?.includes('acp')) throw failure();
-      return wire;
+      return Object.freeze({ ...wire, instanceId: identity.instance_id, profileId });
     } catch (error) { wire.close(); throw error; }
   } catch (error) { socket.close(); throw error; }
 }
@@ -232,26 +256,27 @@ export function hermesJournalMatches(record: { model: string; completed: boolean
 
 type TurnState = { kind: 'hermes-scoped-v1'; requestId: string; inputId: string; text: string; sessionId?: string; admissionId?: string };
 
-function receipt(value: Record<string, any>, sessionId: string, admissionId?: string) {
+function receipt(value: Record<string, any>, sessionId: string, admissionId?: string, profileId?: string) {
   if (typeof value.admission_id !== 'string' || !value.admission_id || value.admission_id.length > 256
     || admissionId !== undefined && value.admission_id !== admissionId || !object(value.ref) || value.ref.session_id !== sessionId
+    || profileId !== undefined && value.ref.profile_id !== profileId
     || !['queued', 'started', 'unknown', 'terminal'].includes(value.status)
     || value.status === 'started' && (!Number.isSafeInteger(value.execution_generation) || value.execution_generation < 1)) throw failure();
   return value;
 }
 
-async function cancelAdmission(wire: HermesWire, sessionId: string, admissionId: string) {
+async function cancelAdmission(wire: HermesHostWire, sessionId: string, admissionId: string) {
   const signal = AbortSignal.timeout(5000);
   try { await wire.rpc('prompt.cancel', { session_id: sessionId, admission_id: admissionId }, signal); }
   catch (error) { if (!(error instanceof EnvoiError) || error.code !== 'HERMES_STALE_GENERATION') throw error; }
-  let current = receipt(await wire.rpc('prompt.receipt', { session_id: sessionId, admission_id: admissionId }, signal), sessionId, admissionId);
+  let current = receipt(await wire.rpc('prompt.receipt', { session_id: sessionId, admission_id: admissionId }, signal), sessionId, admissionId, wire.profileId);
   if (current.status === 'started') {
     try { await wire.rpc('session.interrupt', { session_id: sessionId, execution_generation: current.execution_generation }, signal); }
     catch (error) { if (!(error instanceof EnvoiError) || error.code !== 'HERMES_STALE_GENERATION') throw error; }
   }
   while (current.status !== 'terminal' && current.status !== 'unknown') {
     await delay(50, undefined, { signal });
-    current = receipt(await wire.rpc('prompt.receipt', { session_id: sessionId, admission_id: admissionId }, signal), sessionId, admissionId);
+    current = receipt(await wire.rpc('prompt.receipt', { session_id: sessionId, admission_id: admissionId }, signal), sessionId, admissionId, wire.profileId);
   }
 }
 
@@ -268,7 +293,7 @@ export async function inspectHermesTerminalTurn(host: HermesScopedHost, run: Sco
     const attached = await wire.rpc('session.resume', { session_id: state.sessionId, omit_messages: true }, bounded);
     if (attached.session_id !== state.sessionId || typeof attached.subscription_id !== 'string') throw failure();
     subscription = attached.subscription_id;
-    const current = receipt(await wire.rpc('prompt.receipt', { session_id: state.sessionId, admission_id: state.admissionId }, bounded), state.sessionId, state.admissionId);
+    const current = receipt(await wire.rpc('prompt.receipt', { session_id: state.sessionId, admission_id: state.admissionId }, bounded), state.sessionId, state.admissionId, wire.profileId);
     if (current.status !== 'terminal' || !['completed', 'failed', 'interrupted', 'cancelled', 'rejected'].includes(current.outcome))
       throw failure('HERMES_TURN_RECOVERY_REQUIRED');
     return current.outcome;
@@ -281,6 +306,7 @@ export async function inspectHermesTerminalTurn(host: HermesScopedHost, run: Sco
 export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, options: {
   timeoutMs?: number;
   pollMs?: number;
+  onRuntimeEvent?: ScopedRuntimeObserver;
 } = {}) {
   validateHermesHost(host);
   const timeoutMs = options.timeoutMs ?? 120000, pollMs = options.pollMs ?? 250;
@@ -305,14 +331,31 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
         || state.sessionId !== undefined && (typeof state.sessionId !== 'string' || !state.sessionId || state.sessionId.length > 256)
         || state.admissionId !== undefined && (typeof state.admissionId !== 'string' || !state.admissionId || state.admissionId.length > 256)) throw failure();
       if (recovered && !state.sessionId) throw failure('HERMES_CREATION_UNCERTAIN');
+      const startedAt = performance.now();
       const lifetime = new AbortController();
       const deadline = AbortSignal.timeout(timeoutMs);
       const signal = AbortSignal.any([turn.signal, lifetime.signal, deadline]);
-      const relay = recovered ? null : await startScopedMcpRelay({ ...turn, signal });
-      let wire: HermesWire | undefined;
+      let relay: Awaited<ReturnType<typeof startScopedMcpRelay>> | null = null;
+      const emit = (kind: ScopedRuntimeEvent['kind'], fields: Partial<ScopedRuntimeEvent> = {}) =>
+        observeRuntime(options.onRuntimeEvent, { runtime: 'hermes', kind, workId, monotonicMs: performance.now(),
+          elapsedMs: Math.round(performance.now() - startedAt), timeoutMs, pendingMcpCalls: relay?.pendingCalls ?? 0, ...fields });
+      const details = (error: unknown) => ({
+        ...(error instanceof EnvoiError && /^[A-Z_]{1,64}$/.test(error.code ?? '') ? { code: error.code } : {}),
+        ...(error instanceof EnvoiError && /^[a-z_]{1,64}$/.test(error.reason ?? '') ? { reason: error.reason } : {})
+      });
+      const aborted = () => emit('turn_aborted', deadline.aborted && signal.reason === deadline.reason
+        ? { source: 'deadline', code: 'TIMEOUT' } : { source: 'turn_signal', ...details(signal.reason) });
+      signal.addEventListener('abort', aborted, { once: true });
+      let wire: HermesHostWire | undefined;
+      let originalInstanceId: string | undefined;
       let subscriptionId: string | undefined;
+      let reconnects = 0;
+      emit('turn_started');
       try {
+        signal.throwIfAborted();
+        relay = recovered ? null : await startScopedMcpRelay({ ...turn, signal });
         wire = await connectHermesHost(host, signal);
+        originalInstanceId = wire.instanceId;
         if (!recovered) {
           await runs.save(record);
           signal.throwIfAborted();
@@ -333,14 +376,39 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
           record.providerCalls = 1;
           await runs.save(record);
           signal.throwIfAborted();
-          const admitted = receipt(await wire.rpc('prompt.submit', { session_id: sessionId, input_id: state.inputId, text: state.text }, signal), sessionId);
+          const admitted = receipt(await wire.rpc('prompt.submit', { session_id: sessionId, input_id: state.inputId, text: state.text }, signal), sessionId, undefined, wire.profileId);
           state.admissionId = admitted.admission_id;
           await runs.save(record);
         }
         while (true) {
           signal.throwIfAborted();
-          const current = receipt(await wire.rpc('prompt.receipt', { session_id: sessionId, admission_id: state.admissionId }, signal), sessionId, state.admissionId);
+          let current: Record<string, any>;
+          try {
+            current = await wire.rpc('prompt.receipt', { session_id: sessionId, admission_id: state.admissionId }, signal);
+          } catch (error) {
+            signal.throwIfAborted();
+            if (!(error instanceof HermesStatusTransportError) || recovered || !relay?.active || !state.admissionId) throw error;
+            emit('status_transport_lost', { source: 'transport', ...details(error) });
+            if (reconnects >= 2) throw error;
+            emit('status_reconnect_started', { reconnectAttempt: ++reconnects });
+            wire.close();
+            try {
+              await delay(100, undefined, { signal });
+              wire = await connectHermesHost(host, signal, originalInstanceId);
+              const attached = await wire.rpc('session.resume', { session_id: sessionId, omit_messages: true }, signal);
+              if (attached.session_id !== sessionId || typeof attached.subscription_id !== 'string') throw failure();
+              subscriptionId = attached.subscription_id;
+              signal.throwIfAborted();
+              emit('status_reconnected', { reconnectAttempt: reconnects });
+            } catch (reconnectError) {
+              emit('status_reconnect_refused', details(reconnectError));
+              throw reconnectError;
+            }
+            continue;
+          }
+          current = receipt(current, sessionId, state.admissionId, wire.profileId);
           if (current.status === 'terminal') {
+            emit('turn_terminal', { outcome: ['completed', 'failed', 'interrupted', 'cancelled', 'rejected'].includes(current.outcome) ? current.outcome : 'unknown' });
             if (['failed', 'interrupted', 'cancelled', 'rejected'].includes(current.outcome))
               throw new PermanentWorkError('HERMES_TURN_NOT_COMPLETED');
             if (current.outcome !== 'completed') throw failure('HERMES_EXECUTION_UNCERTAIN');
@@ -350,14 +418,18 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
           await delay(pollMs, undefined, { signal });
         }
       } catch (error) {
+        emit('turn_failed', deadline.aborted && signal.reason === deadline.reason
+          ? { source: 'deadline', code: 'TIMEOUT' } : { source: 'runtime', ...details(error) });
         if (deadline.aborted && signal.reason === deadline.reason)
           throw new EnvoiError('Hermes scoped turn timed out; preserve its journal for recovery', undefined, 'TIMEOUT');
         throw error;
       } finally {
+        signal.removeEventListener('abort', aborted);
         lifetime.abort();
         await relay?.close();
         if (!record.completed && state.sessionId) {
-          const stop = async (target: HermesWire) => {
+          emit('native_cancel_started');
+          const stop = async (target: HermesHostWire) => {
             if (!state.admissionId) {
               const snapshot = await target.rpc('session.resume', { session_id: state.sessionId, omit_messages: true }, AbortSignal.timeout(1000));
               const admitted = Array.isArray(snapshot.pending) ? snapshot.pending.find((entry: unknown) => object(entry) && entry.input_id === state.inputId) : undefined;
@@ -365,15 +437,16 @@ export function hermesScopedTurn(host: HermesScopedHost, runs: ScopedRunStore, o
             }
             if (state.admissionId) await cancelAdmission(target, state.sessionId!, state.admissionId);
           };
-          try { if (!wire) throw failure(); await stop(wire); }
+          try { if (!wire) throw failure(); await stop(wire); emit('native_cancel_finished'); }
           catch {
-            let cancellation: HermesWire | undefined;
+            let cancellation: HermesHostWire | undefined;
             try {
-              cancellation = await connectHermesHost(host, AbortSignal.timeout(5000));
+              cancellation = await connectHermesHost(host, AbortSignal.timeout(5000), originalInstanceId);
               await cancellation.rpc('session.resume', { session_id: state.sessionId, omit_messages: true }, AbortSignal.timeout(1000));
               await stop(cancellation);
+              emit('native_cancel_finished');
             }
-            catch {} finally { cancellation?.close(); }
+            catch (error) { emit('native_cancel_finished', details(error)); } finally { cancellation?.close(); }
           }
         }
         if (wire) {

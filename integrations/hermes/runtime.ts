@@ -7,6 +7,7 @@ import { HermesRunStore } from './run-store';
 import { hermesTurn } from './turn';
 import { authorizedHermesWrite } from './lease-write';
 import { createScopedHermesBridge, selectScopedHermes, type HermesRuntimeConfiguration } from './scoped-runtime';
+import type { ScopedRuntimeObserver } from '../agent-bridges/runtime-events';
 
 export interface HermesBridgeConfiguration {
   apiUrl: string;
@@ -22,7 +23,7 @@ export interface HermesBridgeConfiguration {
 /** Shared by the existing manual bridge and the unified installer. Recovery stays intact. */
 export async function createHermesBridge(config: HermesBridgeConfiguration,
   options: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number; onSuccessfulToolCall?: (name: string) => void;
-    timeoutMs?: number; pollMs?: number } = {}) {
+    timeoutMs?: number; pollMs?: number; onRuntimeEvent?: ScopedRuntimeObserver } = {}) {
   const env = options.env ?? process.env;
   const scoped = await selectScopedHermes({ env, stateDir: config.stateDir }, config.runtime);
   if (scoped) {

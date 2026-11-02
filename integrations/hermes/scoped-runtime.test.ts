@@ -56,6 +56,7 @@ async function setup() {
   const toolRequests: Record<string, any>[] = [], rpcRequests: Record<string, any>[] = [], modelText: string[] = [];
   const bootstrap: Record<string, any>[] = [], sockets: FakeSocket[] = [];
   const extra = new Map<string, Fixture>(), effects = new Set<string>();
+  const runtimeEvents: Array<Record<string, any>> = [];
   let claimable = true, currentStatus = 'terminal', outcome = 'completed', admissionId = 'admission_fixture';
   let serverSpec: Record<string, any> | undefined, onPrompt: () => Promise<void> = async () => {};
   let detachedExecution = false;
@@ -63,7 +64,10 @@ async function setup() {
   let toolTransport: (request: Record<string, any>, response: Response) => Promise<Response> = async (_request, response) => response;
   let mcpConnectionId = '1'.repeat(32);
   const inputs = new Set<string>();
-  let lostSubmit = false, loseReceipt = false, sourceCapabilities = ['acp-editor-policy-v1', 'acp-session-mcp-v1'];
+  let lostSubmit = false, loseReceipt = false, receiptDrops = 0, receiptFault: string | undefined;
+  let instanceId = 'instance_fixture', replaceInstanceOnDrop = false;
+  let sendCloses = false;
+  let sourceCapabilities = ['acp-editor-policy-v1', 'acp-session-mcp-v1'];
   let controlCapabilities = ['session-authority-v1', 'durable-admission-v1', 'event-replay-v1'];
   const netTarget = process.platform === 'win32' ? `\\\\.\\pipe\\hermes-gateway-${createHash('sha256').update(path.resolve(home).toLowerCase()).digest('hex').slice(0, 16)}` : path.join(home, 'gateway.sock');
   const server = createServer(socket => {
@@ -71,8 +75,8 @@ async function setup() {
     socket.on('data', chunk => {
       text += chunk; if (!text.includes('\n')) return;
       const request = JSON.parse(text); bootstrap.push(request);
-      const result = request.verb === 'identify' ? { runtime_protocol: 1, state: 'ready', api_origin: daemon, instance_id: 'instance_fixture', capabilities: controlCapabilities,
-        served_profiles: [{ home, profile_id: home }] } : { runtime_protocol: 1, instance_id: 'instance_fixture', profile_id: home, ticket: 'PRIVATE_FIXTURE_TICKET_1234567890' };
+      const result = request.verb === 'identify' ? { runtime_protocol: 1, state: 'ready', api_origin: daemon, instance_id: instanceId, capabilities: controlCapabilities,
+        served_profiles: [{ home, profile_id: home }] } : { runtime_protocol: 1, instance_id: instanceId, profile_id: home, ticket: 'PRIVATE_FIXTURE_TICKET_1234567890' };
       socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result }) + '\n');
     });
   });
@@ -98,6 +102,11 @@ async function setup() {
     close() { if (this.readyState === 3) return; this.readyState = 3; this.dispatchEvent(new Event('close')); }
     send(text: string) {
       const request = JSON.parse(text); rpcRequests.push(request);
+      if (request.method === 'prompt.receipt' && sendCloses) {
+        sendCloses = false; this.readyState = 3;
+        setTimeout(() => this.dispatchEvent(Object.assign(new Event('close'), { code: 1006 })), 10);
+        throw new Error('Inert send on closed status socket');
+      }
       void this.answer(request).then(result => {
         if (this.readyState === 1 && result !== undefined) this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) }));
       }).catch(error => {
@@ -107,7 +116,7 @@ async function setup() {
     }
     async answer(request: Record<string, any>) {
       const params = request.params;
-      if (request.method === 'runtime.describe') return { profile_id: home, instance_id: 'instance_fixture', capabilities: sourceCapabilities, session_create: { sources: ['acp'] } };
+      if (request.method === 'runtime.describe') return { profile_id: home, instance_id: instanceId, capabilities: sourceCapabilities, session_create: { sources: ['acp'] } };
       if (request.method === 'session.create') {
         expect(params).toMatchObject({ source: 'acp', cwd: home, toolsets: ['no_mcp'], accept_hooks: false });
         serverSpec = params.editor.mcp_servers[0];
@@ -137,7 +146,26 @@ async function setup() {
       }
       if (request.method === 'prompt.receipt') {
         expect(params.admission_id).toBe(admissionId);
-        if (loseReceipt) { loseReceipt = false; this.close(); return; }
+        if (loseReceipt || receiptDrops > 0) {
+          loseReceipt = false; receiptDrops--;
+          if (replaceInstanceOnDrop) instanceId = 'replacement_instance';
+          this.close(); return;
+        }
+        if (receiptFault) {
+          const fault = receiptFault; receiptFault = undefined;
+          if (fault === 'policy-close') { this.readyState = 3; this.dispatchEvent(Object.assign(new Event('close'), { code: 1008 })); return; }
+          if (fault === 'malformed' || fault === 'oversized' || fault === 'wrong-rpc-id') {
+            this.dispatchEvent(new MessageEvent('message', { data: fault === 'malformed' ? '{' : fault === 'oversized' ? 'x'.repeat(1000001) : JSON.stringify({ jsonrpc: '2.0', id: 999999, result: {} }) }));
+            return;
+          }
+          if (fault === 'refused') throw new Error('fixture_failure');
+          const result = receipt();
+          if (fault === 'wrong-session') result.ref.session_id = 'foreign_session';
+          if (fault === 'wrong-profile') result.ref.profile_id = 'foreign_profile';
+          if (fault === 'wrong-admission') result.admission_id = 'foreign_admission';
+          if (fault === 'unknown') result.status = 'unknown';
+          return result;
+        }
         return receipt();
       }
       if (request.method === 'prompt.cancel') {
@@ -181,11 +209,11 @@ async function setup() {
   });
   const open = async (requestedEnv: NodeJS.ProcessEnv = {}, timeoutMs = 1000) => {
     const bridge = await createHermesBridge({ apiUrl: origin, stateDir: directory, hermesUrl: '', hermesKey: '', runtime: config! },
-      { env: requestedEnv, fetch: fetcher, pollMs: 1, timeoutMs });
+      { env: requestedEnv, fetch: fetcher, pollMs: 1, timeoutMs, onRuntimeEvent: event => { runtimeEvents.push(event); } });
     cleanups.push(bridge.close); return bridge;
   };
   return { directory, home, config: config!, env, store, fetcher, minted, work, toolRequests, rpcRequests, modelText, bootstrap, sockets,
-    effects, open, mcp, replyArgs: reply.request!.body!.params.arguments,
+    effects, open, mcp, runtimeEvents, replyArgs: reply.request!.body!.params.arguments,
     snapshot: snapshot.body,
     onPrompt: (action: typeof onPrompt) => { onPrompt = action; },
     detachedExecution: () => { detachedExecution = true; },
@@ -194,6 +222,11 @@ async function setup() {
     addTool: (value: Fixture) => { extra.set(value.request!.body!.params.name, value); },
     setStatus: (status: string, result = 'completed') => { currentStatus = status; outcome = result; },
     loseSubmit: () => { lostSubmit = true; }, loseReceipt: () => { loseReceipt = true; },
+    dropReceipts: (count: number) => { receiptDrops = count; }, faultReceipt: (fault: string) => { receiptFault = fault; },
+    replaceInstanceOnReceiptDrop: () => { replaceInstanceOnDrop = true; },
+    closeBeforePoll: (code = 1006) => { const socket = sockets.at(-1)!; socket.readyState = 3;
+      setTimeout(() => socket.dispatchEvent(Object.assign(new Event('close'), { code })), 10); },
+    closeOnReceiptSend: () => { sendCloses = true; },
     capabilities: (capabilities: string[]) => { sourceCapabilities = capabilities; },
     controlCapabilities: (capabilities: string[]) => { controlCapabilities = capabilities; },
     reclaim: () => { claimable = true; minted.body.session.fence++; },
@@ -204,6 +237,126 @@ async function setup() {
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('production Hermes scoped composition with inert authenticated daemon transport', () => {
+  it.each(['before-poll', 'during-send'] as const)('recovers a status socket closed %s before its close event is delivered', async mode => {
+    const scenario = await setup(); scenario.detachedExecution();
+    scenario.onPrompt(async () => {
+      if (mode === 'before-poll') setTimeout(() => scenario.closeBeforePoll(), 0); else scenario.closeOnReceiptSend();
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+    const bridge = await scenario.open({}, 10000);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).resolves.toBe(true);
+    expect(scenario.runtimeEvents.filter(x => x.kind === 'status_reconnected')).toHaveLength(1);
+    expect(scenario.rpcRequests.filter(x => x.method === 'prompt.submit')).toHaveLength(1);
+    expect(scenario.rpcRequests.some(x => ['prompt.cancel', 'session.interrupt'].includes(x.method))).toBe(false);
+  });
+
+  it('waits for a delayed policy close verdict instead of reconnecting a closed status socket', async () => {
+    const scenario = await setup(); scenario.detachedExecution();
+    scenario.onPrompt(async () => { setTimeout(() => scenario.closeBeforePoll(1008), 0); await new Promise<void>(() => {}); });
+    const bridge = await scenario.open({}, 10000);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toMatchObject({ code: 'HERMES_SCOPED_REFUSED' });
+    expect(scenario.runtimeEvents.some(x => x.kind === 'status_reconnect_started')).toBe(false);
+    expect(await scenario.journal()).toMatchObject({ completed: false, providerCalls: 1 });
+  });
+
+  it('keeps a pending once-committed MCP action alive across status transport loss without a replacement admission', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const scenario = await setup(); scenario.detachedExecution();
+    let release!: () => void, began!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { began = resolve; });
+    let replies = 0;
+    scenario.toolTransport(async (request, result) => {
+      if (request.params.name !== 'envoi_case_reply') return result;
+      if (++replies === 1) { began(); await hold; await result.arrayBuffer(); throw new TypeError('Inert committed response loss'); }
+      if (replies <= 3) return Response.json({ ...fixture('case-tools/reply-tool-busy').response!.body, id: request.id });
+      return result;
+    });
+    scenario.onPrompt(async () => { await scenario.mcp('tools/call', { name: 'envoi_case_reply', arguments: scenario.replyArgs }); });
+    const bridge = await scenario.open({}, 10000);
+    const processing = bridge.connector.scopedWakeWorkDriver().processWorkOnce();
+    void processing.catch(() => {});
+    await started; scenario.loseReceipt();
+    try { await vi.waitFor(() => expect(scenario.rpcRequests.some(x => x.method === 'session.resume')).toBe(true)); }
+    finally { release(); }
+    await expect(processing).resolves.toBe(true);
+    expect(scenario.effects.size).toBe(1); expect(replies).toBe(4);
+    expect(new Set(scenario.toolRequests.filter(x => x.params.name === 'envoi_case_reply').map(x => JSON.stringify(x))).size).toBe(1);
+    expect(scenario.rpcRequests.filter(x => x.method === 'session.create')).toHaveLength(1);
+    expect(scenario.rpcRequests.filter(x => x.method === 'prompt.submit')).toHaveLength(1);
+    expect(scenario.rpcRequests.some(x => ['prompt.cancel', 'session.interrupt'].includes(x.method))).toBe(false);
+    expect(await scenario.journal()).toMatchObject({ completed: true, providerCalls: 1 });
+    expect(scenario.runtimeEvents.find(x => x.kind === 'status_transport_lost')).toMatchObject({ pendingMcpCalls: 1, reason: 'peer_close' });
+    expect(JSON.stringify(scenario.runtimeEvents)).not.toMatch(/PRIVATE_|Bearer|hermes_session_fixture|admission_fixture/);
+  });
+
+  it.each(['malformed', 'oversized', 'wrong-rpc-id', 'policy-close', 'refused', 'wrong-session', 'wrong-profile', 'wrong-admission', 'unknown'])('does not treat %s status data as a reconnectable transport loss', async fault => {
+    const scenario = await setup(); scenario.detachedExecution(); scenario.faultReceipt(fault);
+    scenario.onPrompt(async () => { await new Promise<void>(() => {}); });
+    const bridge = await scenario.open({}, 10000);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toBeDefined();
+    expect(scenario.runtimeEvents.some(x => x.kind === 'status_reconnect_started')).toBe(false);
+    expect(scenario.rpcRequests.filter(x => x.method === 'prompt.submit')).toHaveLength(1);
+    expect(await scenario.journal()).toMatchObject({ completed: false, providerCalls: 1 });
+  });
+
+  it('refuses a replaced native instance instead of reading or controlling a session on it', async () => {
+    const scenario = await setup(); scenario.detachedExecution(); scenario.replaceInstanceOnReceiptDrop();
+    scenario.onPrompt(async () => { scenario.loseReceipt(); await new Promise<void>(() => {}); });
+    const bridge = await scenario.open({}, 10000);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toMatchObject({ code: 'HERMES_INSTANCE_CHANGED' });
+    expect(scenario.rpcRequests.some(x => x.method === 'session.resume')).toBe(false);
+    expect(scenario.rpcRequests.some(x => ['prompt.cancel', 'session.interrupt'].includes(x.method))).toBe(false);
+    expect(scenario.rpcRequests.filter(x => x.method === 'prompt.submit')).toHaveLength(1);
+    expect(await scenario.journal()).toMatchObject({ completed: false, providerCalls: 1 });
+  });
+
+  it('bounds status reconnect attempts inside the same deadline and preserves failed work', async () => {
+    const scenario = await setup(); scenario.detachedExecution(); scenario.dropReceipts(20);
+    scenario.onPrompt(async () => { await new Promise<void>(() => {}); });
+    const bridge = await scenario.open({}, 10000);
+    await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toMatchObject({ code: 'HERMES_SCOPED_UNAVAILABLE' });
+    expect(scenario.runtimeEvents.filter(x => x.kind === 'status_reconnect_started')).toHaveLength(2);
+    expect(scenario.rpcRequests.filter(x => x.method === 'prompt.submit')).toHaveLength(1);
+    expect(scenario.rpcRequests.filter(x => x.method === 'session.create')).toHaveLength(1);
+    expect(await scenario.journal()).toMatchObject({ completed: false, providerCalls: 1 });
+  });
+
+  it.each(['deadline', 'owner', 'pause'] as const)('keeps %s cancellation authoritative after status recovery without resetting the deadline', async source => {
+    const scenario = await setup(); scenario.detachedExecution();
+    const owner = new AbortController(), deadline = new AbortController();
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal); let deadlineCreates = 0;
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      if (ms === 250) { deadlineCreates++; return deadline.signal; }
+      return originalTimeout(ms);
+    });
+    let release!: () => void, began!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { began = resolve; });
+    scenario.toolTransport(async (request, result) => { if (request.params.name === 'envoi_case_reply') { began(); await hold; } return result; });
+    scenario.onPrompt(async () => { await scenario.mcp('tools/call', { name: 'envoi_case_reply', arguments: scenario.replyArgs }); });
+    const bridge = await scenario.open({}, 250);
+    const processing = bridge.connector.processWorkOnce(owner.signal); void processing.catch(() => {});
+    await started; scenario.loseReceipt();
+    await vi.waitFor(() => expect(scenario.runtimeEvents.some(x => x.kind === 'status_reconnected')).toBe(true));
+    if (source === 'deadline') deadline.abort(new DOMException('Inert original deadline', 'TimeoutError'));
+    else if (source === 'owner') owner.abort();
+    else await bridge.connector.observeEvent({ type: 'agent.paused', agentId: 'agent_example' });
+    await expect(processing).rejects.toMatchObject({ code: source === 'deadline' ? 'TIMEOUT' : 'REQUEST_CANCELLED' });
+    release(); await bridge.close();
+    expect(deadlineCreates).toBe(1);
+    expect(scenario.runtimeEvents.find(x => x.kind === 'turn_aborted')).toMatchObject({
+      source: source === 'deadline' ? 'deadline' : 'turn_signal', code: source === 'deadline' ? 'TIMEOUT' : 'REQUEST_CANCELLED'
+    });
+    const eventOrder = scenario.runtimeEvents.map(x => x.kind);
+    expect(eventOrder.indexOf('turn_aborted')).toBeLessThan(eventOrder.indexOf('native_cancel_started'));
+    expect(scenario.rpcRequests.filter(x => x.method === 'prompt.submit')).toHaveLength(1);
+    expect(scenario.effects.size).toBe(1);
+    expect(await scenario.journal()).toMatchObject({ completed: false, providerCalls: 1 });
+    expect(scenario.fetcher.mock.calls.some(([url]) => String(url).endsWith('/complete'))).toBe(false);
+    if (source !== 'deadline') expect(scenario.fetcher.mock.calls.some(([url]) => String(url).endsWith('/fail'))).toBe(false);
+  });
+
   it('preserves a native deadline with pending MCP work and recovers only the original interrupted admission', async () => {
     const scenario = await setup(); scenario.detachedExecution();
     const deadline = new AbortController();
@@ -338,14 +491,15 @@ describe('production Hermes scoped composition with inert authenticated daemon t
   it('retains the committed effect and failed native proof when lease renewal fails during lost-response replay', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0);
     const scenario = await setup(); scenario.detachedExecution();
-    scenario.work.leaseExpiresAt = new Date(Date.now() + 2000).toISOString();
-    scenario.minted.body.lease.leaseExpiresAt = scenario.work.leaseExpiresAt;
     let replies = 0;
     scenario.toolTransport(async (request, response) => {
       if (request.params.name !== 'envoi_case_reply') return response;
       if (++replies === 1) {
         await response.arrayBuffer();
         scenario.failRenewal();
+        // Use the real wake driver's lease check at this boundary, rather than
+        // racing a two-second lease against filesystem/bootstrap scheduling.
+        queueMicrotask(() => { void bridge.connector.scopedWakeWorkDriver().revalidateLiveLeases().catch(() => {}); });
         throw new TypeError('Response lost before lease renewal fails');
       }
       const busy = fixture('case-tools/reply-tool-busy').response!.body;
@@ -394,9 +548,14 @@ describe('production Hermes scoped composition with inert authenticated daemon t
   });
   it('recovers a lost terminal receipt by reading the original admission only', async () => {
     const scenario = await setup(); scenario.loseReceipt();
-    const bridge = await scenario.open(); await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).rejects.toThrow();
+    const bridge = await scenario.open(); await expect(bridge.connector.scopedWakeWorkDriver().processWorkOnce()).resolves.toBe(true);
+    expect(scenario.runtimeEvents.some(x => x.kind === 'status_reconnected')).toBe(true);
+    expect(scenario.rpcRequests.some(x => ['prompt.cancel', 'session.interrupt'].includes(x.method))).toBe(false);
+    const filename = path.join(scenario.directory, 'scoped-runs', scenario.work.workId + '.json');
+    const before = await readFile(filename, 'utf8');
     scenario.reclaim(); const recovered = await scenario.open(); await recovered.connector.scopedWakeWorkDriver().processWorkOnce();
     expect(scenario.modelText).toHaveLength(1); expect(await scenario.journal()).toMatchObject({ completed: true });
+    expect(await readFile(filename, 'utf8')).toBe(before);
   });
   it('never resamples an unknown execution', async () => {
     const scenario = await setup(); scenario.setStatus('unknown');

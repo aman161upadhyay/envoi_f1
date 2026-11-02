@@ -86,9 +86,29 @@ Before human-wait, the shared handler durably completes the journal. Its signal
 then invalidates MCP. All aborts/deadlines close that binding before cancellation.
 Cleanup attempts prompt.cancel, reads the original receipt and interrupts only
 that receipt's execution_generation, then waits within a bounded deadline.
-Transport loss triggers one bounded fresh cancellation connection. Cancellation
-failure remains uncertain, never proof the daemon stopped; local scoped effects
-remain denied regardless.
+During a fresh in-process turn with its original MCP relay still active, a genuine
+status-socket loss permits at most two read-only reconnects. Each revalidates the
+same selected native instance/profile and resumes only the original session and
+admission. The relay stays active; no session creation, prompt submission or
+deadline reset is repeated. A policy/protocol close, malformed/oversized frame,
+unmatched RPC, refused operation, changed instance or invalid receipt refuses
+reconnection. A closing socket waits for its CloseEvent so a delayed policy close
+is not mistaken for an outage. No close verdict before the original request bound
+is an unknown failure, not permission to reconnect.
+
+Unrecoverable failure still uses one bounded cancellation connection pinned to
+the original native instance. Cancellation failure remains uncertain, never proof
+the daemon stopped; local scoped effects remain denied regardless. A saved
+terminal/interrupted admission is still reconciled as failed without replacing
+its journal, creating another admission or equating a committed effect with native
+completion.
+
+The optional trusted-host `onRuntimeEvent` observer reports allowlisted lifecycle
+events, monotonic offsets, pending MCP count and coded abort/reconnect outcomes.
+It records the initiating abort before cleanup, without native IDs, provider text,
+prompts or transport credentials. Observer failures do not authorize effects or
+replace execution errors; a mandatory gate recorder must stop its own controller
+if evidence cannot be persisted. Existing 120-second and 16-turn bounds remain.
 
 ## Validation and remaining gate
 

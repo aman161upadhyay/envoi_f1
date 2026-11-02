@@ -8,6 +8,7 @@ import { ConnectorSetupError, type AdapterOptions } from '../connector/adapter';
 import { privateJson } from '../connector/store';
 import { optionalText, type HermesConfiguration } from './config';
 import { hermesScopedTurn, validateHermesHost, type HermesScopedHost } from './scoped-host';
+import { observeRuntime, type ScopedRuntimeObserver } from '../agent-bridges/runtime-events';
 
 export type HermesRuntimeConfiguration = HermesConfiguration & { scopedTools?: true; daemonOrigin?: string; scopedCwd?: string };
 
@@ -92,7 +93,7 @@ export async function saveHermesScopedMode(stateDir: string, config: HermesRunti
 
 export async function createScopedHermesBridge(config: { apiUrl: string; stateDir: string; runtime: HermesRuntimeConfiguration }, options: {
   env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number;
-  timeoutMs?: number; pollMs?: number;
+  timeoutMs?: number; pollMs?: number; onRuntimeEvent?: ScopedRuntimeObserver;
 } = {}) {
   await assertScopedHermes(config.runtime, options.env ?? process.env);
   const selected = await selectScopedHermes({ env: options.env ?? process.env, stateDir: config.stateDir }, config.runtime);
@@ -122,6 +123,7 @@ export async function createScopedHermesBridge(config: { apiUrl: string; stateDi
     })
   });
   return { connector, store, relayUrl: undefined, close: async () => {
+    if (active.size) observeRuntime(options.onRuntimeEvent, { runtime: 'hermes', kind: 'bridge_stop_requested', monotonicMs: performance.now() });
     stopping.abort(); await Promise.allSettled([...active]);
   } };
 }
