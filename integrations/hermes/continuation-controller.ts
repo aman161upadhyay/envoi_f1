@@ -19,7 +19,7 @@ export type ContinuationPreflight=Readonly<{
   actualHermesCalls:24;actualOpenClawCalls:6;conservativeMessages:22;canonicalEffects:9;cases:4;newInstallations:5;assets:0;
 }>;
 type Work=Readonly<{workId:string;message:{id:string;caseId:string;kind?:string;outcome?:string;recipientAgentId?:string;[key:string]:unknown}}>; 
-type Binding={flowId:string;role:Role;caseId:string;workId:string;evidenceSha256:string;submitted:boolean;finished:boolean;sessionId?:string;nativeToken?:string};
+type Binding={flowId:string;role:Role;caseId:string;workId:string;evidenceSha256:string;submitted:boolean;finished:boolean;forwardingClosed:boolean;closedJournalSha256?:string;sessionId?:string;nativeToken?:string};
 type Deferred={promise:Promise<void>;resolve:()=>void;reject:(reason:unknown)=>void};
 /** Supplied by a trusted host only after establishing its real per-native-session meter attribution.
  * Multi-work OpenClaw plans need it even for sequential groups: an earlier turn may issue a late request.
@@ -72,8 +72,8 @@ export class ContinuationController {
     return new ContinuationController(ledger,Object.freeze({...r}),Object.freeze({...options.flowCases}),Object.freeze({...options.actorIds}),options.sameRoleNativeAttribution);
   }
   active(){return !this.control.signal.aborted&&Date.now()<Date.parse(this.receipt.hardStopUtc);}
-  modelActive(){return this.active()&&!!this.group&&this.group.ready.size===this.group.ids.length&&this.group.ids.some(id=>!this.bindings.get(id)?.finished);}
-  allowMeterWork(role:Role,token:string){return this.modelActive()&&[...this.bindings.values()].some(b=>b.role===role&&b.nativeToken===token&&b.submitted&&!b.finished&&this.group?.ids.includes(b.flowId));}
+  modelActive(){return this.active()&&!!this.group&&this.group.ready.size===this.group.ids.length&&this.group.ids.some(id=>{const b=this.bindings.get(id);return b?.submitted&&!b.finished&&!b.forwardingClosed;});}
+  allowMeterWork(role:Role,token:string){return this.modelActive()&&[...this.bindings.values()].some(b=>b.role===role&&b.nativeToken===token&&b.submitted&&!b.finished&&!b.forwardingClosed&&this.group?.ids.includes(b.flowId));}
   private live(){if(!this.active())refuse('CONTINUATION_WINDOW_CLOSED');}
   private needsNativeAttribution(ids:readonly string[],role:Role){
     return ids.filter(id=>this.ledger.flows.find(f=>f.id===id)?.role===role).length>1
@@ -112,7 +112,7 @@ export class ContinuationController {
     }
     const previous=this.bindings.get(flowId);
     if(previous&&(previous.workId!==work.workId||previous.submitted))refuse('CANONICAL_WORK_BINDING_CHANGED');
-    this.bindings.set(flowId,{flowId,role,workId:work.workId,caseId:work.message.caseId,evidenceSha256:hash(JSON.stringify([expected.evidenceSha256,hash(receiptBytes)])),submitted:false,finished:false});
+    this.bindings.set(flowId,{flowId,role,workId:work.workId,caseId:work.message.caseId,evidenceSha256:hash(JSON.stringify([expected.evidenceSha256,hash(receiptBytes)])),submitted:false,finished:false,forwardingClosed:false});
   }
   nativeGuard(role:Role,meterToken:string):NativeSubmissionGuard {
     return async(frame,signal)=>{
@@ -162,6 +162,14 @@ export class ContinuationController {
       this.stop('UNEXPECTED_NO_ACTION_FLOW_WRITE');refuse('UNEXPECTED_NO_ACTION_FLOW_WRITE');
     }
   }
+  /** Trusted host reads the completed native journal before probes/settlement.
+   * This only closes that work's provider fence; it claims no canonical processing or refund. */
+  closeNativeForwarding(flowId:string,proof:{workId:string;journalCompleted:true;journalSha256:string}){
+    this.live();const b=this.bindings.get(flowId);
+    if(!b?.submitted||proof.workId!==b.workId||proof.journalCompleted!==true||!digest(proof.journalSha256)
+      ||b.closedJournalSha256&&b.closedJournalSha256!==proof.journalSha256)refuse('ACTUAL_NATIVE_COMPLETION_FENCE_PROOF_REQUIRED');
+    b.forwardingClosed=true;b.closedJournalSha256=proof.journalSha256;
+  }
   /** Proof is read by the trusted runner from the real saved journal + canonical settlement. */
   finishWork(flowId:string,proof:{workId:string;canonicalStatus:'processed';journalCompleted:true;journalSha256:string;nativeOutcome:'completed'|'ended_for_human';
     caseStillOpen?:true;newCanonicalEffects?:0;decisionOutcome?:'declined'}) {
@@ -172,6 +180,7 @@ export class ContinuationController {
     if(proof.nativeOutcome==='ended_for_human'&&!policy.allowHumanEnd)refuse('UNEXPECTED_HUMAN_END');
     if(policy.noAction&&(proof.caseStillOpen!==true||proof.newCanonicalEffects!==0
       ||policy.decisionOutcome==='declined'&&proof.decisionOutcome!=='declined'))refuse('NO_ACTION_RESUMPTION_PROOF_REQUIRED');
+    this.closeNativeForwarding(flowId,proof);
     b.finished=true;
   }
   summary(){return {active:this.active(),source:this.receipt.clientSource,modelCap:this.ledger.modelCap,budget:this.ledger.snapshot(),

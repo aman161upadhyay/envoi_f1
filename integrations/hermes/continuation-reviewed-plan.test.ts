@@ -146,6 +146,36 @@ it('admits a bounded distinct-case same-role cohort only with injected inert per
  await expect(c.ledger.reserve('openclaw',nativeWorkToken(meter,c.ledger.window,'openclaw','unknown_session'))).rejects.toThrow('MODEL_REQUEST_CAP_REACHED');
 });
 
+it('closes one completed native provider fence while the other cohort work still has a physical request pending',async()=>{
+ const s=await setup(),p=plan(s),c=await adopt(s,p,async binding=>({...binding}));
+ c.releaseGroup(['openclaw','oc-private']);const first=claim(c,p,'openclaw'),second=claim(c,p,'oc-private'),meter=h('6');
+ await Promise.all([c.nativeGuard('openclaw',meter)({workId:first,sessionId:'native_first',deadlineUnixMs:Date.now()+10000},new AbortController().signal),
+  c.nativeGuard('openclaw',meter)({workId:second,sessionId:'native_second',deadlineUnixMs:Date.now()+10000},new AbortController().signal)]);
+ const firstToken=nativeWorkToken(meter,c.ledger.window,'openclaw','native_first'),secondToken=nativeWorkToken(meter,c.ledger.window,'openclaw','native_second');
+ const a=await c.ledger.reserve('openclaw',firstToken);await c.ledger.markDispatched(a);await c.ledger.finish(a,'response');
+ const b=await c.ledger.reserve('openclaw',secondToken);await c.ledger.markDispatched(b);
+ expect(c.ledger.snapshot()).toMatchObject({chargedAttempts:32,pending:1});expect(c.allowMeterWork('openclaw',firstToken)).toBe(true);expect(c.allowMeterWork('openclaw',secondToken)).toBe(true);
+ const completedA={workId:first,journalCompleted:true as const,journalSha256:h('8')};
+ c.closeNativeForwarding('openclaw',completedA);c.closeNativeForwarding('openclaw',completedA);
+ expect(c.allowMeterWork('openclaw',firstToken)).toBe(false);expect(c.allowMeterWork('openclaw',secondToken)).toBe(true);expect(c.modelActive()).toBe(true);expect(c.summary().finished).toEqual([]);
+ const proofA={...completedA,canonicalStatus:'processed' as const,nativeOutcome:'completed' as const};
+ expect(()=>c.finishWork('openclaw',proofA)).toThrow('ACTUAL_NATIVE_SETTLEMENT_PROOF_REQUIRED');
+ for(const [id,proof] of [['oc-private',completedA],['unknown-flow',completedA],['openclaw',{...completedA,journalSha256:'unknown'}],['openclaw',{...completedA,journalSha256:h('7')}]] as const){
+  expect(()=>c.closeNativeForwarding(id,proof)).toThrow('ACTUAL_NATIVE_COMPLETION_FENCE_PROOF_REQUIRED');
+ }
+ expect(c.allowMeterWork('openclaw',secondToken)).toBe(true);expect(c.ledger.snapshot()).toMatchObject({chargedAttempts:32,pending:1});
+ await c.ledger.finish(b,'response');c.finishWork('openclaw',proofA);
+ c.finishWork('oc-private',{workId:second,journalCompleted:true,journalSha256:h('9'),canonicalStatus:'processed',nativeOutcome:'completed'});
+ expect(c.summary().finished).toEqual(['openclaw','oc-private']);expect(c.modelActive()).toBe(false);expect(c.allowMeterWork('openclaw',secondToken)).toBe(false);expect(c.ledger.snapshot()).toMatchObject({chargedAttempts:32,pending:0});
+});
+
+it('does not turn a closed native fence into canonical processing after the controller was stopped',async()=>{
+ const s=await setup(),p=plan(s),c=await adopt(s,p,async binding=>({...binding}));c.releaseGroup(['openclaw']);const workId=claim(c,p,'openclaw');
+ await c.nativeGuard('openclaw',h('6'))({workId,sessionId:'native_closed',deadlineUnixMs:Date.now()+10000},new AbortController().signal);
+ const proof={workId,journalCompleted:true as const,journalSha256:h('8'),canonicalStatus:'processed' as const,nativeOutcome:'completed' as const};c.closeNativeForwarding('openclaw',proof);c.stop('INERT_REVOKED_CONTROL');
+ expect(()=>c.finishWork('openclaw',proof)).toThrow('CONTINUATION_WINDOW_CLOSED');expect(c.summary().finished).toEqual([]);expect(c.allowMeterWork('openclaw',nativeWorkToken(h('6'),c.ledger.window,'openclaw','native_closed'))).toBe(false);expect(c.ledger.snapshot().chargedAttempts).toBe(30);
+});
+
 it('rejects same-case or mixed-host cohorts and keeps exact human-decision/no-action policy for additional flows',async()=>{
  const s=await setup(),base=plan(s),sameCase=sign({...base,flowCases:{...base.flowCases,'oc-private':base.flowCases.openclaw}}),c=await adopt(s,sameCase,async b=>({...b}));
  expect(()=>c.releaseGroup(['openclaw','oc-private'])).toThrow('REVIEWED_DISTINCT_FLOW_GROUP_REQUIRED');expect(()=>c.releaseGroup(['green','oc-private'])).toThrow('REVIEWED_DISTINCT_FLOW_GROUP_REQUIRED');
