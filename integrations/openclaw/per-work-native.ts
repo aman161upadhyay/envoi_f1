@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';import {constants} from 'node:fs';import path from 'node:path';import {createHash,randomBytes} from 'node:crypto';
-import {prepareNativeObserverPatch} from './native-observer-patch';import {CLOSED_NATIVE_BOOTSTRAP_FILES} from './closed-native-bootstrap';
+import {prepareNativeObserverPatch} from './native-observer-patch';import {CLOSED_NATIVE_BOOTSTRAP_FILES,CLOSED_NATIVE_POLICY_FILES} from './closed-native-bootstrap';
 import {startOwnedClosedNativeProcess,closedNativeManifestDigest,type OwnedClosedNativeOptions} from './owned-native-process';
 import {openClawTargetDigest,type OpenClawWorkTarget} from './scoped-target';import type {ClosedNativeBinding} from './closed-native-owner';
 import {nativeCodeTreeDigest} from './native-code-tree';
@@ -32,7 +32,11 @@ export async function prepareOwnedOpenClawFactory(options:NativeFactoryPreparati
   await fs.writeFile(manifest,JSON.stringify({nativeVersion:'2026.10.5',sources:await sourceHashes(options.destinationNativeRoot)}),{flag:'wx',mode:0o600});
  }
  const saved=JSON.parse(await fs.readFile(manifest,'utf8')),sources=await sourceHashes(options.destinationNativeRoot);
- if(saved.nativeVersion!=='2026.10.5'||JSON.stringify(saved.sources)!==JSON.stringify(sources))throw Error('PREPARED_NATIVE_SOURCE_COPY_DRIFT');
+ // The prior preparation manifest pinned the same complete tree plus nine bootstrap
+ // files. Preserve it byte-for-byte: a fresh detached full-tree audit may add the
+ // reviewed selector pins in RAM without changing any sealed native-copy bytes.
+ const keys=Object.keys(saved.sources??{}).sort(),currentKeys=Object.keys(sources).sort(),legacyKeys=[...Object.keys(CLOSED_NATIVE_BOOTSTRAP_FILES).filter(k=>!Object.hasOwn(CLOSED_NATIVE_POLICY_FILES,k)),'packageTree'].sort();
+ if(saved.nativeVersion!=='2026.10.5'||![currentKeys,legacyKeys].some(expected=>JSON.stringify(expected)===JSON.stringify(keys))||Object.entries(saved.sources).some(([k,v])=>sources[k]!==v))throw Error('PREPARED_NATIVE_SOURCE_COPY_DRIFT');
  const pins=Object.freeze({clientSource:options.clientSource,nativeSourceSha256:closedNativeManifestDigest(sources),factoryPolicySha256:options.factoryPolicySha256}),factory=Object.freeze({})as OwnedOpenClawFactory;
  await fs.mkdir(options.workRoot,{recursive:true,mode:0o700});factories.set(factory,{options:Object.freeze({...options}),pins,sources,prepared:new Set()});return{factory,pins};
 }

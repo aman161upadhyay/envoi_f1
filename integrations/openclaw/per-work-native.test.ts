@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';import path from 'node:path';import {tmpdir} from 'node:os';import {createHash} from 'node:crypto';
 import {afterEach,expect,it,vi} from 'vitest';import fixture from './native-observer-sources.fixture.json';
-import {CLOSED_NATIVE_BOOTSTRAP_FILES} from './closed-native-bootstrap';
+import {CLOSED_NATIVE_BOOTSTRAP_FILES,CLOSED_NATIVE_POLICY_FILES} from './closed-native-bootstrap';
 import {prepareOwnedOpenClawFactory,assertOwnedOpenClawFactory,prepareOwnedOpenClawWork,startOwnedOpenClawWork} from './per-work-native';
 const fake=vi.hoisted(()=>({start:vi.fn(async()=>({authority:{FAKE_OFFLINE:true}}))}));
 vi.mock('./owned-native-process',async original=>({...await original<any>(),startOwnedClosedNativeProcess:fake.start}));
@@ -17,6 +17,7 @@ it('prepares and revalidates an actual separate code copy without starting a gat
  expect(await fs.readFile(path.join(s.native,'dist/model-registry-Bc1CKDx-.mjs'))).toEqual(original);expect(await fs.readFile(path.join(s.options.destinationNativeRoot,'dist/model-registry-Bc1CKDx-.mjs'),'utf8')).toContain('createNodeLlmRuntime(apiRegistry,observer.transportHost)');
  expect(await assertOwnedOpenClawFactory(factory,pins,new AbortController().signal)).toMatchObject({kind:'actual_prepared_native_factory',nativeGatewayStarted:false,modelPromptsSubmitted:0});expect(fake.start).not.toHaveBeenCalled();
  await expect(assertOwnedOpenClawFactory({}as any,pins,new AbortController().signal)).rejects.toThrow('PREPARED_OWNED_NATIVE_FACTORY_REQUIRED');
+ const manifest=path.join(s.options.destinationNativeRoot,'envoi-native-source-copy.json'),saved=JSON.parse(await fs.readFile(manifest,'utf8'));saved.sources=Object.fromEntries(Object.entries(saved.sources).filter(([key])=>!Object.hasOwn(CLOSED_NATIVE_POLICY_FILES,key)));const legacyBytes=JSON.stringify(saved);await fs.writeFile(manifest,legacyBytes);const reaudited=await prepareOwnedOpenClawFactory(s.options);expect(reaudited.pins).toEqual(pins);expect(await fs.readFile(manifest,'utf8')).toBe(legacyBytes);
  await fs.writeFile(path.join(s.options.destinationNativeRoot,'unreviewed-transitive-module.js'),'DRIFT');await expect(assertOwnedOpenClawFactory(factory,pins,new AbortController().signal)).rejects.toThrow('OWNED_NATIVE_FACTORY_SOURCE_DRIFT');
 });
 it('rejects canonical same/nested copy paths and original-profile nesting before creating destinations',async()=>{

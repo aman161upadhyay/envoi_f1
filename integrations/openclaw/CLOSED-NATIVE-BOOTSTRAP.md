@@ -30,6 +30,19 @@ installs the immutable observer/physical host, starts the real `startGatewayServ
 that dynamic server loading did not replace the gate. It calls actual native config and plugin
 registry readers in that same process. It never creates an Envoi connector or credential store.
 
+Preparation copies and audits the **complete detached code tree before the live window**.
+The execution owner seals that exact copy, remains its sole writer, and makes no package
+changes during execution. Each child hashes all 26 pinned files before its first native
+import: the nine bootstrap/observer modules and all 17 closed-capability package, ingress,
+agent, provider, registry, selector, policy, transport, summary and slug source seams. Missing
+or changed individual hashes refuse before import. The full-tree digest remains a static
+preparation/source pin; a child does not rescan thousands of unrelated package files inside
+the immutable 120-second native deadline. Full factory preflight remains outside the window.
+This strategy does not authenticate an adversarial external filesystem writer; any concurrent
+writer or uncertainty about the sealed copy requires stopping and repeating detached review.
+An older complete-tree preparation manifest may retain its nine bootstrap keys unchanged:
+a fresh full-tree audit must match it before the extra selector hashes are pinned in RAM.
+
 Bootstrap readiness honestly reports `pending_first_harness`. No loaded-runtime proof is
 invented from a configuration file. A runtime observation exists only after the two actual
 native callbacks identify the actual registered core APIs, owner and selected core harness.
