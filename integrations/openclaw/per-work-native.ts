@@ -46,7 +46,9 @@ async function checkFactory(factory:OwnedOpenClawFactory,expected:Readonly<Owned
  const critical=Object.fromEntries(await Promise.all(Object.entries(CLOSED_NATIVE_BOOTSTRAP_FILES).map(async([k,p])=>[k,await fileHash(path.join(state.options.destinationNativeRoot,p))])));if(Object.entries(critical).some(([k,v])=>state.sources[k]!==v)||fullTree&&await nativeCodeTreeDigest(state.options.destinationNativeRoot)!==state.sources.packageTree)throw Error('OWNED_NATIVE_FACTORY_SOURCE_DRIFT');
  return Object.freeze({...state.pins,kind:'actual_prepared_native_factory',nativeGatewayStarted:false,modelPromptsSubmitted:0});
 }
-export async function assertOwnedOpenClawFactory(factory:OwnedOpenClawFactory,expected:Readonly<OwnedOpenClawFactoryPins>,signal:AbortSignal){return checkFactory(factory,expected,signal,true);}
+// Factory branding is minted only after the detached complete-tree audit above.
+// Receiver startup rechecks the26 critical seams without repeating that slow audit.
+export async function assertOwnedOpenClawFactory(factory:OwnedOpenClawFactory,expected:Readonly<OwnedOpenClawFactoryPins>,signal:AbortSignal){return checkFactory(factory,expected,signal,false);}
 export interface PrepareNativeWork{binding:ClosedNativeBinding;canonical:{recipientAgentId:string;installationId:string;fence:number};gatewayPort:number;proxyToken:string;proxyIdentity:string;signal:AbortSignal;}
 type Prepared={factory:OwnedOpenClawFactory;binding:ClosedNativeBinding;paths:{stateDirectory:string;configurationPath:string;workspace:string;agentState:string};target:OpenClawWorkTarget;};
 declare const workBrand:unique symbol;export type PreparedOwnedOpenClawWork=Readonly<{[workBrand]:true}>;const works=new WeakMap<object,Prepared>();
