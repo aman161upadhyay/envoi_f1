@@ -28,10 +28,10 @@ async function setup({held=false,role='je1',flowId='green',trustedControl,observ
     if(url.pathname==='/mcp'){const body=JSON.parse(String(init?.body));if(body.params.name==='envoi_case_decide')return Response.json({result:{content:[{text:JSON.stringify({ok:false,error:{code:'AUTHORITY_EXPIRED'}})}]}});return Response.json({result:{content:[{text:JSON.stringify({ok:true,result:{case:{id:caseId,state:'inProgress'},tools:{decide:'actual_new_ref'}}})}]}});}
     throw Error('UNEXPECTED_SYNTHETIC_ROUTE');
   });
-  const process=vi.fn(async()=>{
+  const process=vi.fn(async(signal=new AbortController().signal)=>{
     const context=state.context;await context.fetch(origin+'/api/agent/work/claim',{method:'POST',body:'{}'});
     if(trustedControl||observeNativeEnd||beforeFirstScopedSnapshot){await context.fetch(origin+'/api/agent/work/'+workId+'/session',{method:'POST',body:'{}'});await context.fetch(origin+'/mcp',{method:'POST',headers:{authorization:'Bearer PRIVATE_INERT_TOKEN','mcp-protocol-version':'2025-11-25'},body:JSON.stringify({jsonrpc:'2.0',id:'snapshot',method:'tools/call',params:{name:'envoi_case_snapshot',arguments:{}}})});}
-    await context.beforeScopedTurn(workId,new AbortController().signal);
+    await context.beforeScopedTurn(workId,signal);
     const file=path.join(dir,'scoped-runs',workId+'.json');await fs.mkdir(path.dirname(file),{recursive:true});
     const input=[{role:'system',content:'inert system'},{role:'user',content:'inert canonical snapshot'}];
     if(role==='openclaw'){
@@ -175,4 +175,31 @@ it('retains a failed first-snapshot gate so a transport retry cannot skip the fi
   });
   await expect(s.receiver.runOne('green',s.workId,s.caseId,'1'.repeat(64))).rejects.toThrow('ACTUAL_WORK_SETTLEMENT_REQUIRED');
   expect(calls).toBe(1);expect(s.fetcher.mock.calls.some(([input])=>String(input).endsWith('/mcp'))).toBe(false);
+});
+it('retains only trusted stale-scope reads after SDK cancellation until explicit control close',async()=>{
+  const s=await setup({trustedControl:async()=>{throw Error('RUN_CALLBACK_MUST_NOT_EXECUTE');}});
+  const handle=await s.receiver.startPreNativeControl({controlId:'retained-expiry',mode:'expiry',role:'je1',caseId:s.caseId,workId:s.workId,evidenceSha256:'7'.repeat(64)}),context=await handle.ready;
+  handle.cancel();const drained=await handle.finished;expect(drained).toMatchObject({status:'stopped_before_native',modelPrompts:0});
+  expect(s.controller.endPreNativeControl).not.toHaveBeenCalled();expect(context.leaseExpiresAt()).toBeTruthy();
+  const response=await context.channel.forward(JSON.stringify({jsonrpc:'2.0',id:'late-server-probe',method:'tools/call',params:{name:'envoi_case_snapshot',arguments:{}}}));
+  expect(response.status).toBe(200);expect(s.fetcher.mock.calls.at(-1)?.[1]?.headers).toMatchObject({authorization:'Bearer PRIVATE_INERT_TOKEN'});
+  expect(s.controller.expectWork).not.toHaveBeenCalled();expect(s.reserveOperation).not.toHaveBeenCalled();
+  await handle.close();await handle.close();expect(s.controller.endPreNativeControl).toHaveBeenCalledTimes(1);
+  await expect(context.channel.forward(JSON.stringify({jsonrpc:'2.0',id:'closed',method:'tools/call',params:{name:'envoi_case_snapshot',arguments:{}}}))).rejects.toThrow('CONTROL_CHANNEL_CLOSED');
+});
+it('uses a private exact stale-settlement marker only after SDK drain, without native processed hooks',async()=>{
+  const s=await setup({trustedControl:async()=>{throw Error('UNUSED');}}),original=s.fetcher.getMockImplementation()!;
+  s.fetcher.mockImplementation(async(input,init)=>String(input).endsWith('/complete')?Response.json({code:'WORK_LEASE_STALE'},{status:409}):original(input,init));
+  const handle=await s.receiver.startPreNativeControl({controlId:'late-settle',mode:'expiry',role:'je1',caseId:s.caseId,workId:s.workId,evidenceSha256:'7'.repeat(64)}),context=await handle.ready;
+  state.bridge.connector.probeStaleControlSettlementOnce=vi.fn(async(input:any)=>{
+    expect(input).toMatchObject({workId:s.workId,leaseToken:'PRIVATE_LEASE',expected:'expired'});
+    const response=await state.context.fetch('https://sinaloa-staging.rachelgonsalves821.workers.dev/api/agent/work/'+s.workId+'/complete',{method:'POST',body:JSON.stringify({leaseToken:input.leaseToken})});
+    return{status:{status:200,raw:'{"state":"active"}'},settlement:{status:response.status,raw:await response.text()}};
+  });
+  await expect(context.probeLateSettlement('expired')).rejects.toThrow('EXACT_STALE_CONTROL_PROBE_REQUIRED');
+  handle.cancel();await handle.finished;
+  await expect(state.context.fetch('https://sinaloa-staging.rachelgonsalves821.workers.dev/api/agent/work/'+s.workId+'/complete',{method:'POST',body:JSON.stringify({leaseToken:'PRIVATE_LEASE'})})).rejects.toThrow('PRE_NATIVE_CONTROL_FORBIDS_PROCESSING');
+  const probe=await context.probeLateSettlement('expired');expect(probe.settlement).toEqual({status:409,raw:'{"code":"WORK_LEASE_STALE"}'});
+  await expect(context.probeLateSettlement('paused')).rejects.toThrow('EXACT_STALE_CONTROL_PROBE_REQUIRED');
+  expect(s.controller.closeNativeForwarding).not.toHaveBeenCalled();expect(s.record).not.toHaveBeenCalledWith(expect.objectContaining({kind:'canonical_settlement',status:'processed'}));await handle.close();
 });

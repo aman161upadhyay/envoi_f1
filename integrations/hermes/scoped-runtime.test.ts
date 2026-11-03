@@ -12,7 +12,7 @@ import { createHermesBridge } from './runtime';
 import { hermesAdapter } from './adapter';
 import { prepareHermesRun } from './run';
 import { selectScopedHermes } from './scoped-runtime';
-import { currentHermesHost, hermesProfileIdentity, inspectHermesTerminalTurn } from './scoped-host';
+import { currentHermesHost, hermesProfileIdentity, inspectHermesTerminalTurn,inspectHermesTerminalEvidence } from './scoped-host';
 
 interface Fixture { request?: { path?: string; body?: Record<string, any> }; response?: { status: number; body: Record<string, any> }; steps?: Fixture[] }
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -487,6 +487,15 @@ describe('production Hermes scoped composition with inert authenticated daemon t
     expect(scenario.rpcRequests.every(request => ['runtime.describe', 'session.resume', 'prompt.receipt', 'session.detach'].includes(request.method))).toBe(true);
     expect(scenario.modelText).toEqual([]); expect(scenario.fetcher).not.toHaveBeenCalled();
     expect(scenario.sockets.every(socket => socket.readyState === 3)).toBe(true);
+  });
+  it('retains the actual terminal RPC frame and separately binds the saved input without inventing a native input field',async()=>{
+    const scenario=await setup();scenario.setStatus('terminal','completed');const host={home:scenario.home,cwd:scenario.home,origin:daemon};
+    const run={version:1 as const,workId:scenario.work.workId,model:hermesProfileIdentity(host),completed:true,input:[{kind:'hermes-scoped-v1',sessionId:'hermes_session_fixture',admissionId:'admission_fixture',inputId:'saved-original-input'}],pending:[],providerCalls:1};
+    const before=JSON.stringify(run),evidence=await inspectHermesTerminalEvidence(host,run,new AbortController().signal),raw=JSON.parse(evidence.receiptRawBytes);
+    expect(raw).toMatchObject({jsonrpc:'2.0',result:{admission_id:'admission_fixture',status:'terminal',outcome:'completed',ref:{session_id:'hermes_session_fixture'}}});
+    expect(evidence).toMatchObject({sessionId:'hermes_session_fixture',admissionId:'admission_fixture',journalInputId:'saved-original-input',profileId:scenario.home,outcome:'completed'});
+    expect(raw.result).not.toHaveProperty('input_id');expect(evidence.receipt).not.toHaveProperty('input_id');expect(JSON.stringify(run)).toBe(before);
+    expect(scenario.modelText).toEqual([]);expect(scenario.fetcher).not.toHaveBeenCalled();expect(scenario.rpcRequests.map(r=>r.method)).toEqual(['runtime.describe','session.resume','prompt.receipt','session.detach']);
   });
   it('discovers the selected private gateway and verifies its ticketed descriptor without creating a session or prompt', async () => {
     const scenario = await setup();
