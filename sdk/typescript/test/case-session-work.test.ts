@@ -24,14 +24,14 @@ function harness(process: CaseSessionWorkHandler['process'] = async () => {}, su
     id: 'msg_example', caseId: 'case_example', senderAgentId: 'agent_counterparty', recipientAgentId: 'agent_example', text: 'UNTRUSTED_MESSAGE_SENTINEL',
     from: { agentId: 'agent_counterparty', address: 'counterparty@envoi.mail' }
   } };
-  const controls = { available: true, mintFailures: 0, endFailures: 0, renewalFailure: false, mcpDenials: [] as string[],
+  const controls = { available: true, statusState:'active', statusRevoked:false, mintFailures: 0, endFailures: 0, renewalFailure: false, mcpDenials: [] as string[],
     fail: undefined as undefined | (() => Promise<Response>), complete: undefined as undefined | (() => Promise<Response>) };
   const order: string[] = [];
   let minted = 0;
   const fetcher = vi.fn(async (input: string | URL | Request, options?: RequestInit) => {
     const path = new URL(String(input)).pathname;
     const operation = path.split('/').at(-1)!; order.push(operation);
-    if (operation === 'status') return Response.json({ state: 'active', inboxId: saved.inboxId, agent: { id: saved.agentId }, caseSessions: { available: controls.available, version: 1 } });
+    if (operation === 'status') return controls.statusRevoked?Response.json({code:'CREDENTIAL_REVOKED'},{status:401}):Response.json({ state: controls.statusState, inboxId: saved.inboxId, agent: { id: saved.agentId }, caseSessions: { available: controls.available, version: 1 } });
     if (operation === 'claim') return Response.json({ state: 'claimed', work });
     if (operation === 'renew') {
       if (controls.renewalFailure) return Response.json({ code: 'INTERNAL_SERVER_ERROR', message: 'Temporary fault' }, { status: 500 });
@@ -316,5 +316,69 @@ describe('scoped trusted-host work loop', () => {
     expect(test.order.indexOf('end')).toBeLessThan(test.order.indexOf('fail'));
     expect(test.order).not.toContain('complete'); expect(test.handler.process).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('trusted retired-lease server denial probes',()=>{
+  const args=(test:ReturnType<typeof harness>,expected:'paused'|'revoked'|'expired'='expired')=>({workId:test.work.workId,
+    leaseToken:test.work.leaseToken,leaseExpiresAt:test.work.leaseExpiresAt,expected});
+  const retire=async(test:ReturnType<typeof harness>)=>{await expect(test.connector.processWorkOnce()).rejects.toThrow('Controlled stop');};
+  const expire=(test:ReturnType<typeof harness>)=>vi.setSystemTime(Date.parse(test.work.leaseExpiresAt)+1501);
+  it('requires a real retired SDK claim and exact latest lease metadata before any HTTP',async()=>{
+    const test=harness(async()=>{throw Error('Controlled stop');});
+    await expect(test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal})).rejects.toMatchObject({code:'ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED'});
+    expect(test.fetcher).not.toHaveBeenCalled();await retire(test);expire(test);
+    const count=test.fetcher.mock.calls.length;
+    await expect(test.connector.probeStaleControlSettlementOnce({...args(test),leaseExpiresAt:new Date(Date.now()-1).toISOString()},{signal:new AbortController().signal})).rejects.toMatchObject({code:'ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED'});
+    expect(test.fetcher.mock.calls).toHaveLength(count);
+  });
+  it('returns the actual server stale-lease response once, without a token output or retries',async()=>{
+    const test=harness(async()=>{throw Error('Controlled stop');});await retire(test);expire(test);
+    test.controls.complete=async()=>Response.json({code:'WORK_LEASE_STALE'},{status:409});
+    const result=await test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal});
+    expect(result.settlement).toEqual({status:409,raw:JSON.stringify({code:'WORK_LEASE_STALE'})});
+    expect(JSON.stringify(result)).not.toContain(test.work.leaseToken);
+    await expect(test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal})).rejects.toMatchObject({code:'CONTROL_PROBE_ALREADY_ATTEMPTED'});
+    expect(test.order.filter(x=>x==='complete')).toHaveLength(1);
+  });
+  it('refuses an unexpired retired claim, even if a caller labels it expired',async()=>{
+    const test=harness(async()=>{throw Error('Controlled stop');});await retire(test);const count=test.fetcher.mock.calls.length;
+    await expect(test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal})).rejects.toMatchObject({code:'ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED'});expect(test.fetcher.mock.calls).toHaveLength(count);
+  });
+  it('observes actual paused state and allows a separate expiry probe only after the frozen lease tail',async()=>{
+    const test=harness(async()=>{throw Error('Controlled stop');});await retire(test);test.controls.statusState='paused';
+    test.controls.complete=async()=>Response.json({code:'AGENT_PAUSED'},{status:409});
+    expect((await test.connector.probeStaleControlSettlementOnce(args(test,'paused'),{signal:new AbortController().signal})).settlement.status).toBe(409);
+    test.controls.statusState='active';expire(test);test.controls.complete=async()=>Response.json({code:'WORK_LEASE_STALE'},{status:409});
+    expect((await test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal})).settlement.status).toBe(409);
+    expect(test.order.filter(x=>x==='complete')).toHaveLength(2);
+  });
+  it('does not use local paused metadata as server precondition evidence',async()=>{
+    const test=harness(async()=>{throw Error('Controlled stop');});await retire(test);
+    await test.connector.observeEvent({agentId:'agent_example',type:'agent.paused'});
+    await expect(test.connector.probeStaleControlSettlementOnce(args(test,'paused'),{signal:new AbortController().signal})).rejects.toMatchObject({code:'ACTUAL_CONTROL_PRECONDITION_REQUIRED'});expect(test.order).not.toContain('complete');
+  });
+  it('can obtain an actual revoked denial with the saved credential without refreshing or reconnecting',async()=>{
+    const test=harness(async()=>{throw Error('Controlled stop');});await retire(test);
+    await test.connector.observeError(new EnvoiError('revoked',401,'CREDENTIAL_REVOKED'));
+    test.controls.statusRevoked=true;test.controls.complete=async()=>Response.json({code:'CREDENTIAL_REVOKED'},{status:401});
+    const result=await test.connector.probeStaleControlSettlementOnce(args(test,'revoked'),{signal:new AbortController().signal});
+    expect(result.status.status).toBe(401);expect(result.settlement.status).toBe(401);expect(test.order).not.toContain('agent-token');
+    expect((await test.connector.lifecycle()).state).toBe('REVOKED');
+  });
+  it('quarantines a lost completion response and never submits it again',async()=>{
+    const test=harness(async()=>{throw Error('Controlled stop');});await retire(test);expire(test);
+    test.controls.complete=async()=>{throw Error('PRIVATE_NETWORK');};
+    await expect(test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal})).rejects.toMatchObject({code:'CONTROL_PROBE_RESULT_UNKNOWN'});
+    await expect(test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal})).rejects.toMatchObject({code:'CONTROL_PROBE_ALREADY_ATTEMPTED'});expect(test.order.filter(x=>x==='complete')).toHaveLength(1);
+  });
+  it('stops if the stale probe unexpectedly processes; a successful denial is never fabricated',async()=>{
+    const test=harness(async()=>{throw Error('Controlled stop');});await retire(test);expire(test);
+    await expect(test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal})).rejects.toMatchObject({code:'STALE_CONTROL_UNEXPECTEDLY_PROCESSED'});
+    expect((await test.connector.lifecycle()).state).toBe('STOPPED');
+  });
+  it('never permits probing a work that the SDK already processed',async()=>{
+    const test=harness();await test.connector.processWorkOnce();expire(test);const before=test.fetcher.mock.calls.length;
+    await expect(test.connector.probeStaleControlSettlementOnce(args(test),{signal:new AbortController().signal})).rejects.toMatchObject({code:'ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED'});expect(test.fetcher.mock.calls).toHaveLength(before);
   });
 });

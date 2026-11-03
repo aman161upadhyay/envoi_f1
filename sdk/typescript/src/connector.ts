@@ -210,6 +210,11 @@ export interface SyntheticPolicyFixtureResult {
   id:string;actor:string;requestedAction:'proposal.accept';decision:'needsHuman'|'deny'|'allow';expiresAt:string;
 }
 
+/** Trusted operator denial probe; the lease must already belong to this SDK. */
+export interface StaleControlSettlementProbe {
+  workId:string;leaseToken:string;leaseExpiresAt:string;expected:'paused'|'revoked'|'expired';
+}
+
 export interface ConnectorOptions extends ClientOptions {
   pageSize?: number;
   /** @deprecated Wake safety intervals are fixed by a4-wake; this value is ignored. */
@@ -376,6 +381,7 @@ export class EnvoiConnector {
   private caseSessionsAvailable = false;
   private readonly mintingCaseWork = new Set<string>();
   private readonly syntheticFixtureUses = new Set<string>();
+  private readonly controlProbeLeases = new Map<string,{workId:string;leaseExpiresAt:string;retired:boolean;processed:boolean;used:Set<string>}>();
   private wakeTransport: 'not_started' | 'connecting' | 'connected' | 'disconnected' = 'not_started';
   private lastWakeReadyAt?: string;
   private lastWakeEventAt?: string;
@@ -684,6 +690,57 @@ export class EnvoiConnector {
   }
 
   get wakeOrigin(): string { return this.origin; }
+
+  /** One actual server-denial probe against a captured retired claim. It cannot
+   * settle a live lease, refresh a revoked credential, or replay an uncertain POST.
+   * Returned raw envelopes stay in the trusted operator, never model context. */
+  async probeStaleControlSettlementOnce(input:Readonly<StaleControlSettlementProbe>,options:{signal:AbortSignal}) {
+    const refuse=(code:string):never=>{throw new EnvoiError('Retired control probe requires reconciliation',undefined,code);};
+    const request=Object.freeze({...input});
+    if(!this.options.caseSessionHandler||Object.keys(request).sort().join()!=='expected,leaseExpiresAt,leaseToken,workId'
+      ||!/^msg_[A-Za-z0-9_-]+$/.test(request.workId)||!['paused','revoked','expired'].includes(request.expected))refuse('ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED');
+    const lease=this.controlProbeLeases.get(request.leaseToken);
+    const eligible=()=>{if(!lease||lease.workId!==request.workId||lease.leaseExpiresAt!==request.leaseExpiresAt||!lease.retired||lease.processed
+      ||request.expected==='expired'&&Date.now()<Date.parse(lease.leaseExpiresAt)+1500)refuse('ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED');};
+    eligible();if(lease!.used.has(request.expected))refuse('CONTROL_PROBE_ALREADY_ATTEMPTED');
+    lease!.used.add(request.expected); // Burn before any await; unknown outcomes are not retried.
+    const signal=AbortSignal.any([options.signal,AbortSignal.timeout(Math.min(this.options.timeoutMs??30000,30000))]);
+    const fetcher=this.options.fetch??fetch;
+    const exchange=async(url:string,init:RequestInit)=>abortableTurn(async()=>{
+      signal.throwIfAborted();const response=await fetcher(url,{...init,credentials:'omit',redirect:'error',signal});
+      if(signal.aborted){void response.body?.cancel().catch(()=>{});signal.throwIfAborted();}
+      const reader=response.body?.getReader();if(!reader)return refuse('CONTROL_PROBE_RESULT_UNKNOWN');
+      const chunks:Uint8Array[]=[];let length=0;
+      const cancel=()=>{void reader.cancel().catch(()=>{});};signal.addEventListener('abort',cancel,{once:true});
+      try{while(true){const part=await abortableTurn(()=>reader.read(),signal);if(part.done)break;length+=part.value.length;
+        if(length>65536){cancel();refuse('CONTROL_PROBE_RESULT_UNKNOWN');}chunks.push(part.value);}}
+      finally{signal.removeEventListener('abort',cancel);reader.releaseLock();}
+      const bytes=new Uint8Array(length);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+      const raw=new TextDecoder().decode(bytes);let value:Record<string,unknown>;
+      try{value=JSON.parse(raw);}catch{return refuse('CONTROL_PROBE_RESULT_UNKNOWN');}
+      if(!value||typeof value!=='object'||Array.isArray(value))refuse('CONTROL_PROBE_RESULT_UNKNOWN');
+      return{status:response.status,raw,value};
+    },signal);
+    try{
+      signal.throwIfAborted();
+      const session=request.expected==='revoked'?validSession(await this.store.load()):await abortableTurn(()=>this.freshSession(),signal);
+      signal.throwIfAborted();eligible();
+      const status=await exchange(this.origin+'/api/agent/status',{headers:{authorization:'Bearer '+session.agentApiToken}});
+      if(request.expected==='revoked'){
+        if(![401,403].includes(status.status)||!['CREDENTIAL_REVOKED','REVOKED'].includes(String(status.value.code)))refuse('ACTUAL_CONTROL_PRECONDITION_REQUIRED');
+      }else if(status.status!==200||status.value.inboxId!==session.inboxId||(status.value.agent as {id?:unknown})?.id!==session.agentId
+        ||status.value.state!==(request.expected==='paused'?'paused':'active'))refuse('ACTUAL_CONTROL_PRECONDITION_REQUIRED');
+      signal.throwIfAborted();eligible();
+      const settlement=await exchange(this.origin+'/api/agent/work/'+encodeURIComponent(request.workId)+'/complete',{
+        method:'POST',headers:{authorization:'Bearer '+session.agentApiToken,'content-type':'application/json','Idempotency-Key':'control-denial:'+crypto.randomUUID()},
+        body:JSON.stringify({leaseToken:request.leaseToken})});
+      if(settlement.status>=200&&settlement.status<300){await this.transition('STOPPED');return refuse('STALE_CONTROL_UNEXPECTEDLY_PROCESSED');}
+      return{status:Object.freeze({status:status.status,raw:status.raw}),settlement:Object.freeze({status:settlement.status,raw:settlement.raw})};
+    }catch(error){
+      if(error instanceof EnvoiError)throw error;
+      throw new EnvoiError('Retired control probe stopped; do not repeat its POST',undefined,signal.aborted?'REQUEST_CANCELLED':'CONTROL_PROBE_RESULT_UNKNOWN');
+    }
+  }
 
   async wakeRequest(route: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     signal?.throwIfAborted();
@@ -1091,6 +1148,15 @@ export class EnvoiConnector {
   private async processClaimedWork(work: WorkLease, signal?: AbortSignal, admission?: () => Promise<void>): Promise<boolean> {
     const scoped = this.options.caseSessionHandler, handler = scoped ?? this.options.handler;
     if (!handler) throw new TypeError('A durable work handler is required');
+    const probeLease=scoped?{workId:work.workId,leaseExpiresAt:work.leaseExpiresAt,retired:false,processed:false,used:new Set<string>()}:undefined;
+    if(probeLease){
+      // Bounded diagnostics must never impose a lifetime work cap on a connector.
+      const previous=this.controlProbeLeases.get(work.leaseToken);
+      if(previous&&!previous.retired)throw new ConnectorContractError();
+      if(this.controlProbeLeases.size>=64){const oldest=[...this.controlProbeLeases].find(([,entry])=>entry.retired);if(oldest)this.controlProbeLeases.delete(oldest[0]);}
+      if(this.controlProbeLeases.size>=64)throw new ConnectorContractError();
+      this.controlProbeLeases.set(work.leaseToken,probeLease);
+    }
     const workPath = `/api/agent/work/${encodeURIComponent(work.workId)}`;
     // The server scopes idempotency by agent, so a reclaimed lease needs new
     // request keys; reuse these keys only within this claim attempt.
@@ -1124,6 +1190,7 @@ export class EnvoiConnector {
         if (renewed.workId !== work.workId || renewed.leaseToken !== work.leaseToken || !Number.isFinite(Date.parse(renewed.leaseExpiresAt))) throw new EnvoiError('Envoi returned an invalid lease renewal');
         if (Date.parse(renewed.leaseExpiresAt) <= Date.now()) throw new EnvoiError('Envoi returned an expired lease renewal');
         leaseExpiresAt = renewed.leaseExpiresAt;
+        if(probeLease)probeLease.leaseExpiresAt=renewed.leaseExpiresAt;
         scheduleDeadline();
       })().catch(error => {
         if (retiring) return;
@@ -1204,6 +1271,7 @@ export class EnvoiConnector {
         throw new EnvoiError('Envoi returned an invalid completion');
       }
       settled = true;
+      if(probeLease)probeLease.processed=true;
       await stopRenewal();
       return true;
     } catch (error) {
@@ -1236,6 +1304,7 @@ export class EnvoiConnector {
       this.activeWork.delete(workAbort);
       signal?.removeEventListener('abort', onAbort);
       await stopRenewal();
+      if(probeLease)probeLease.retired=true;
     }
   }
 
