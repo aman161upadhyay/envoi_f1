@@ -6151,6 +6151,8 @@ var Fn = class {
 	activeLeaseChecks = /* @__PURE__ */ new Map();
 	caseSessionsAvailable = !1;
 	mintingCaseWork = /* @__PURE__ */ new Set();
+	syntheticFixtureUses = /* @__PURE__ */ new Set();
+	controlProbeLeases = /* @__PURE__ */ new Map();
 	wakeTransport = "not_started";
 	lastWakeReadyAt;
 	lastWakeEventAt;
@@ -6400,8 +6402,227 @@ var Fn = class {
 		if (Date.parse(t.agentTokenExpiresAt) <= Date.now() + e && (t = await this.freshSession(!0)), Date.parse(t.agentTokenExpiresAt) <= Date.now() + e) throw new An();
 		return t.agentApiToken;
 	}
+	async evaluateSyntheticPolicyFixtureOnce(e, t) {
+		let n = (e) => {
+			throw new I("Synthetic authority fixture requires reconciliation", void 0, e);
+		}, r = (e, t) => !!e && typeof e == "object" && !Array.isArray(e) && Object.keys(e).sort().join() === t.sort().join(), i = (e) => typeof e == "string" && /^[a-f0-9]{64}$/.test(e);
+		(!this.options.caseSessionHandler || !r(e, [
+			"fixtureId",
+			"windowId",
+			"approvalSha256",
+			"approvalDecisionRaw",
+			"expected",
+			"expiresAt"
+		]) || !i(e.fixtureId) || !i(e.windowId) || !i(e.approvalSha256) || typeof e.approvalDecisionRaw != "string" || new TextEncoder().encode(e.approvalDecisionRaw).length > 32768 || !r(e.expected, [
+			"inboxId",
+			"agentId",
+			"installationId",
+			"caseId",
+			"workId",
+			"proposalId",
+			"optionId"
+		])) && n("SYNTHETIC_FIXTURE_APPROVAL_REQUIRED");
+		let a = Object.freeze({ ...e.expected }), o = Object.freeze({
+			fixtureId: e.fixtureId,
+			windowId: e.windowId,
+			expiresAt: e.expiresAt,
+			approvalSha256: e.approvalSha256,
+			approvalDecisionRaw: e.approvalDecisionRaw,
+			expected: a
+		});
+		for (let [e, t] of Object.entries({
+			inboxId: "inbox_",
+			agentId: "agent_",
+			installationId: "installation_",
+			caseId: "case_",
+			workId: "msg_",
+			proposalId: "proposal_",
+			optionId: "option_"
+		})) (typeof a[e] != "string" || !RegExp("^" + t + "[A-Za-z0-9_-]+$").test(a[e])) && n("SYNTHETIC_FIXTURE_APPROVAL_REQUIRED");
+		let s;
+		try {
+			s = JSON.parse(o.approvalDecisionRaw);
+		} catch {
+			return n("SYNTHETIC_FIXTURE_APPROVAL_REQUIRED");
+		}
+		(!r(s, [
+			"purpose",
+			"version",
+			"ownerApproved",
+			"policyApprovalSha256",
+			"fixtureId",
+			"windowId",
+			"expected",
+			"expiresAt",
+			"notAfterUtc"
+		]) || s.purpose !== "phase-c-synthetic-expiry-fixture-execution" || s.version !== 1 || s.ownerApproved !== !0 || !i(s.policyApprovalSha256) || s.fixtureId !== o.fixtureId || s.windowId !== o.windowId || !r(s.expected, Object.keys(a)) || Object.keys(a).some((e) => s.expected[e] !== a[e]) || s.expiresAt !== o.expiresAt || typeof s.notAfterUtc != "string") && n("SYNTHETIC_FIXTURE_APPROVAL_REQUIRED");
+		let c = Date.parse(o.expiresAt), l = Date.parse(s.notAfterUtc);
+		(!Number.isFinite(c) || !Number.isFinite(l) || new Date(c).toISOString() !== o.expiresAt || new Date(l).toISOString() !== s.notAfterUtc || c <= Date.now() || l <= c || l > Date.now() + 9e5) && n("SYNTHETIC_FIXTURE_DEADLINE");
+		let u = o.approvalDecisionRaw;
+		[...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(u)))].map((e) => e.toString(16).padStart(2, "0")).join("") !== o.approvalSha256 && n("SYNTHETIC_FIXTURE_APPROVAL_REQUIRED"), this.syntheticFixtureUses.has(o.fixtureId) && n("SYNTHETIC_FIXTURE_ALREADY_ATTEMPTED"), this.syntheticFixtureUses.add(o.fixtureId), t?.throwIfAborted(), await this.guard(!0);
+		let d = new AbortController();
+		this.activeActions.add(d);
+		let f = AbortSignal.any([
+			d.signal,
+			...t ? [t] : [],
+			AbortSignal.timeout(this.options.timeoutMs ?? 3e4)
+		]), p = this.actionEpoch, m = async () => {
+			f.throwIfAborted(), await this.guard(!0), p !== this.actionEpoch && n("REQUEST_CANCELLED"), (Date.now() >= c || Date.now() >= l) && n("SYNTHETIC_FIXTURE_DEADLINE");
+		}, h = async (e) => {
+			let t = e.body?.getReader();
+			if (!t) return n("SYNTHETIC_FIXTURE_RESULT_UNKNOWN");
+			let r = [], i = 0, a = () => {
+				t.cancel().catch(() => {});
+			};
+			f.addEventListener("abort", a, { once: !0 });
+			try {
+				for (;;) {
+					f.throwIfAborted();
+					let e = await In(() => t.read(), f);
+					if (e.done) break;
+					i += e.value.length, i > 65536 && (a(), n("SYNTHETIC_FIXTURE_RESULT_UNKNOWN")), r.push(e.value);
+				}
+			} finally {
+				f.removeEventListener("abort", a), t.releaseLock();
+			}
+			let o = new Uint8Array(i), s = 0;
+			for (let e of r) o.set(e, s), s += e.length;
+			return L(new Response(o, {
+				status: e.status,
+				headers: e.headers
+			}), "Synthetic fixture request failed");
+		};
+		try {
+			let e = await In(() => this.freshSession(), f);
+			await m(), (e.agentId !== a.agentId || e.inboxId !== a.inboxId) && n("SYNTHETIC_FIXTURE_IDENTITY_MISMATCH");
+			let t = this.options.fetch ?? fetch, r = async (e, n) => In(async () => {
+				let r = await t(e, n);
+				return f.aborted && (r.body?.cancel().catch(() => {}), f.throwIfAborted()), r;
+			}, f), i = await h(await r(this.origin + "/api/agent/status", {
+				headers: { authorization: "Bearer " + e.agentApiToken },
+				credentials: "omit",
+				redirect: "error",
+				signal: f
+			}));
+			await m(), (i.state !== "active" || i.inboxId !== a.inboxId || i.agent?.id !== a.agentId || i.installation?.id !== a.installationId) && n("SYNTHETIC_FIXTURE_IDENTITY_MISMATCH");
+			let s = await r(`${this.origin}/api/inboxes/${encodeURIComponent(a.inboxId)}/cases/${encodeURIComponent(a.caseId)}/policy-evaluations`, {
+				method: "POST",
+				credentials: "omit",
+				redirect: "error",
+				signal: f,
+				headers: {
+					"content-type": "application/json",
+					authorization: "Bearer " + e.agentApiToken
+				},
+				body: JSON.stringify({
+					requestedAction: "proposal.accept",
+					actionPayload: {
+						proposalId: a.proposalId,
+						optionId: a.optionId
+					},
+					expiresAt: o.expiresAt,
+					grantType: "oneTime"
+				})
+			}), c = await h(s);
+			return await m(), (s.status !== 201 || typeof c.id != "string" || !/^policy_eval_[A-Za-z0-9_-]+$/.test(c.id) || c.actor !== a.agentId || c.requestedAction !== "proposal.accept" || ![
+				"needsHuman",
+				"deny",
+				"allow"
+			].includes(String(c.decision)) || c.expiresAt !== o.expiresAt) && n("SYNTHETIC_FIXTURE_RESULT_UNKNOWN"), {
+				id: c.id,
+				actor: a.agentId,
+				requestedAction: "proposal.accept",
+				decision: c.decision,
+				expiresAt: o.expiresAt
+			};
+		} catch (e) {
+			throw e instanceof I ? (await this.observeError(e), new I("Synthetic authority fixture stopped; reconcile its existing intent", e.status, e.code ?? "SYNTHETIC_FIXTURE_RESULT_UNKNOWN")) : (await this.guard(!0), new I("Synthetic authority fixture stopped; reconcile its existing intent", void 0, f.aborted ? "REQUEST_CANCELLED" : "SYNTHETIC_FIXTURE_RESULT_UNKNOWN"));
+		} finally {
+			this.activeActions.delete(d);
+		}
+	}
 	get wakeOrigin() {
 		return this.origin;
+	}
+	async probeStaleControlSettlementOnce(e, t) {
+		let n = (e) => {
+			throw new I("Retired control probe requires reconciliation", void 0, e);
+		}, r = Object.freeze({ ...e });
+		(!this.options.caseSessionHandler || Object.keys(r).sort().join() !== "expected,leaseExpiresAt,leaseToken,workId" || !/^msg_[A-Za-z0-9_-]+$/.test(r.workId) || ![
+			"paused",
+			"revoked",
+			"expired"
+		].includes(r.expected)) && n("ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED");
+		let i = this.controlProbeLeases.get(r.leaseToken), a = () => {
+			(!i || i.workId !== r.workId || i.leaseExpiresAt !== r.leaseExpiresAt || !i.retired || i.processed || r.expected === "expired" && Date.now() < Date.parse(i.leaseExpiresAt) + 1500) && n("ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED");
+		};
+		a(), i.used.has(r.expected) && n("CONTROL_PROBE_ALREADY_ATTEMPTED"), i.used.add(r.expected);
+		let o = AbortSignal.any([t.signal, AbortSignal.timeout(Math.min(this.options.timeoutMs ?? 3e4, 3e4))]), s = this.options.fetch ?? fetch, c = async (e, t) => In(async () => {
+			o.throwIfAborted();
+			let r = await s(e, {
+				...t,
+				credentials: "omit",
+				redirect: "error",
+				signal: o
+			});
+			o.aborted && (r.body?.cancel().catch(() => {}), o.throwIfAborted());
+			let i = r.body?.getReader();
+			if (!i) return n("CONTROL_PROBE_RESULT_UNKNOWN");
+			let a = [], c = 0, l = () => {
+				i.cancel().catch(() => {});
+			};
+			o.addEventListener("abort", l, { once: !0 });
+			try {
+				for (;;) {
+					let e = await In(() => i.read(), o);
+					if (e.done) break;
+					c += e.value.length, c > 65536 && (l(), n("CONTROL_PROBE_RESULT_UNKNOWN")), a.push(e.value);
+				}
+			} finally {
+				o.removeEventListener("abort", l), i.releaseLock();
+			}
+			let u = new Uint8Array(c), d = 0;
+			for (let e of a) u.set(e, d), d += e.length;
+			let f = new TextDecoder().decode(u), p;
+			try {
+				p = JSON.parse(f);
+			} catch {
+				return n("CONTROL_PROBE_RESULT_UNKNOWN");
+			}
+			return (!p || typeof p != "object" || Array.isArray(p)) && n("CONTROL_PROBE_RESULT_UNKNOWN"), {
+				status: r.status,
+				raw: f,
+				value: p
+			};
+		}, o);
+		try {
+			o.throwIfAborted();
+			let e = r.expected === "revoked" ? G(await this.store.load()) : await In(() => this.freshSession(), o);
+			o.throwIfAborted(), a();
+			let t = await c(this.origin + "/api/agent/status", { headers: { authorization: "Bearer " + e.agentApiToken } });
+			r.expected === "revoked" ? (![401, 403].includes(t.status) || !["CREDENTIAL_REVOKED", "REVOKED"].includes(String(t.value.code))) && n("ACTUAL_CONTROL_PRECONDITION_REQUIRED") : (t.status !== 200 || t.value.inboxId !== e.inboxId || t.value.agent?.id !== e.agentId || t.value.state !== (r.expected === "paused" ? "paused" : "active")) && n("ACTUAL_CONTROL_PRECONDITION_REQUIRED"), o.throwIfAborted(), a();
+			let i = await c(this.origin + "/api/agent/work/" + encodeURIComponent(r.workId) + "/complete", {
+				method: "POST",
+				headers: {
+					authorization: "Bearer " + e.agentApiToken,
+					"content-type": "application/json",
+					"Idempotency-Key": "control-denial:" + crypto.randomUUID()
+				},
+				body: JSON.stringify({ leaseToken: r.leaseToken })
+			});
+			return i.status >= 200 && i.status < 300 ? (await this.transition("STOPPED"), n("STALE_CONTROL_UNEXPECTEDLY_PROCESSED")) : {
+				status: Object.freeze({
+					status: t.status,
+					raw: t.raw
+				}),
+				settlement: Object.freeze({
+					status: i.status,
+					raw: i.raw
+				})
+			};
+		} catch (e) {
+			throw e instanceof I ? e : new I("Retired control probe stopped; do not repeat its POST", void 0, o.aborted ? "REQUEST_CANCELLED" : "CONTROL_PROBE_RESULT_UNKNOWN");
+		}
 	}
 	async wakeRequest(e, t, n) {
 		n?.throwIfAborted();
@@ -6801,81 +7022,98 @@ var Fn = class {
 	async processClaimedWork(e, t, n) {
 		let r = this.options.caseSessionHandler, i = r ?? this.options.handler;
 		if (!i) throw TypeError("A durable work handler is required");
-		let a = `/api/agent/work/${encodeURIComponent(e.workId)}`, o = globalThis.crypto.randomUUID(), s = `connector:${e.message.id}:${o}:ack`, c = `connector:${e.message.id}:${o}:complete`, l = new AbortController();
-		this.activeWork.add(l);
-		let u = () => l.abort();
-		t?.addEventListener("abort", u, { once: !0 }), t?.aborted && l.abort();
-		let d = e.leaseExpiresAt, f = null, p, m = () => {
-			clearTimeout(p), p = setTimeout(() => {
-				f = new I("Work lease expired during processing", void 0, "REQUEST_CANCELLED"), l.abort();
-			}, Math.max(0, Date.parse(d) - Date.now()));
+		let a = r ? {
+			workId: e.workId,
+			leaseExpiresAt: e.leaseExpiresAt,
+			retired: !1,
+			processed: !1,
+			used: /* @__PURE__ */ new Set()
+		} : void 0;
+		if (a) {
+			let t = this.controlProbeLeases.get(e.leaseToken);
+			if (t && !t.retired) throw new On();
+			if (this.controlProbeLeases.size >= 64) {
+				let e = [...this.controlProbeLeases].find(([, e]) => e.retired);
+				e && this.controlProbeLeases.delete(e[0]);
+			}
+			if (this.controlProbeLeases.size >= 64) throw new On();
+			this.controlProbeLeases.set(e.leaseToken, a);
+		}
+		let o = `/api/agent/work/${encodeURIComponent(e.workId)}`, s = globalThis.crypto.randomUUID(), c = `connector:${e.message.id}:${s}:ack`, l = `connector:${e.message.id}:${s}:complete`, u = new AbortController();
+		this.activeWork.add(u);
+		let d = () => u.abort();
+		t?.addEventListener("abort", d, { once: !0 }), t?.aborted && u.abort();
+		let f = e.leaseExpiresAt, p = null, m, h = () => {
+			clearTimeout(m), m = setTimeout(() => {
+				p = new I("Work lease expired during processing", void 0, "REQUEST_CANCELLED"), u.abort();
+			}, Math.max(0, Date.parse(f) - Date.now()));
 		};
-		m();
-		let h = null, g = !1, _ = () => h || (h = (async () => {
-			if (l.signal.aborted) throw new I("Work lease was interrupted", void 0, "REQUEST_CANCELLED");
-			let t = await this.postWork(`${a}/renew`, { leaseToken: e.leaseToken }, void 0, l.signal, !!r);
-			if (l.signal.aborted) throw new I("Work lease was interrupted", void 0, "REQUEST_CANCELLED");
+		h();
+		let g = null, _ = !1, v = () => g || (g = (async () => {
+			if (u.signal.aborted) throw new I("Work lease was interrupted", void 0, "REQUEST_CANCELLED");
+			let t = await this.postWork(`${o}/renew`, { leaseToken: e.leaseToken }, void 0, u.signal, !!r);
+			if (u.signal.aborted) throw new I("Work lease was interrupted", void 0, "REQUEST_CANCELLED");
 			if (t.workId !== e.workId || t.leaseToken !== e.leaseToken || !Number.isFinite(Date.parse(t.leaseExpiresAt))) throw new I("Envoi returned an invalid lease renewal");
 			if (Date.parse(t.leaseExpiresAt) <= Date.now()) throw new I("Envoi returned an expired lease renewal");
-			d = t.leaseExpiresAt, m();
+			f = t.leaseExpiresAt, a && (a.leaseExpiresAt = t.leaseExpiresAt), h();
 		})().catch((e) => {
-			if (!g) throw r && (f = e, l.abort()), e;
+			if (!_) throw r && (p = e, u.abort()), e;
 		}).finally(() => {
-			h = null;
-		}), h), v = async () => {
-			h && await h, g || await _();
+			g = null;
+		}), g), y = async () => {
+			g && await g, _ || await v();
 		};
-		r && this.activeLeaseChecks.set(v, l);
-		let y = (async () => {
+		r && this.activeLeaseChecks.set(y, u);
+		let b = (async () => {
 			let e = 0;
-			for (; !l.signal.aborted;) {
-				let t = Date.parse(d) - Date.now();
-				if (await Ln(e ? Math.min(1e3, Math.max(1, Math.floor(t / 3))) : Math.max(100, Math.min(r ? 2e4 : 3e4, Math.floor(t / 3))), l.signal), l.signal.aborted) break;
+			for (; !u.signal.aborted;) {
+				let t = Date.parse(f) - Date.now();
+				if (await Ln(e ? Math.min(1e3, Math.max(1, Math.floor(t / 3))) : Math.max(100, Math.min(r ? 2e4 : 3e4, Math.floor(t / 3))), u.signal), u.signal.aborted) break;
 				try {
-					await _(), e = 0;
+					await v(), e = 0;
 				} catch (t) {
-					if (l.signal.aborted) break;
+					if (u.signal.aborted) break;
 					let n = t instanceof I && (["NETWORK_ERROR", "TIMEOUT"].includes(t.code ?? "") || !t.code && [
 						502,
 						503,
 						504
 					].includes(t.status ?? 0) || t.code === "INTERNAL_SERVER_ERROR");
-					if (!r && n && ++e <= 2 && Date.parse(d) > Date.now()) continue;
-					f = t, l.abort();
+					if (!r && n && ++e <= 2 && Date.parse(f) > Date.now()) continue;
+					p = t, u.abort();
 					break;
 				}
 			}
-		})(), b = async () => {
-			g = !0, this.activeLeaseChecks.delete(v), clearTimeout(p), l.abort(), await y, await h?.catch(() => {});
-		}, x = !1, S = null;
+		})(), x = async () => {
+			_ = !0, this.activeLeaseChecks.delete(y), clearTimeout(m), u.abort(), await b, await g?.catch(() => {});
+		}, S = !1, C = null;
 		try {
-			if (l.signal.aborted) throw new I("Work claim was interrupted before admission");
-			if (n && await In(n, l.signal), await this.guard(!0), await i.admit(e.message), l.signal.aborted) throw new I("Work lease was interrupted before acknowledgement");
-			let o = await this.postWork(`${a}/acknowledge`, { leaseToken: e.leaseToken }, s, l.signal, !!r);
-			if (o.workId !== e.workId || o.status !== "acknowledged" || o.receipt?.state !== "acknowledged" || o.receipt.messageId !== e.message.id) throw new I("Envoi returned an invalid acknowledgement");
-			if (l.signal.aborted) throw new I("Work lease was interrupted before processing");
-			if (r ? await this.processCaseSessionWork(e, r, l.signal, () => d) : await this.options.handler.process(e.message, {
-				signal: l.signal,
+			if (u.signal.aborted) throw new I("Work claim was interrupted before admission");
+			if (n && await In(n, u.signal), await this.guard(!0), await i.admit(e.message), u.signal.aborted) throw new I("Work lease was interrupted before acknowledgement");
+			let s = await this.postWork(`${o}/acknowledge`, { leaseToken: e.leaseToken }, c, u.signal, !!r);
+			if (s.workId !== e.workId || s.status !== "acknowledged" || s.receipt?.state !== "acknowledged" || s.receipt.messageId !== e.message.id) throw new I("Envoi returned an invalid acknowledgement");
+			if (u.signal.aborted) throw new I("Work lease was interrupted before processing");
+			if (r ? await this.processCaseSessionWork(e, r, u.signal, () => f) : await this.options.handler.process(e.message, {
+				signal: u.signal,
 				reply: async (n, r, i) => {
-					if (l.signal.aborted || t?.aborted || Date.parse(d) <= Date.now()) throw new I("Work lease is no longer valid for a reply");
+					if (u.signal.aborted || t?.aborted || Date.parse(f) <= Date.now()) throw new I("Work lease is no longer valid for a reply");
 					try {
 						let t = await this.reply(e.message, n, r, i, e.leaseToken);
-						return W(e.message) && (S = null), t;
+						return W(e.message) && (C = null), t;
 					} catch (t) {
-						throw W(e.message) && (S = t), t;
+						throw W(e.message) && (C = t), t;
 					}
 				}
-			}), S) throw S;
-			if (f) throw f;
-			if (l.signal.aborted || t?.aborted || Date.parse(d) <= Date.now()) throw new I("Work lease expired before completion");
-			let u = await this.postWork(`${a}/complete`, { leaseToken: e.leaseToken }, c, l.signal, !!r);
-			if (f) throw f;
-			if (l.signal.aborted || t?.aborted || Date.parse(d) <= Date.now()) throw new I("Work lease was interrupted during completion", void 0, "REQUEST_CANCELLED");
-			if (u.workId !== e.workId || u.status !== "processed" || u.receipt?.state !== "processed" || u.receipt.messageId !== e.message.id) throw new I("Envoi returned an invalid completion");
-			return x = !0, await b(), !0;
+			}), C) throw C;
+			if (p) throw p;
+			if (u.signal.aborted || t?.aborted || Date.parse(f) <= Date.now()) throw new I("Work lease expired before completion");
+			let d = await this.postWork(`${o}/complete`, { leaseToken: e.leaseToken }, l, u.signal, !!r);
+			if (p) throw p;
+			if (u.signal.aborted || t?.aborted || Date.parse(f) <= Date.now()) throw new I("Work lease was interrupted during completion", void 0, "REQUEST_CANCELLED");
+			if (d.workId !== e.workId || d.status !== "processed" || d.receipt?.state !== "processed" || d.receipt.messageId !== e.message.id) throw new I("Envoi returned an invalid completion");
+			return S = !0, a && (a.processed = !0), await x(), !0;
 		} catch (n) {
-			let i = l.signal.aborted;
-			if (await b(), !i && !f && !x && !t?.aborted && !(await this.lifecycle()).paused && ![
+			let i = u.signal.aborted;
+			if (await x(), !i && !p && !S && !t?.aborted && !(await this.lifecycle()).paused && ![
 				"REVOKED",
 				"NEEDS_RECONNECT",
 				"STOPPED"
@@ -6887,26 +7125,26 @@ var Fn = class {
 				"WORK_NOT_FOUND",
 				"FEATURE_DISABLED",
 				"AUTHENTICATION_REQUIRED"
-			].includes(n.code ?? ""))) && Date.parse(d) > Date.now()) {
+			].includes(n.code ?? ""))) && Date.parse(f) > Date.now()) {
 				if (r && n instanceof kn) {
-					let r = await this.postWork(`${a}/fail`, {
+					let r = await this.postWork(`${o}/fail`, {
 						leaseToken: e.leaseToken,
 						retryable: !1,
 						reasonCode: n.code
 					}, void 0, void 0, !0);
-					if (t?.aborted || Date.parse(d) <= Date.now()) throw new I("Work lease was interrupted during failure settlement", void 0, "REQUEST_CANCELLED");
+					if (t?.aborted || Date.parse(f) <= Date.now()) throw new I("Work lease was interrupted during failure settlement", void 0, "REQUEST_CANCELLED");
 					if (!r || r.workId !== e.workId || r.status !== "failed") throw new On();
-					return x = !0, !0;
+					return S = !0, !0;
 				}
-				await this.postWork(`${a}/fail`, {
+				await this.postWork(`${o}/fail`, {
 					leaseToken: e.leaseToken,
 					retryable: !0,
 					reasonCode: "HANDLER_FAILED"
 				}, void 0, void 0, !!r).catch(() => {});
 			}
-			throw i && !f && n instanceof I && !n.code ? new I(n.message, n.status, "REQUEST_CANCELLED") : (n instanceof I || await this.observeError(new I("Work handler failed", void 0, "HANDLER_FAILED")), f ?? n);
+			throw i && !p && n instanceof I && !n.code ? new I(n.message, n.status, "REQUEST_CANCELLED") : (n instanceof I || await this.observeError(new I("Work handler failed", void 0, "HANDLER_FAILED")), p ?? n);
 		} finally {
-			this.activeWork.delete(l), t?.removeEventListener("abort", u), await b();
+			this.activeWork.delete(u), t?.removeEventListener("abort", d), await x(), a && (a.retired = !0);
 		}
 	}
 	async processCaseSessionWork(e, t, n, r) {
@@ -7183,8 +7421,8 @@ var Fn = class {
 function In(e, t) {
 	return t.aborted ? Promise.reject(t.reason) : new Promise((n, r) => {
 		let i = () => r(t.reason);
-		t.addEventListener("abort", i, { once: !0 }), Promise.resolve().then(() => (t.throwIfAborted(), e())).then(() => {
-			t.removeEventListener("abort", i), t.aborted ? r(t.reason) : n();
+		t.addEventListener("abort", i, { once: !0 }), Promise.resolve().then(() => (t.throwIfAborted(), e())).then((e) => {
+			t.removeEventListener("abort", i), t.aborted ? r(t.reason) : n(e);
 		}, (e) => {
 			t.removeEventListener("abort", i), r(t.aborted ? t.reason : e);
 		});
