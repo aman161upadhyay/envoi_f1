@@ -7,6 +7,8 @@ import { pipeline } from 'node:stream/promises';
 import {defaultContinuationFlowPolicy,sameContinuationFlowPolicy,validateReviewedContinuationPlan,validateReviewedGraphApproval,type ReviewedContinuationPlan} from './continuation-plan';
 
 export const REQUEST_CAPS = Object.freeze({ models: 48, messages: 60, cases: 9, installations: 5, assets: 6 });
+export type PhysicalMeterEvent=Readonly<{phase:'reserved'|'dispatched'|'response'|'lost'|'aborted'|'not_forwarded';reservationId:string}>;
+export type PhysicalMeterAuthorization=Readonly<{onMeterEvent(event:PhysicalMeterEvent):void|Promise<void>}>;
 export type ModelBudgetAmendment = Readonly<{ purpose:'phase-c-decline-continuation'; models:number; approvalReceiptSha256:string }>;
 type Role = 'je1' | 'je2' | 'testowner' | 'openclaw';
 type Flow = Readonly<{ id: string; role: Role; requests: number; workHash: string | null }>;
@@ -260,7 +262,7 @@ export async function requestBudgetMeter(options: {
   allowWork?: (role:Role,nativeToken:string)=>boolean;
   /** Consume an out-of-band, actual owned-native intent for these exact bytes.
    * This callback NEVER charges: this meter remains the sole durable owner. */
-  authorizePhysical?(request:Readonly<{role:Role;nativeToken:string;window:string;bodySha256:string;deadlineUnixMs:number}>,signal:AbortSignal):Promise<void>;
+  authorizePhysical?(request:Readonly<{role:Role;nativeToken:string;window:string;bodySha256:string;deadlineUnixMs:number}>,signal:AbortSignal):Promise<void|PhysicalMeterAuthorization>;
 }) {
   const upstream = options.fetch ?? fetch, active = options.active ?? (() => false);
   const servedWindow = options.ledger.window;
@@ -292,6 +294,7 @@ export async function requestBudgetMeter(options: {
     const abort = () => controller.abort(); res.once('close', abort); options.signal.addEventListener('abort', abort, { once: true });
     const monitor = setInterval(() => { if (!active() || options.signal.aborted || Date.now() >= (options.ledger.snapshot().activeDeadline ?? 0)) abort(); }, 20);
     let attempt: string | undefined;
+    let physicalAuthorization:void|PhysicalMeterAuthorization=undefined;
     let upstreamCalled = false;
     try {
       if (!active() || options.signal.aborted) return respond(res, 503, 'WINDOW_NOT_ACTIVE');
@@ -301,12 +304,13 @@ export async function requestBudgetMeter(options: {
       if(options.authorizePhysical){
         const commitment=Object.freeze({role:binding.role,nativeToken,window:servedWindow,bodySha256:hash(body),deadlineUnixMs:options.ledger.snapshot().activeDeadline!});
         let abort=()=>{};
-        try{await Promise.race([Promise.resolve().then(()=>{controller.signal.throwIfAborted();return options.authorizePhysical!(commitment,controller.signal);}),
+        try{physicalAuthorization=await Promise.race([Promise.resolve().then(()=>{controller.signal.throwIfAborted();return options.authorizePhysical!(commitment,controller.signal);}),
           new Promise<never>((_,reject)=>{abort=()=>reject(controller.signal.reason);controller.signal.addEventListener('abort',abort,{once:true});if(controller.signal.aborted)abort();})]);}
         finally{controller.signal.removeEventListener('abort',abort);}
         controller.signal.throwIfAborted();
       }
       attempt = await options.ledger.reserve(binding.role, nativeToken); // durable fsync BEFORE upstream bytes
+      await physicalAuthorization?.onMeterEvent({phase:'reserved',reservationId:attempt});
       if (!active() || controller.signal.aborted || options.allowWork&&!options.allowWork(binding.role,nativeToken)) return respond(res, 503, 'WINDOW_NOT_ACTIVE');
       const headers = new Headers();
       const hop = new Set(['host','content-length','connection','transfer-encoding','te','trailer','upgrade','keep-alive','proxy-authenticate','proxy-authorization']);
@@ -318,13 +322,17 @@ export async function requestBudgetMeter(options: {
       upstreamCalled = true;
       const response = await upstream('https://api.anthropic.com/v1/messages', { method: 'POST', redirect: 'error', headers, body, signal: controller.signal });
       await options.ledger.markDispatched(attempt);
+      await physicalAuthorization?.onMeterEvent({phase:'dispatched',reservationId:attempt});
       if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); refuse('UPSTREAM_REDIRECT_REFUSED'); }
       res.writeHead(response.status, { 'content-type': response.headers.get('content-type') ?? 'application/json', 'cache-control': 'no-store' });
       if (response.body) await pipeline(Readable.fromWeb(response.body as never), res); else res.end();
-      await options.ledger.finish(attempt, 'response'); attempt = undefined;
+      const completed=attempt;await options.ledger.finish(completed, 'response');attempt=undefined;
+      await physicalAuthorization?.onMeterEvent({phase:'response',reservationId:completed});
     } finally {
       clearInterval(monitor); res.removeListener('close', abort); options.signal.removeEventListener('abort', abort); controllers.delete(controller);
-      if (attempt) await options.ledger.finish(attempt, !upstreamCalled ? 'not_forwarded' : controller.signal.aborted ? 'aborted' : 'lost');
+      if (attempt){const completed=attempt,outcome=!upstreamCalled?'not_forwarded':controller.signal.aborted?'aborted':'lost';
+        await options.ledger.finish(completed,outcome);attempt=undefined;
+        await physicalAuthorization?.onMeterEvent({phase:outcome,reservationId:completed});}
     }
   }
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });

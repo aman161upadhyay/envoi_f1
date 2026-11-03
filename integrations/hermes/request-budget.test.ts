@@ -180,6 +180,24 @@ describe('authenticated physical request meter with a mocked fixed HTTPS upstrea
     const pending=s.send();await arrived;s.controller.abort();expect((await pending).status).toBe(503);
     expect(s.ledger.snapshot().chargedAttempts).toBe(30);expect(s.upstream).not.toHaveBeenCalled();
   });
+  it('reports the same consumed ticket and exact fsynced reservation through actual response drain',async()=>{
+    const events:any[]=[];const s=await meter({authorizePhysical:async()=>({onMeterEvent:event=>{events.push(event);}})});
+    expect((await s.send()).status).toBe(200);await vi.waitFor(()=>expect(events.map(e=>e.phase)).toEqual(['reserved','dispatched','response']));
+    expect(new Set(events.map(e=>e.reservationId)).size).toBe(1);expect(s.ledger.snapshot()).toMatchObject({chargedAttempts:31,pending:0});
+  });
+  it('keeps actual unknown and not-forwarded meter events distinct, with one charge each',async()=>{
+    const lost:any[]=[];const s=await meter({upstream:vi.fn(async()=>{throw Error('LOST');}),authorizePhysical:async()=>({onMeterEvent:e=>{lost.push(e);}})});
+    expect((await s.send()).status).toBe(503);await vi.waitFor(()=>expect(lost.map(e=>e.phase)).toEqual(['reserved','lost']));
+    const stopped:any[]=[];const t=await meter({authorizePhysical:async()=>({onMeterEvent:e=>{stopped.push(e);if(e.phase==='reserved')t.stop();}})});
+    expect((await t.send()).status).toBe(503);await vi.waitFor(()=>expect(stopped.map(e=>e.phase)).toEqual(['reserved','not_forwarded']));
+    expect(t.upstream).not.toHaveBeenCalled();expect(s.ledger.snapshot().chargedAttempts).toBe(31);expect(t.ledger.snapshot().chargedAttempts).toBe(31);
+  });
+  it('never double-finishes the durable ledger if a terminal observer fails after fsync',async()=>{
+    const events:string[]=[];const s=await meter({authorizePhysical:async()=>({onMeterEvent:e=>{events.push(e.phase);if(e.phase==='response')throw Error('OBSERVER_FAILED');}})});
+    await(await s.send()).text();await vi.waitFor(()=>expect(events).toEqual(['reserved','dispatched','response']));
+    expect(s.ledger.snapshot()).toMatchObject({chargedAttempts:31,pending:0});expect(s.upstream).toHaveBeenCalledTimes(1);
+    const rows=(await fs.readFile(s.filename,'utf8')).trim().split('\n').map(s=>JSON.parse(s));expect(rows.filter(r=>r.kind==='finished')).toHaveLength(1);
+  });
   it('denies a closed work fence even while another cohort flow keeps the model phase live',async()=>{
     let allowed=true;const s=await meter({allowWork:()=>allowed});
     expect((await s.send()).status).toBe(200);await vi.waitFor(()=>expect(s.ledger.snapshot().pending).toBe(0));allowed=false;
