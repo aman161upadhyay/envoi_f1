@@ -10,6 +10,7 @@ type Child=Pick<ChildProcess,'on'|'once'|'off'|'send'|'kill'|'exitCode'|'connect
 interface State{pins:Readonly<OwnedClosedNativePins>;child:Child;live:boolean;ready:unknown;deadline:number;}
 const authorities=new WeakMap<object,State>();
 const physicalRows=new WeakMap<object,State>();
+export function ownedClosedNativeAuthorityPins(authority:OwnedClosedNativeAuthority,signal:AbortSignal){const state=authorities.get(authority);if(!state)refuse('OWNED_NATIVE_AUTHORITY_REQUIRED');assertOwnedClosedNativeAuthority(authority,state.pins,signal);return state.pins;}
 export function assertAuthenticatedNativePhysicalIntent(row:Readonly<Record<string,unknown>>,authority:OwnedClosedNativeAuthority){if(physicalRows.get(row)!==authorities.get(authority)||!authorities.has(authority))throw Error('ACTUAL_OWNED_CHILD_INTENT_REQUIRED');}
 const hash=(s:Uint8Array)=>createHash('sha256').update(s).digest('hex');
 export function closedNativeManifestDigest(sources:Readonly<Record<string,string>>){return hash(Buffer.from(JSON.stringify(Object.fromEntries(Object.entries(sources).sort(([a],[b])=>a.localeCompare(b))))));}
@@ -21,11 +22,12 @@ export function assertOwnedClosedNativeAuthority(authority:OwnedClosedNativeAuth
  return state.ready;
 }
 export interface OwnedClosedNativeOptions{nodeExecutable:string;childEntry:string;childEntrySha256:string;environment:NodeJS.ProcessEnv;
+ nativeEnvironmentFile?:string;
  bootstrap:Omit<ClosedNativeBootstrapOptions,'authorize'|'ports'>;pins:Readonly<OwnedClosedNativePins>;authorize():Promise<void>;
  meterBinding:Readonly<{nativeToken:string;deadlineUnixMs:number}>;
  ports:Pick<ClosedNativeOwnerPorts,'assertLive'|'authorizePhysical'|'recordObservation'|'recordPhysicalOutcome'>;signal:AbortSignal;}
-export interface OwnedClosedNativeDependencies{readBytes(file:string):Promise<Uint8Array>;spawnChild(node:string,entry:string,env:NodeJS.ProcessEnv):Child;nonce():string;}
-const real:OwnedClosedNativeDependencies={readBytes:fs.readFile,spawnChild:(node,entry,env)=>spawn(node,[entry],{env,windowsHide:true,stdio:['ignore','ignore','ignore','ipc']}),nonce:()=>randomBytes(32).toString('hex')};
+export interface OwnedClosedNativeDependencies{readBytes(file:string):Promise<Uint8Array>;spawnChild(node:string,entry:string,env:NodeJS.ProcessEnv,envFile?:string):Child;nonce():string;}
+const real:OwnedClosedNativeDependencies={readBytes:fs.readFile,spawnChild:(node,entry,env,envFile)=>spawn(node,[...(envFile?['--env-file='+envFile]:[]),entry],{env,windowsHide:true,stdio:['ignore','ignore','ignore','ipc']}),nonce:()=>randomBytes(32).toString('hex')};
 /** Only this allocator can mint authority; it owns and verifies the exact child IPC channel. */
 export async function startOwnedClosedNativeProcess(options:OwnedClosedNativeOptions,deps:OwnedClosedNativeDependencies=real){
  await options.authorize();options.signal.throwIfAborted();options.ports.assertLive(options.bootstrap.binding);
@@ -34,7 +36,7 @@ export async function startOwnedClosedNativeProcess(options:OwnedClosedNativeOpt
  for(const key of['window','workId','caseId','caseSessionId','toolChannelSha256','processIdentity']as const)if(p[key]!==b[key])refuse('OWNED_NATIVE_AUTHORITY_BINDING_MISMATCH');
  if(!/^[a-f0-9]{40}$/.test(p.clientSource)||![p.nativeSourceSha256,p.capabilitySha256,p.ownerSelectionSha256,p.targetSha256].every(v=>/^[a-f0-9]{64}$/.test(v)))refuse('PERSONAL_NATIVE_RECEIPTS_REQUIRED');
  if(p.nativeSourceSha256!==closedNativeManifestDigest(b.nativeSources)||Object.entries(options.bootstrap.sourceSha256).some(([k,v])=>b.nativeSources[k]!==v))refuse('REVIEWED_NATIVE_SOURCE_ADOPTION_REQUIRED');
- const child=deps.spawnChild(options.nodeExecutable,options.childEntry,options.environment),nonce=deps.nonce(),authority=Object.freeze({})as OwnedClosedNativeAuthority;
+ const child=deps.spawnChild(options.nodeExecutable,options.childEntry,options.environment,options.nativeEnvironmentFile),nonce=deps.nonce(),authority=Object.freeze({})as OwnedClosedNativeAuthority;
  let readyResolve!:(v:unknown)=>void,readyReject!:(e:unknown)=>void,exitResolve!:()=>void,closeResolve!:()=>void;
  const ready=new Promise(r=>{readyResolve=r;});const failed=new Promise<never>((_,reject)=>{readyReject=reject;}),exited=new Promise<void>(r=>{exitResolve=r;}),closed=new Promise<void>(r=>{closeResolve=r;});
  const state:State={pins:Object.freeze({...p}),child,live:false,ready:undefined,deadline:b.hardStopUnixMs};let stopping=false,closedAck=false;const seen=new Set<number>(),intents=new Map<string,{bodySha256:string;stage:'intent'|'headers';httpStatus?:number}>();

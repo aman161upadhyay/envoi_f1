@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';import path from 'node:path';import {pathToFileURL} from 'node:url';import {createHash} from 'node:crypto';
 import {createClosedNativeOwner,type ClosedNativeBinding,type ClosedNativeOwnerPorts} from './closed-native-owner';
 import {NATIVE_OBSERVER_MODULE} from './native-observer-patch';
+import {nativeCodeTreeDigest} from './native-code-tree';
 const digest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const FILES={host:'node_modules/@openclaw/ai/dist/index.mjs',coreHost:'dist/ai-transport-host-M96B-3Jx.mjs',runtimeHost:'dist/ai-transport-runtime-host-CKPjGYa5.mjs',observer:'dist/'+NATIVE_OBSERVER_MODULE,
  server:'dist/server-DflCEUMg.mjs',registry:'dist/model-registry-Bc1CKDx-.mjs',selection:'dist/selection-BCmRjyeC.mjs',config:'dist/io.runtime-CjTVy3UH.mjs',plugins:'dist/runtime-DTYJlWfc.mjs'} as const;
@@ -9,8 +10,8 @@ export interface ClosedNativeBootstrapOptions{nativeRoot:string;binding:Readonly
  paths:Readonly<{stateDirectory:string;configurationPath:string;workspace:string;agentState:string}>;
  /** Actual source/target/capability adoption and current window checks. Never automated human approval. */
  authorize():Promise<void>;ports:ClosedNativeOwnerPorts;}
-export interface ClosedNativeBootstrapDependencies{readBytes(file:string):Promise<Uint8Array>;loadModule(file:string):Promise<Record<string,any>>;readPathEnvironment():{stateDirectory?:string;configurationPath?:string};}
-const real:ClosedNativeBootstrapDependencies={readBytes:fs.readFile,loadModule:file=>import(pathToFileURL(file).href),readPathEnvironment:()=>({stateDirectory:process.env.OPENCLAW_STATE_DIR,configurationPath:process.env.OPENCLAW_CONFIG_PATH})};
+export interface ClosedNativeBootstrapDependencies{readBytes(file:string):Promise<Uint8Array>;loadModule(file:string):Promise<Record<string,any>>;readPathEnvironment():{stateDirectory?:string;configurationPath?:string};codeTreeDigest(root:string):Promise<string>;}
+const real:ClosedNativeBootstrapDependencies={readBytes:fs.readFile,loadModule:file=>import(pathToFileURL(file).href),readPathEnvironment:()=>({stateDirectory:process.env.OPENCLAW_STATE_DIR,configurationPath:process.env.OPENCLAW_CONFIG_PATH}),codeTreeDigest:nativeCodeTreeDigest};
 
 /** Invoke ONLY inside the new owned one-work native child after its native path env is selected. */
 export async function startClosedNativeGateway(options:ClosedNativeBootstrapOptions,deps:ClosedNativeBootstrapDependencies=real){
@@ -19,6 +20,7 @@ export async function startClosedNativeGateway(options:ClosedNativeBootstrapOpti
  for(const key of['stateDirectory','configurationPath','workspace','agentState']as const){const selected=options.paths[key];if(!path.isAbsolute(selected)||digest(Buffer.from(path.resolve(selected)))!==options.binding[(key+'Sha256')as keyof ClosedNativeBinding])throw Error('REVIEWED_NATIVE_PRIVATE_PATH_REQUIRED');}
  if(!env.stateDirectory||!env.configurationPath||path.resolve(env.stateDirectory)!==path.resolve(options.paths.stateDirectory)||path.resolve(env.configurationPath)!==path.resolve(options.paths.configurationPath))throw Error('NEW_NATIVE_CHILD_PATH_SELECTION_REQUIRED');
  if(!path.isAbsolute(options.nativeRoot)||!Number.isInteger(options.port)||options.port<1||options.port>65535)throw Error('EXACT_NATIVE_BOOTSTRAP_REQUIRED');
+ if(options.binding.nativeSources.packageTree!==await deps.codeTreeDigest(options.nativeRoot))throw Error('REVIEWED_COMPLETE_NATIVE_CODE_COPY_REQUIRED');
  for(const role of Object.keys(FILES)as Role[]){const expected=options.sourceSha256[role];if(!/^[a-f0-9]{64}$/.test(expected)||digest(await deps.readBytes(path.join(options.nativeRoot,FILES[role])))!==expected)throw Error('REVIEWED_NATIVE_SOURCE_ADOPTION_REQUIRED');}
  // Complete both native installers before capturing the actual host implementation.
  const host=await deps.loadModule(path.join(options.nativeRoot,FILES.host));

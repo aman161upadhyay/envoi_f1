@@ -10,7 +10,7 @@ import {NativePhysicalIntents} from './native-physical-intents';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 beforeEach(()=>{vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-02T23:55:00Z'));});afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();});
 function binding(id='a'):ClosedNativeBinding{return{window:'a'.repeat(64),workId:'msg_'+id,caseId:'case_'+id,caseSessionId:'case_session_'+id,toolChannelSha256:'b'.repeat(64),processIdentity:'owned_'+id,
- stateDirectorySha256:'c'.repeat(64),configurationPathSha256:'d'.repeat(64),workspaceSha256:'e'.repeat(64),agentStateSha256:'f'.repeat(64),nativeAgentId:'main',modelId:'claude-haiku-4-5-20251001',proxyOrigin:'http://127.0.0.1:'+(id==='a'?42001:42002),hardStopUnixMs:Date.now()+90000,nativeSources:{patch:'1'.repeat(64)}};}
+ stateDirectorySha256:'c'.repeat(64),configurationPathSha256:'d'.repeat(64),workspaceSha256:'e'.repeat(64),agentStateSha256:'f'.repeat(64),nativeAgentId:'main',modelId:'claude-haiku-4-5-20251001',proxyOrigin:'http://127.0.0.1:'+(id==='a'?42001:42002),hardStopUnixMs:Date.now()+90000,nativeSources:{patch:'1'.repeat(64),packageTree:'2'.repeat(64)}};}
 const model=(b:ClosedNativeBinding)=>({id:b.modelId,provider:'anthropic',api:'anthropic-messages',baseUrl:b.proxyOrigin});
 const physical=(b:ClosedNativeBinding)=>({method:'POST',headers:{'x-api-key':'INERT_NOT_A_KEY','anthropic-version':'2023-06-01'},body:JSON.stringify({model:b.modelId,messages:[]})});
 function ownerSample(id='a'){
@@ -79,7 +79,7 @@ it('orders real Gateway bootstrap module seams after source/path authorization a
  const b=binding(),s=ownerSample(),paths={stateDirectory:path.resolve('inert/state'),configurationPath:path.resolve('inert/config'),workspace:path.resolve('inert/workspace'),agentState:path.resolve('inert/agent')};
  for(const k of Object.keys(paths)as(keyof typeof paths)[])b[(k+'Sha256')as keyof ClosedNativeBinding]=hash(paths[k])as never;
  const sourceSha256=Object.fromEntries(Object.keys(CLOSED_NATIVE_BOOTSTRAP_FILES).map(k=>[k,hash(k)]))as any,order:string[]=[],gatewayClose=vi.fn(async()=>{});let installed:any,activeHost:any={buildModelFetch:()=>vi.fn()};
- const result=await startClosedNativeGateway({nativeRoot:path.resolve('inert/native'),binding:b,paths,port:19000,sourceSha256,authorize:async()=>{order.push('authorized');},ports:s.ports},{readPathEnvironment:()=>paths,readBytes:async f=>Buffer.from(Object.entries(CLOSED_NATIVE_BOOTSTRAP_FILES).find(([,p])=>f.endsWith(path.normalize(p)))![0]),loadModule:async f=>{
+ const result=await startClosedNativeGateway({nativeRoot:path.resolve('inert/native'),binding:b,paths,port:19000,sourceSha256,authorize:async()=>{order.push('authorized');},ports:s.ports},{codeTreeDigest:async()=>b.nativeSources.packageTree,readPathEnvironment:()=>paths,readBytes:async f=>Buffer.from(Object.entries(CLOSED_NATIVE_BOOTSTRAP_FILES).find(([,p])=>f.endsWith(path.normalize(p)))![0]),loadModule:async f=>{
   const role=Object.entries(CLOSED_NATIVE_BOOTSTRAP_FILES).find(([,p])=>f.endsWith(path.normalize(p)))![0];order.push(role);
   if(role==='host')return{getDefaultAiTransportHost:()=>activeHost,configureAiTransportHost:(h:any)=>{activeHost=h;}};
   if(role==='observer')return{installClosedNativeObserver:(v:any)=>{installed=v;},getClosedNativeObserver:()=>installed};if(role==='config')return{r:()=>s.config,i:()=>s.config};if(role==='plugins')return{l:()=>s.plugins,m:()=>[]};if(role==='server')return{startGatewayServer:async()=>({close:gatewayClose,startupSettled:Promise.resolve()})};return{};
