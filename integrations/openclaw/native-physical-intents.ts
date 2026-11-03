@@ -20,11 +20,11 @@ export class NativePhysicalIntents{
   if(!this.meter||input.role!=='openclaw'||input.window!==this.pins.window||input.nativeToken!==this.meter.nativeToken||input.deadlineUnixMs!==this.meter.deadlineUnixMs)throw Error('EXACT_NATIVE_METER_BINDING_REQUIRED');return this.consume(input.bodySha256);}
  refuseBeforeDispatch(intentId:string){const i=this.intents.get(intentId);if(!i||i.consumed||i.nativeStage!=='authorized')throw Error('NATIVE_INTENT_REFUSAL_UNVERIFIED');i.nativeStage='refused';i.proxyStage='refused';}
  /** Actual request-meter events only. The meter owns exactly ONE reservation/finish. */
- proxyEvent(intentId:string,event:Readonly<{phase:'reserved'|'dispatched'|'response'|'lost'|'aborted';reservationId:string}>){const i=this.intents.get(intentId);
+ proxyEvent(intentId:string,event:Readonly<{phase:'reserved'|'dispatched'|'response'|'lost'|'aborted'|'not_forwarded';reservationId:string}>){const i=this.intents.get(intentId);
   if(!i||!i.consumed||typeof event.reservationId!=='string'||!event.reservationId||i.reservationId&&i.reservationId!==event.reservationId)throw Error('EXACT_NATIVE_PROXY_RESERVATION_REQUIRED');
   if(event.phase==='reserved'){if(i.proxyStage!=='admitted')throw Error('NATIVE_PROXY_RESERVATION_REPEATED');i.reservationId=event.reservationId;}
   else if(event.phase==='dispatched'){if(i.proxyStage!=='reserved')throw Error('NATIVE_PROXY_DISPATCH_ORDER_REQUIRED');}
-  else if(!['reserved','dispatched'].includes(i.proxyStage)||event.phase==='response'&&i.proxyStage!=='dispatched')throw Error('NATIVE_PROXY_FINISH_ORDER_REQUIRED');i.proxyStage=event.phase;
+  else if(!['reserved','dispatched'].includes(i.proxyStage)||event.phase==='response'&&i.proxyStage!=='dispatched'||event.phase==='not_forwarded'&&i.proxyStage!=='reserved')throw Error('NATIVE_PROXY_FINISH_ORDER_REQUIRED');i.proxyStage=event.phase;
  }
  recordPhysicalOutcome(row:Readonly<Record<string,unknown>>){const i=typeof row.intentId==='string'&&this.intents.get(row.intentId);if(!i||row.kind!=='actual_native_physical_outcome'||row.bodySha256!==i.bodySha256||row.workId!==this.pins.workId||row.processIdentity!==this.pins.processIdentity)throw Error('EXACT_NATIVE_OUTCOME_REQUIRED');
   const stage=row.stage;if(stage==='headers'){if(i.nativeStage!=='authorized')throw Error('NATIVE_OUTCOME_ORDER_REQUIRED');}
@@ -32,7 +32,7 @@ export class NativePhysicalIntents{
   else if(!['lost','aborted'].includes(String(stage))||!['authorized','headers'].includes(i.nativeStage))throw Error('NATIVE_OUTCOME_ORDER_REQUIRED');i.nativeStage=String(stage);
  }
  snapshot(){return Object.freeze({authorized:this.intents.size,consumed:[...this.intents.values()].filter(i=>i.consumed).length,
-  pending:[...this.intents.values()].filter(i=>!['body_drained','lost','aborted','refused'].includes(i.nativeStage)||!['response','lost','aborted','refused'].includes(i.proxyStage)).length,
+  pending:[...this.intents.values()].filter(i=>!['body_drained','lost','aborted','refused'].includes(i.nativeStage)||!['response','lost','aborted','not_forwarded','refused'].includes(i.proxyStage)).length,
   uncertainOrphans:[...this.intents.values()].filter(i=>!i.consumed&&['lost','aborted'].includes(i.nativeStage)).length});}
  assertDrained(){if(this.snapshot().pending)throw Error('NATIVE_PHYSICAL_INTENTS_UNRECONCILED');}
 }
