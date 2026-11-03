@@ -187,6 +187,26 @@ it('retains only trusted stale-scope reads after SDK cancellation until explicit
   await handle.close();await handle.close();expect(s.controller.endPreNativeControl).toHaveBeenCalledTimes(1);
   await expect(context.channel.forward(JSON.stringify({jsonrpc:'2.0',id:'closed',method:'tools/call',params:{name:'envoi_case_snapshot',arguments:{}}}))).rejects.toThrow('CONTROL_CHANNEL_CLOSED');
 });
+it('keeps the original ready scope, private bearer and protocol after a later SDK remint',async()=>{
+  const s=await setup({trustedControl:async()=>{throw Error('UNUSED');}}),original=s.fetcher.getMockImplementation()!,root='https://sinaloa-staging.rachelgonsalves821.workers.dev';let remint=false;
+  s.fetcher.mockImplementation(async(input,init)=>{
+    const response=await original(input,init);
+    if(remint&&String(input).endsWith('/session')){const p=await response.json();Object.assign(p.session,{id:'session_reminted',fence:3,token:'PRIVATE_REMINTED_TOKEN',allowedTools:['envoi_case_snapshot','envoi_case_list_assets']});return Response.json(p);}
+    if(remint&&String(input).endsWith('/mcp'))return Response.json({result:{content:[{text:JSON.stringify({ok:true,result:{tools:{decide:'new_scope_ref'}}})}]}});
+    return response;
+  });
+  const handle=await s.receiver.startPreNativeControl({controlId:'expiry-remint',mode:'expiry',role:'je1',caseId:s.caseId,workId:s.workId,evidenceSha256:'7'.repeat(64)}),context=await handle.ready;
+  const oldFacts=s.receiver.scopedFacts(s.workId),oldDigest=context.toolChannelSha256;expect(oldFacts.toolChannelSha256).toBe(oldDigest);expect(oldDigest).toMatch(/^[a-f0-9]{64}$/);
+  remint=true;await state.context.fetch(root+'/api/agent/work/'+s.workId+'/session',{method:'POST',body:'{}'});
+  await state.context.fetch(root+'/mcp',{method:'POST',headers:{authorization:'Bearer PRIVATE_REMINTED_TOKEN','mcp-protocol-version':'2026-01-01'},body:JSON.stringify({jsonrpc:'2.0',id:'new-snapshot',method:'tools/call',params:{name:'envoi_case_snapshot',arguments:{}}})});
+  const current=s.receiver.scopedFacts(s.workId);expect(current.session).toMatchObject({id:'session_reminted',fence:3});expect(current.toolChannelSha256).not.toBe(oldDigest);
+  expect(oldFacts.toolChannelSha256).toBe(oldDigest);expect(context.toolChannelSha256).toBe(oldDigest);expect(context.session).toMatchObject({id:'session_inert',fence:2});expect(context.snapshot).toMatchObject({tools:{decide:'actual_new_ref'}});
+  await expect(state.context.beforeScopedTurn(s.workId,new AbortController().signal)).rejects.toThrow('ACTUAL_CONTROL_SCOPE_REQUIRED');
+  handle.cancel();await handle.finished;
+  await context.channel.forward(JSON.stringify({jsonrpc:'2.0',id:'probe-original-only',method:'tools/call',params:{name:'envoi_case_snapshot',arguments:{}}}));
+  expect(new Headers(s.fetcher.mock.calls.at(-1)![1]!.headers).get('authorization')).toBe('Bearer PRIVATE_INERT_TOKEN');expect(new Headers(s.fetcher.mock.calls.at(-1)![1]!.headers).get('mcp-protocol-version')).toBe('2025-11-25');
+  expect(JSON.stringify(context)).not.toContain('PRIVATE_');expect(context.session.allowedTools).toContain('envoi_case_decide');expect(Object.isFrozen(context.session.allowedTools)).toBe(true);await handle.close();
+});
 it('uses a private exact stale-settlement marker only after SDK drain, without native processed hooks',async()=>{
   const s=await setup({trustedControl:async()=>{throw Error('UNUSED');}}),original=s.fetcher.getMockImplementation()!;
   s.fetcher.mockImplementation(async(input,init)=>String(input).endsWith('/complete')?Response.json({code:'WORK_LEASE_STALE'},{status:409}):original(input,init));
