@@ -197,6 +197,19 @@ export interface ScopedWakeWorkDriver {
 export type ScopedWorkExpectation = Readonly<{workId: string; caseId: string}>;
 export type ScopedWorkOutcome = ScopedWorkExpectation & ({status: 'fulfilled'; worked: boolean} | {status: 'rejected'; error: unknown});
 
+/** Trusted operator fixture only. Never part of model context or a scoped-tool fallback. */
+export interface SyntheticPolicyFixtureInput {
+  fixtureId: string;
+  windowId: string;
+  approvalSha256: string;
+  approvalDecisionRaw: string;
+  expected: Readonly<{inboxId:string;agentId:string;installationId:string;caseId:string;workId:string;proposalId:string;optionId:string}>;
+  expiresAt: string;
+}
+export interface SyntheticPolicyFixtureResult {
+  id:string;actor:string;requestedAction:'proposal.accept';decision:'needsHuman'|'deny'|'allow';expiresAt:string;
+}
+
 export interface ConnectorOptions extends ClientOptions {
   pageSize?: number;
   /** @deprecated Wake safety intervals are fixed by a4-wake; this value is ignored. */
@@ -362,6 +375,7 @@ export class EnvoiConnector {
   private readonly activeLeaseChecks = new Map<() => Promise<void>, AbortController>();
   private caseSessionsAvailable = false;
   private readonly mintingCaseWork = new Set<string>();
+  private readonly syntheticFixtureUses = new Set<string>();
   private wakeTransport: 'not_started' | 'connecting' | 'connected' | 'disconnected' = 'not_started';
   private lastWakeReadyAt?: string;
   private lastWakeEventAt?: string;
@@ -589,6 +603,84 @@ export class EnvoiConnector {
       throw new ConnectorCredentialsError();
     }
     return session.agentApiToken;
+  }
+
+  /** One non-idempotent, separately approved synthetic setup write. The host must
+   * persist its intent/reservation BEFORE invoking this and reconcile every unknown
+   * result without retry. This method shares the normal refresh/store owner, exports
+   * no credential, and deliberately does not use withFreshSession's 401 replay.
+   * The REST route is NOT lease/session-fenced; expected work pins are operator
+   * linkage, not a claim that operational authority became case-session authority.
+   * Actual human-policy provenance is verified by the trusted receipt reader. */
+  async evaluateSyntheticPolicyFixtureOnce(input:Readonly<SyntheticPolicyFixtureInput>, signal?:AbortSignal):Promise<SyntheticPolicyFixtureResult> {
+    const refuse=(code:string):never=>{throw new EnvoiError('Synthetic authority fixture requires reconciliation',undefined,code);};
+    const exact=(v:unknown,keys:string[]):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v)
+      &&Object.keys(v).sort().join()===keys.sort().join();
+    const sha=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+    if(!this.options.caseSessionHandler||!exact(input,['fixtureId','windowId','approvalSha256','approvalDecisionRaw','expected','expiresAt'])
+      ||!sha(input.fixtureId)||!sha(input.windowId)||!sha(input.approvalSha256)||typeof input.approvalDecisionRaw!=='string'
+      ||new TextEncoder().encode(input.approvalDecisionRaw).length>32768
+      ||!exact(input.expected,['inboxId','agentId','installationId','caseId','workId','proposalId','optionId']))refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');
+    const expected=Object.freeze({...input.expected});
+    const request=Object.freeze({fixtureId:input.fixtureId,windowId:input.windowId,expiresAt:input.expiresAt,
+      approvalSha256:input.approvalSha256,approvalDecisionRaw:input.approvalDecisionRaw,expected});
+    for(const [key,prefix]of Object.entries({inboxId:'inbox_',agentId:'agent_',installationId:'installation_',caseId:'case_',workId:'msg_',proposalId:'proposal_',optionId:'option_'}))
+      if(typeof expected[key as keyof typeof expected]!=='string'||!new RegExp('^'+prefix+'[A-Za-z0-9_-]+$').test(expected[key as keyof typeof expected]))refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');
+    let decision:Record<string,unknown>;
+    try{decision=JSON.parse(request.approvalDecisionRaw);}catch{return refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');}
+    if(!exact(decision,['purpose','version','ownerApproved','policyApprovalSha256','fixtureId','windowId','expected','expiresAt','notAfterUtc'])
+      ||decision.purpose!=='phase-c-synthetic-expiry-fixture-execution'||decision.version!==1||decision.ownerApproved!==true
+      ||!sha(decision.policyApprovalSha256)||decision.fixtureId!==request.fixtureId||decision.windowId!==request.windowId
+      ||!exact(decision.expected,Object.keys(expected))||Object.keys(expected).some(key=>(decision.expected as Record<string,unknown>)[key]!==expected[key as keyof typeof expected])
+      ||decision.expiresAt!==request.expiresAt||typeof decision.notAfterUtc!=='string')refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');
+    const expiry=Date.parse(request.expiresAt),stop=Date.parse(decision.notAfterUtc as string);
+    if(!Number.isFinite(expiry)||!Number.isFinite(stop)||new Date(expiry).toISOString()!==request.expiresAt
+      ||new Date(stop).toISOString()!==decision.notAfterUtc||expiry<=Date.now()||stop<=expiry||stop>Date.now()+900000)refuse('SYNTHETIC_FIXTURE_DEADLINE');
+    const raw=request.approvalDecisionRaw;
+    const actualHash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+    if(actualHash!==request.approvalSha256)refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');
+    if(this.syntheticFixtureUses.has(request.fixtureId))refuse('SYNTHETIC_FIXTURE_ALREADY_ATTEMPTED');
+    this.syntheticFixtureUses.add(request.fixtureId);
+    signal?.throwIfAborted();await this.guard(true);
+    const action=new AbortController();this.activeActions.add(action);
+    const bounded=AbortSignal.any([action.signal,...(signal?[signal]:[]),AbortSignal.timeout(this.options.timeoutMs??30000)]);
+    const epoch=this.actionEpoch;
+    const check=async()=>{bounded.throwIfAborted();await this.guard(true);if(epoch!==this.actionEpoch)refuse('REQUEST_CANCELLED');if(Date.now()>=expiry||Date.now()>=stop)refuse('SYNTHETIC_FIXTURE_DEADLINE');};
+    const read=async(response:Response):Promise<Record<string,unknown>>=>{
+      const reader=response.body?.getReader();if(!reader)return refuse('SYNTHETIC_FIXTURE_RESULT_UNKNOWN');
+      const chunks:Uint8Array[]=[];let size=0;
+      const cancel=()=>{void reader.cancel().catch(()=>{});};
+      bounded.addEventListener('abort',cancel,{once:true});
+      try{while(true){bounded.throwIfAborted();const part=await abortableTurn(()=>reader.read(),bounded);if(part.done)break;size+=part.value.length;if(size>65536){cancel();refuse('SYNTHETIC_FIXTURE_RESULT_UNKNOWN');}chunks.push(part.value);}}
+      finally{bounded.removeEventListener('abort',cancel);reader.releaseLock();}
+      const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+      return responsePayload<Record<string,unknown>>(new Response(bytes,{status:response.status,headers:response.headers}),'Synthetic fixture request failed');
+    };
+    try{
+      const session=await abortableTurn(()=>this.freshSession(),bounded);await check();
+      if(session.agentId!==expected.agentId||session.inboxId!==expected.inboxId)refuse('SYNTHETIC_FIXTURE_IDENTITY_MISMATCH');
+      const fetcher=this.options.fetch??fetch;
+      const boundedFetch=async(url:string,init:RequestInit)=>abortableTurn(async()=>{
+        const response=await fetcher(url,init);
+        if(bounded.aborted){void response.body?.cancel().catch(()=>{});bounded.throwIfAborted();}
+        return response;
+      },bounded);
+      const status=await read(await boundedFetch(this.origin+'/api/agent/status',{headers:{authorization:'Bearer '+session.agentApiToken},credentials:'omit',redirect:'error',signal:bounded}));
+      await check();
+      if(status.state!=='active'||status.inboxId!==expected.inboxId||(status.agent as {id?:unknown})?.id!==expected.agentId
+        ||(status.installation as {id?:unknown})?.id!==expected.installationId)refuse('SYNTHETIC_FIXTURE_IDENTITY_MISMATCH');
+      const response=await boundedFetch(`${this.origin}/api/inboxes/${encodeURIComponent(expected.inboxId)}/cases/${encodeURIComponent(expected.caseId)}/policy-evaluations`,{
+        method:'POST',credentials:'omit',redirect:'error',signal:bounded,headers:{'content-type':'application/json',authorization:'Bearer '+session.agentApiToken},
+        body:JSON.stringify({requestedAction:'proposal.accept',actionPayload:{proposalId:expected.proposalId,optionId:expected.optionId},expiresAt:request.expiresAt,grantType:'oneTime'})});
+      const result=await read(response);await check();
+      if(response.status!==201||typeof result.id!=='string'||!/^policy_eval_[A-Za-z0-9_-]+$/.test(result.id)||result.actor!==expected.agentId
+        ||result.requestedAction!=='proposal.accept'||!['needsHuman','deny','allow'].includes(String(result.decision))||result.expiresAt!==request.expiresAt)refuse('SYNTHETIC_FIXTURE_RESULT_UNKNOWN');
+      return{id:result.id as string,actor:expected.agentId,requestedAction:'proposal.accept',decision:result.decision as SyntheticPolicyFixtureResult['decision'],expiresAt:request.expiresAt};
+    }catch(error){
+      if(error instanceof EnvoiError){await this.observeError(error);throw new EnvoiError('Synthetic authority fixture stopped; reconcile its existing intent',error.status,error.code??'SYNTHETIC_FIXTURE_RESULT_UNKNOWN');}
+      await this.guard(true);
+      throw new EnvoiError('Synthetic authority fixture stopped; reconcile its existing intent',undefined,bounded.aborted?'REQUEST_CANCELLED':'SYNTHETIC_FIXTURE_RESULT_UNKNOWN');
+    }finally{this.activeActions.delete(action);}
   }
 
   get wakeOrigin(): string { return this.origin; }
@@ -1439,13 +1531,13 @@ export class EnvoiConnector {
   }
 }
 
-function abortableTurn(run: () => Promise<void>, signal: AbortSignal): Promise<void> {
+function abortableTurn<T>(run: () => Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const abort = () => reject(signal.reason);
     signal.addEventListener('abort', abort, { once: true });
     Promise.resolve().then(() => { signal.throwIfAborted(); return run(); }).then(
-      () => { signal.removeEventListener('abort', abort); if (signal.aborted) reject(signal.reason); else resolve(); },
+      value => { signal.removeEventListener('abort', abort); if (signal.aborted) reject(signal.reason); else resolve(value); },
       error => { signal.removeEventListener('abort', abort); reject(signal.aborted ? signal.reason : error); }
     );
   });
