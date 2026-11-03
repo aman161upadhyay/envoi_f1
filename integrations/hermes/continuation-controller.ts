@@ -26,6 +26,8 @@ type Deferred={promise:Promise<void>;resolve:()=>void;reject:(reason:unknown)=>v
  * Merely reviewing a graph or returning a fixture object is not a host capability proof. */
 export type SameRoleNativeAttribution=Readonly<{window:string;role:Role;flowId:string;caseId:string;agentId:string;workId:string;sessionId:string;nativeToken:string}>;
 export type SameRoleNativeAttributionGuard=(binding:SameRoleNativeAttribution,signal:AbortSignal)=>Promise<SameRoleNativeAttribution>;
+/** A trusted operator checkpoint, not a native flow or an acceptance proof. */
+export type PreNativeControl=Readonly<{controlId:string;mode:'pause'|'expiry'|'revoke'|'authority-expiry';role:Role;caseId:string;workId:string;evidenceSha256:string}>;
 const deferred=():Deferred=>{let resolve!:()=>void,reject!:(reason:unknown)=>void;const promise=new Promise<void>((a,b)=>{resolve=a;reject=b;});void promise.catch(()=>{});return {promise,resolve,reject};};
 
 /** Trusted local execution controller. No model-facing API, startup, enrollment or send operation. */
@@ -35,6 +37,8 @@ export class ContinuationController {
   private bindings=new Map<string,Binding>();
   private released=new Set<string>();
   private expectedWork=new Map<string,{workId:string;evidenceSha256:string}>();
+  private preNativeControl:Readonly<PreNativeControl & {baseline:number}>|undefined;
+  private usedControlIds=new Set<string>();
   private constructor(readonly ledger:RequestBudgetLedger,readonly receipt:ContinuationReceipt,
     private flowCases:Readonly<Record<string,string>>,private actorIds:Readonly<Record<Role,string>>,private sameRoleNativeAttribution?:SameRoleNativeAttributionGuard){}
 
@@ -83,7 +87,7 @@ export class ContinuationController {
   }
   stop(reason='CONTROLLED_STOP'){this.control.abort(new Error(reason));this.group?.gate.reject(this.control.signal.reason);}
   releaseGroup(ids:readonly string[]) {
-    this.live();if(this.ledger.snapshot().pending||this.group&&!this.group.ids.every(id=>this.bindings.get(id)?.finished))refuse('PRIOR_FLOW_NOT_RECONCILED');
+    this.live();if(this.preNativeControl)refuse('PRE_NATIVE_CONTROL_ACTIVE');if(this.ledger.snapshot().pending||this.group&&!this.group.ids.every(id=>this.bindings.get(id)?.finished))refuse('PRIOR_FLOW_NOT_RECONCILED');
     const flows=ids.map(id=>this.ledger.flows.find(f=>f.id===id));
     const sameRole=new Set(flows.map(f=>f?.role)).size!==ids.length;
     if(!ids.length||new Set(ids).size!==ids.length||flows.some(f=>!f)||ids.some(id=>this.released.has(id))
@@ -118,7 +122,7 @@ export class ContinuationController {
   }
   nativeGuard(role:Role,meterToken:string):NativeSubmissionGuard {
     return async(frame,signal)=>{
-      this.live();signal.throwIfAborted();const group=this.group;
+      this.live();if(this.preNativeControl)refuse('PRE_NATIVE_CONTROL_FORBIDS_NATIVE');signal.throwIfAborted();const group=this.group;
       const binding=[...this.bindings.values()].find(b=>b.role===role&&b.workId===frame.workId&&group?.ids.includes(b.flowId));
       if(!binding||!group||binding.submitted||frame.deadlineUnixMs<=Date.now()||frame.deadlineUnixMs>Date.now()+120000)refuse('EXACT_NATIVE_WORK_REQUIRED');
       const nativeSignal=AbortSignal.any([signal,this.control.signal,AbortSignal.timeout(Math.max(1,frame.deadlineUnixMs-Date.now()))]);
@@ -153,6 +157,28 @@ export class ContinuationController {
   flowPolicy(flowId:string){
     if(!this.ledger.flows.some(f=>f.id===flowId))refuse('REVIEWED_FLOW_REQUIRED');
     return this.ledger.reviewedPlan?.flows.find(f=>f.id===flowId)!.policy??defaultContinuationFlowPolicy(flowId);
+  }
+  /** This mutex never binds/charges/completes a native flow. The separate trusted
+   * observer must prove the actual negative outcome and canonical reoffer. */
+  beginPreNativeControl(input:PreNativeControl){
+    this.live();
+    if(this.preNativeControl||this.ledger.snapshot().pending||this.group&&!this.group.ids.every(id=>this.bindings.get(id)?.finished))refuse('PRIOR_FLOW_NOT_RECONCILED');
+    if(Object.keys(input).sort().join(',')!=='caseId,controlId,evidenceSha256,mode,role,workId'
+      ||!/^[A-Za-z0-9_-]{1,100}$/.test(input.controlId)||this.usedControlIds.has(input.controlId)
+      ||!['pause','expiry','revoke','authority-expiry'].includes(input.mode)||!this.actorIds[input.role]
+      ||!Object.values(this.flowCases).includes(input.caseId)||!/^msg_[A-Za-z0-9_-]+$/.test(input.workId)||!digest(input.evidenceSha256)
+      ||[...this.bindings.values()].some(b=>b.workId===input.workId&&b.submitted))refuse('EXACT_PRE_NATIVE_CONTROL_REQUIRED');
+    this.usedControlIds.add(input.controlId);this.preNativeControl=Object.freeze({...input,baseline:this.ledger.snapshot().chargedAttempts});
+  }
+  observePreNativeControlClaim(controlId:string,role:Role,work:Work){
+    this.live();const c=this.preNativeControl;
+    if(!c||c.controlId!==controlId||c.role!==role||work.workId!==c.workId||work.message.id!==c.workId
+      ||work.message.caseId!==c.caseId||work.message.recipientAgentId!==this.actorIds[role])refuse('CANONICAL_CONTROL_WORK_MISMATCH');
+  }
+  endPreNativeControl(controlId:string){
+    this.live();const c=this.preNativeControl;
+    if(!c||c.controlId!==controlId||this.ledger.snapshot().pending||this.ledger.snapshot().chargedAttempts!==c.baseline)refuse('PRE_NATIVE_CONTROL_MODEL_ACTIVITY');
+    this.preNativeControl=undefined;
   }
   assertScopedTool(role:Role,name:string,workId?:string){
     this.live();const candidates=[...this.bindings.values()].filter(b=>b.role===role&&this.group?.ids.includes(b.flowId));

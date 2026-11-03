@@ -10,17 +10,30 @@ import { createHostTaskSender,HostTaskError,type HostTaskRequest } from '../conn
 import { FileScopedRunStore } from '../grok/scoped-store';
 import type { RuntimeBridge } from '../connector/adapter';
 import type { NativeRequestGateExpectation } from './request-gate-attestation';
-import { ContinuationController } from './continuation-controller';
+import { ContinuationController,type PreNativeControl } from './continuation-controller';
 import type {ContinuationFlowPolicy} from './continuation-plan';
+import {guardNativeSubmission,type NativeSubmissionGuard} from './native-binding';
 import {OpenClawTargetRegistry,type OpenClawTargetResolver,type OpenClawTargetSelectionAuthority} from '../openclaw/scoped-target';
 
 type Role='je1'|'je2'|'testowner'|'openclaw';
 export type ContinuationWork=Readonly<{flowId:string;workId:string;caseId:string;evidenceSha256:string}>;
-type ActiveWork=ContinuationWork & {humanEnd:boolean;settled:boolean;failed:boolean;deadline?:number;nativeBinding?:Promise<void>;held?:boolean;workStop?:AbortController;beforeIds?:Set<unknown>;completedJournalHash?:string;caseSession?:{id:string;fence:number;expiresAt:string;toolChannelSha256:string}};
+type ActiveWork=ContinuationWork & {humanEnd:boolean;settled:boolean;failed:boolean;deadline?:number;nativeBinding?:Promise<void>;held?:boolean;workStop?:AbortController;beforeIds?:Set<unknown>;completedJournalHash?:string;leaseExpiresAt?:string;leaseToken?:string;nativeFrame?:Parameters<NativeSubmissionGuard>[0];sessionSafe?:Readonly<Record<string,unknown>>;workSafe?:Readonly<Record<string,unknown>>;claimRedactedBytes?:string;sessionRedactedBytes?:string;firstSnapshotGate?:Promise<void>;sessionEndRawBytes?:string;completeRawBytes?:string;caseSession?:{id:string;fence:number;expiresAt:string;toolChannelSha256:string};controlCapture?:{work:Readonly<Record<string,unknown>>;claimRedactedBytes:string;session?:Readonly<Record<string,unknown>>;sessionRedactedBytes?:string;authorization?:string;snapshot?:unknown;snapshotRawBytes?:string;protocolVersion?:string;expectedDenial?:string;denialForwarded?:boolean;entered?:boolean;failureRequestRedactedBytes?:string;failureResponseRawBytes?:string}};
+export type NativeWorkFacts=Readonly<{window:string;clientSource:string;serverSource:string;role:Role;workId:string;caseId:string;frame:Parameters<NativeSubmissionGuard>[0];session:Readonly<Record<string,unknown>>;journalRawBytes:string}>;
+export type ScopedWorkFacts=Readonly<{window:string;clientSource:string;serverSource:string;role:Role;flowId:string;workId:string;caseId:string;work:Readonly<Record<string,unknown>>;session:Readonly<Record<string,unknown>>;claimRedactedBytes:string;sessionRedactedBytes:string;leaseExpiresAt():string}>;
+export type TrustedScopedControlContext=Readonly<{
+  control:PreNativeControl;window:string;clientSource:string;serverSource:string;
+  work:Readonly<Record<string,unknown>>;session:Readonly<Record<string,unknown>>;
+  claimRedactedBytes:string;sessionRedactedBytes:string;snapshot:unknown;snapshotRawBytes:string;
+  leaseExpiresAt():string;
+  /** Token never leaves this closure. Only reads and one explicitly registered
+   * authority-expiry denial probe can be forwarded. This is not a native tool. */
+  channel:Readonly<{forward(body:string):Promise<Response>;registerExpectedDenial(body:string,sha256:string):void}>;
+}>;
 type FlowPolicy=ContinuationFlowPolicy;
 const hash=(x:string|Buffer)=>createHash('sha256').update(x).digest('hex');
 function refuse(code:string):never{throw Object.assign(new Error(code),{code});}
 const readEnvelope=async(response:Response)=>{const p=await response.clone().json();return p.result?.content?.[0]?.text?JSON.parse(p.result.content[0].text):null;};
+const redactControl=(value:unknown):any=>Array.isArray(value)?value.map(redactControl):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).map(([key,v])=>[key,/token|secret|authorization|credential/i.test(key)?'[REDACTED]':redactControl(v)])):value;
 
 /** One enrollment/control listener; bounded explicit work, never automatic parallelism. */
 export async function createContinuationReceiver(options:{
@@ -31,6 +44,9 @@ export async function createContinuationReceiver(options:{
   observeTransport?(input:Parameters<typeof fetch>[0],init:Parameters<typeof fetch>[1],next:typeof fetch):Promise<Response>;
   beforeScopedControl?(workId:string,signal:AbortSignal):Promise<never>;
   verifyHeldControl?(workId:string):Promise<{lateScopeDenied:true;lateSettlementDenied:true;heldWorkResumable:true;evidenceSha256:string}>;
+  beforeTrustedScopedControl?(context:TrustedScopedControlContext,signal:AbortSignal):Promise<never>;
+  observeNativeEnd?(context:NativeWorkFacts & Readonly<{sessionEndRawBytes:string;completeRawBytes:string}>):Promise<void>;
+  beforeFirstScopedSnapshot?(context:ScopedWorkFacts,signal:AbortSignal):Promise<void>;
   record(event:Readonly<Record<string,unknown>>):Promise<void>;fetch?:typeof fetch;
   /** Trusted local plumbing only; never relaxes the native attribution admission guard. */
   openClawTargetResolver?:OpenClawTargetResolver;
@@ -60,7 +76,7 @@ export async function createContinuationReceiver(options:{
       ||value.deadlineUnixMs>Date.parse(s.expiresAt)||value.deadlineUnixMs>Date.parse(controller.receipt.hardStopUtc))refuse('OPENCLAW_CANONICAL_TARGET_MISMATCH');
     return value;
   },options.openClawTargetSelection):undefined;
-  let claims:string[]=[],claimIndex=0,recovery:{workId:string;caseId:string;journalSha256:string}|undefined;
+  let claims:string[]=[],claimIndex=0,recovery:{workId:string;caseId:string;journalSha256:string}|undefined,preNativeControl:PreNativeControl|undefined;
   const ensure=()=>{signal.throwIfAborted();if(!controller.active())refuse('CONTINUATION_WINDOW_CLOSED');};
   const policy=(flowId:string):FlowPolicy=>{
     const current=controller as unknown as {flowPolicy?:(id:string)=>FlowPolicy};
@@ -68,9 +84,22 @@ export async function createContinuationReceiver(options:{
   };
   const workForToken=(init:RequestInit):ActiveWork=>{const token=new Headers(init.headers).get('authorization'),workId=token&&scopedTokens.get(token),state=workId&&active.get(workId);if(!state||state.settled||state.failed)refuse('EXACT_SCOPED_WORK_TOKEN_REQUIRED');return state;};
   const forget=(workId:string)=>{targets?.close(workId);active.delete(workId);for(const [token,id]of scopedTokens)if(id===workId)scopedTokens.delete(token);};
+  const scopedFacts=(workId:string):ScopedWorkFacts=>{
+    ensure();const state=active.get(workId);if(!state?.workSafe||!state.sessionSafe||!state.claimRedactedBytes||!state.sessionRedactedBytes)refuse('ACTUAL_CONTROL_SCOPE_REQUIRED');
+    return Object.freeze({window:controller.ledger.window,clientSource:controller.receipt.clientSource,serverSource:controller.receipt.serverSource,role,flowId:state.flowId,workId,caseId:state.caseId,work:state.workSafe,session:state.sessionSafe,claimRedactedBytes:state.claimRedactedBytes,sessionRedactedBytes:state.sessionRedactedBytes,
+      leaseExpiresAt:()=>{ensure();if(active.get(workId)!==state||!state.leaseExpiresAt)refuse('ACTUAL_CONTROL_LEASE_REQUIRED');return state.leaseExpiresAt;}});
+  };
+  const nativeFacts=async(workId:string):Promise<NativeWorkFacts>=>{
+    ensure();const state=active.get(workId);if(!state||state.held||!state.nativeFrame||!state.sessionSafe)refuse('ACTUAL_NATIVE_WORK_FACTS_REQUIRED');
+    const bytes=await fs.readFile(path.join(options.stateDir,'scoped-runs',workId+'.json'));if(bytes.length>1000000)refuse('BOUNDED_NATIVE_COMPLETION_PROOF_REQUIRED');
+    const journalRawBytes=bytes.toString('utf8'),journal=JSON.parse(journalRawBytes);if(journal.workId!==workId)refuse('EXACT_NATIVE_COMPLETION_PROOF_REQUIRED');
+    return Object.freeze({window:controller.ledger.window,clientSource:controller.receipt.clientSource,serverSource:controller.receipt.serverSource,role,workId,caseId:state.caseId,frame:state.nativeFrame,session:state.sessionSafe,journalRawBytes});
+  };
+  const beforeNativeSubmit:NativeSubmissionGuard=async(frame,bounded)=>{const state=active.get(frame.workId);if(!state||state.held||preNativeControl)refuse('PRE_NATIVE_CONTROL_FORBIDS_NATIVE');await controller.nativeGuard(role,options.meterToken)(frame,bounded);bounded.throwIfAborted();state.nativeFrame=Object.freeze({...frame});};
   const direct:typeof fetch=async(input,init={})=>{
     ensure();const url=new URL(input instanceof Request?input.url:String(input));
     if(url.origin!==origin){
+      if(preNativeControl)refuse('PRE_NATIVE_CONTROL_FORBIDS_NATIVE');
       const selected=saved.configuration as {gatewayUrl?:string;agentId?:string};
       if(role!=='openclaw'||(!targets&&(!selected.gatewayUrl||url.origin!==new URL(selected.gatewayUrl).origin))||url.pathname!=='/v1/responses'||url.search||url.hash||url.username||url.password||init.method!=='POST'||!active.size||recovery)refuse('FOREIGN_RUNTIME_REQUEST_REFUSED');
       let body;try{body=JSON.parse(String(init.body));}catch{refuse('INVALID_OPERATOR_REQUEST_BODY');}
@@ -84,7 +113,7 @@ export async function createContinuationReceiver(options:{
       }
       if(matches.length!==1)refuse(matches.length?'AMBIGUOUS_OPENCLAW_NATIVE_WORK':'EXACT_OPENCLAW_JOURNAL_REQUIRED');
       const state=matches[0];
-      if(!state.nativeBinding){state.deadline=targets?.get(state.workId)?.deadlineUnixMs??Date.now()+120000;state.nativeBinding=controller.nativeGuard('openclaw',options.meterToken)({workId:state.workId,sessionId:'openclaw:'+state.workId,deadlineUnixMs:state.deadline},signal);}
+      if(!state.nativeBinding){state.deadline=targets?.get(state.workId)?.deadlineUnixMs??Date.now()+120000;state.nativeBinding=beforeNativeSubmit({workId:state.workId,sessionId:'openclaw:'+state.workId,deadlineUnixMs:state.deadline},signal);}
       await state.nativeBinding;if(!state.deadline||Date.now()>=state.deadline)refuse('NATIVE_DEADLINE_EXPIRED');
       if(targets)return targets.dispatch(state.workId,input,{...init,signal:AbortSignal.any([signal,...(init.signal?[init.signal]:[])])},upstream);
       return upstream(input,{...init,redirect:'error',signal:AbortSignal.any([signal,...(init.signal?[init.signal]:[]),AbortSignal.timeout(Math.max(1,state.deadline-Date.now()))])});
@@ -93,29 +122,44 @@ export async function createContinuationReceiver(options:{
     const claim=init.method==='POST'&&url.pathname==='/api/agent/work/claim';
     if(claim&&(!active.size||claimIndex>=claims.length))refuse('EXPLICIT_WORK_STEP_REQUIRED');
     const route=url.pathname.match(/^\/api\/agent\/work\/([^/]+)\/(acknowledge|renew|session(?:\/end)?|complete|fail)$/),routed=route&&active.get(decodeURIComponent(route[1]));if(route&&!routed)refuse('UNBOUND_WORK_ROUTE');
+    if(preNativeControl&&route?.[2]==='complete')refuse('PRE_NATIVE_CONTROL_FORBIDS_PROCESSING');
     let scoped:ActiveWork|undefined;
     if(url.pathname==='/mcp'){if(!body||!['initialize','notifications/initialized','ping','tools/list','tools/call'].includes(body.method)||body.method==='tools/call'&&(typeof body.params?.name!=='string'||!body.params.name))refuse('INVALID_SCOPED_OPERATOR_REQUEST');scoped=workForToken(init);}
     const tool=scoped&&body?.method==='tools/call'?body.params?.name:undefined;
+    if(tool==='envoi_case_snapshot'&&options.beforeFirstScopedSnapshot){
+      const state=scoped!,bounded=AbortSignal.any([signal,...(init.signal?[init.signal]:[])]);
+      if(!state.firstSnapshotGate){const facts=scopedFacts(state.workId);state.firstSnapshotGate=guardNativeSubmission(async()=>options.beforeFirstScopedSnapshot!(facts,bounded),{workId:state.workId,sessionId:'pre-snapshot-only',deadlineUnixMs:0},bounded);void state.firstSnapshotGate.catch(()=>{});}
+      await state.firstSnapshotGate;bounded.throwIfAborted();ensure();
+    }
     if(tool){
       if(recovery){if(!['envoi_case_snapshot','envoi_case_list_assets'].includes(tool))refuse('RECOVERY_MUST_NOT_EXECUTE_TOOLS');}
+      else if(preNativeControl){if(!['envoi_case_snapshot','envoi_case_list_assets'].includes(tool))refuse('PRE_NATIVE_CONTROL_EXPECTED_DENIAL_CHANNEL_REQUIRED');}
       else(controller.assertScopedTool as(role:Role,name:string,workId?:string)=>void)(role,tool,scoped!.workId);
       if(!['envoi_case_snapshot','envoi_case_list_assets'].includes(tool))await options.reserveOperation({kind:'tool',tool,caseId:scoped!.caseId,workId:scoped!.workId});
     }else if(init.method==='POST'&&/^\/api\/inboxes\/[^/]+\/messages$/.test(url.pathname))await options.reserveOperation({kind:'message',caseId:body?.caseId});
     const response=await upstream(input,{...init,redirect:'error'});
     if(claim&&response.ok){const raw=await response.clone().text(),work=JSON.parse(raw).work;
-      if(work){const expected=active.get(claims[claimIndex]);if(!expected||work.workId!==expected.workId||work.message?.id!==expected.workId||work.message?.caseId!==expected.caseId||work.message?.recipientAgentId!==options.expected.agentId)refuse('CANONICAL_WORK_GRAPH_MISMATCH');claimIndex++;
-        if(recovery){if(work.workId!==recovery.workId||work.message?.caseId!==recovery.caseId)refuse('RETAINED_RECOVERY_WORK_MISMATCH');}else controller.observeClaim(expected.flowId,role,work,raw);
+      if(work){const expected=active.get(claims[claimIndex]);if(!expected||work.workId!==expected.workId||work.message?.id!==expected.workId||work.message?.caseId!==expected.caseId||work.message?.recipientAgentId!==options.expected.agentId)refuse('CANONICAL_WORK_GRAPH_MISMATCH');claimIndex++;expected.leaseExpiresAt=work.leaseExpiresAt;expected.leaseToken=work.leaseToken;expected.workSafe=Object.freeze(redactControl(work));expected.claimRedactedBytes=JSON.stringify(redactControl(JSON.parse(raw)));
+        if(preNativeControl){controller.observePreNativeControlClaim(preNativeControl.controlId,role,work);expected.controlCapture={work:Object.freeze(redactControl(work)),claimRedactedBytes:JSON.stringify(redactControl(JSON.parse(raw)))};}
+        else if(recovery){if(work.workId!==recovery.workId||work.message?.caseId!==recovery.caseId)refuse('RETAINED_RECOVERY_WORK_MISMATCH');}else controller.observeClaim(expected.flowId,role,work,raw);
       }
     }
     if(route?.[2]==='session'&&response.ok){const p=await response.clone().json(),session=p.session;
       if(!session||session.workId!==routed!.workId||session.caseId!==routed!.caseId||session.agentId!==options.expected.agentId||session.installationId!==options.expected.installationId||typeof session.token!=='string')refuse('SCOPED_TOKEN_WORK_BINDING_MISMATCH');
       const token='Bearer '+session.token,prior=issuedTokens.get(token);if(prior&&prior!==routed!.workId)refuse('SCOPED_TOKEN_WORK_BINDING_MISMATCH');issuedTokens.set(token,routed!.workId);scopedTokens.set(token,routed!.workId);
+      routed!.sessionSafe=Object.freeze(redactControl(session));
+      routed!.sessionRedactedBytes=JSON.stringify(redactControl(p));
+      if(preNativeControl){const capture=routed!.controlCapture;if(!capture||typeof session.id!=='string'||!Number.isSafeInteger(session.fence)||session.fence<1||!Number.isFinite(Date.parse(session.expiresAt)))refuse('ACTUAL_CONTROL_SCOPE_REQUIRED');capture.session=Object.freeze(redactControl(session));capture.sessionRedactedBytes=JSON.stringify(redactControl(p));capture.authorization=token;}
       if(targets){if(typeof session.id!=='string'||!Number.isSafeInteger(session.fence)||session.fence<1||!Number.isFinite(Date.parse(session.expiresAt)))refuse('OPENCLAW_CANONICAL_TARGET_MISMATCH');routed!.caseSession={id:session.id,fence:session.fence,expiresAt:session.expiresAt,toolChannelSha256:hash(JSON.stringify([controller.ledger.window,routed!.workId,routed!.caseId,session.id,session.fence,session.token,session.transport]))};}
     }
-    if(route?.[2]==='session/end'&&response.ok)for(const[token,id]of scopedTokens)if(id===routed!.workId)scopedTokens.delete(token);
-    if(tool&&response.ok){const e=await readEnvelope(response);if(e?.ok===true&&tool==='envoi_request_human'&&e.result?.endTurn===true)scoped!.humanEnd=true;}
+    if(route?.[2]==='renew'&&response.ok){const renewal=await response.clone().json();if(renewal.workId!==routed!.workId||renewal.leaseToken!==routed!.leaseToken||!Number.isFinite(Date.parse(renewal.leaseExpiresAt))||Date.parse(renewal.leaseExpiresAt)<=Date.now())refuse('ACTUAL_CONTROL_LEASE_REQUIRED');routed!.leaseExpiresAt=renewal.leaseExpiresAt;}
+    if(route?.[2]==='session/end'&&response.ok){routed!.sessionEndRawBytes=await response.clone().text();for(const[token,id]of scopedTokens)if(id===routed!.workId)scopedTokens.delete(token);}
+    if(tool&&response.ok){const e=await readEnvelope(response);if(e?.ok===true&&tool==='envoi_request_human'&&e.result?.endTurn===true)scoped!.humanEnd=true;
+      if(preNativeControl&&tool==='envoi_case_snapshot'&&e?.ok===true){const capture=scoped!.controlCapture,protocolVersion=new Headers(init.headers).get('mcp-protocol-version');if(!capture?.session||!protocolVersion||!/^\d{4}-\d{2}-\d{2}$/.test(protocolVersion))refuse('ACTUAL_CONTROL_SCOPE_REQUIRED');capture.snapshot=e.result;capture.snapshotRawBytes=await response.clone().text();capture.protocolVersion=protocolVersion;}}
     if(route&&response.ok&&['complete','fail'].includes(route[2])){const p=await response.clone().json(),state=routed!;
-      if(route[2]==='complete'&&p.workId===state.workId&&p.status==='processed')state.settled=true;
+      if(preNativeControl&&route[2]==='fail'&&state.controlCapture){const{leaseToken:_privateLease,...safeBody}=body??{};state.controlCapture.failureRequestRedactedBytes=JSON.stringify(redactControl(safeBody));state.controlCapture.failureResponseRawBytes=await response.clone().text();}
+      if(route[2]==='complete'&&p.workId===state.workId&&p.status==='processed'){state.settled=true;state.completeRawBytes=await response.clone().text();
+        if(options.observeNativeEnd){if(!state.sessionEndRawBytes||!state.completedJournalHash)refuse('ACTUAL_NATIVE_END_REQUIRED');const facts=await nativeFacts(state.workId);if(hash(facts.journalRawBytes)!==state.completedJournalHash)refuse('NATIVE_COMPLETION_JOURNAL_CHANGED');await options.observeNativeEnd(Object.freeze({...facts,sessionEndRawBytes:state.sessionEndRawBytes,completeRawBytes:state.completeRawBytes}));}}
       if(recovery&&route[2]==='fail'&&p.workId===state.workId&&body?.retryable===false&&p.status==='failed')state.failed=true;
       await options.record({kind:'canonical_settlement',role,workId:state.workId,status:p.status,operation:route[2]});
     }
@@ -137,9 +181,30 @@ export async function createContinuationReceiver(options:{
   const fetcher:typeof fetch=async(input,init)=>{await closeCompletedForwarding(input,init);return options.observeTransport?options.observeTransport(input,init,direct):direct(input,init);};
   try{
     const adapter=adapterFor(runtime),context={apiUrl:origin,stateDir:options.stateDir,env:options.env,signal,fetch:fetcher,
-      nativeRequestGate:options.nativeGate,beforeNativeSubmit:controller.nativeGuard(role,options.meterToken),
+      nativeRequestGate:options.nativeGate,beforeNativeSubmit,
       ...(targets?{openClawTargetResolver:(workId:string,bounded:AbortSignal)=>targets.resolve(workId,bounded),openClawTargetSelection:options.openClawTargetSelection}:{}),
-      beforeScopedTurn:async(workId:string,scopedSignal:AbortSignal)=>{const state=active.get(workId);if(!state)refuse('EXPLICIT_WORK_STEP_REQUIRED');if(state.held){if(!options.beforeScopedControl)refuse('DECLARED_CONTROL_CHECKPOINT_REQUIRED');await options.beforeScopedControl(workId,scopedSignal);refuse('CONTROL_CHECKPOINT_MUST_NOT_START_NATIVE');}}};
+      beforeScopedTurn:async(workId:string,scopedSignal:AbortSignal)=>{const state=active.get(workId);if(!state)refuse('EXPLICIT_WORK_STEP_REQUIRED');if(preNativeControl){
+        const c=preNativeControl,capture=state.controlCapture;
+        if(!options.beforeTrustedScopedControl||!capture?.session||!capture.sessionRedactedBytes||!capture.snapshotRawBytes||!capture.authorization||capture.entered)refuse('ACTUAL_CONTROL_SCOPE_REQUIRED');capture.entered=true;
+        const channel=Object.freeze({
+          registerExpectedDenial:(body:string,sha256:string)=>{ensure();scopedSignal.throwIfAborted();if(c.mode!=='authority-expiry'||capture.expectedDenial||hash(body)!==sha256)refuse('EXACT_EXPECTED_DENIAL_REQUEST_REQUIRED');let request;try{request=JSON.parse(body);}catch{refuse('EXACT_EXPECTED_DENIAL_REQUEST_REQUIRED');}if(request?.method!=='tools/call'||request.params?.name!=='envoi_case_decide'||!request.params?.arguments||typeof request.id!=='string')refuse('EXACT_EXPECTED_DENIAL_REQUEST_REQUIRED');capture.expectedDenial=body;},
+          forward:async(body:string)=>{ensure();scopedSignal.throwIfAborted();if(preNativeControl!==c||!active.has(workId))refuse('CONTROL_CHANNEL_CLOSED');let request;try{request=JSON.parse(body);}catch{refuse('INVALID_SCOPED_OPERATOR_REQUEST');}
+            const args=request?.params?.arguments,forbidden=['caseId','workId','inboxId','agentId','senderAgentId','senderInboxId','recipientAddress','recipientAgentId','recipientInboxId','recipientEmail','counterpartyAddress','sessionId'];
+            if(Buffer.byteLength(body)>1000000||request?.jsonrpc!=='2.0'||!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(key=>forbidden.includes(key))||!Array.isArray(capture.session!.allowedTools)||!capture.session!.allowedTools.includes(request.params?.name))refuse('INVALID_SCOPED_OPERATOR_REQUEST');
+            const read=request?.method==='tools/call'&&['envoi_case_snapshot','envoi_case_list_assets'].includes(request.params?.name);
+            if(!read&&(body!==capture.expectedDenial||capture.denialForwarded))refuse('EXACT_EXPECTED_DENIAL_REQUEST_REQUIRED');
+            if(!read)capture.denialForwarded=true;
+            const url=origin+'/mcp',init:RequestInit={method:'POST',headers:{authorization:capture.authorization!,'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':capture.protocolVersion!},body,credentials:'omit',redirect:'error',signal:AbortSignal.any([signal,scopedSignal,AbortSignal.timeout(30000)])};let forwarded=false;
+            const exactForward:typeof fetch=async(input,nextInit)=>{ensure();scopedSignal.throwIfAborted();if(forwarded||String(input)!==url||nextInit?.method!=='POST'||nextInit.body!==body||new Headers(nextInit.headers).get('authorization')!==capture.authorization)refuse('EXACT_CONTROL_DISPATCH_REQUIRED');forwarded=true;
+              if(!read)await options.reserveOperation({kind:'tool',tool:'envoi_case_decide',caseId:state.caseId,workId});
+              return upstream(url,init);};
+            const response=await(options.observeTransport?options.observeTransport(url,init,exactForward):exactForward(url,init));
+            if(!read&&response.ok){const envelope=await readEnvelope(response);if(envelope?.ok===true){controller.stop('EXPECTED_DENIAL_UNEXPECTEDLY_SUCCEEDED');refuse('EXPECTED_DENIAL_UNEXPECTEDLY_SUCCEEDED');}}
+            return response;}
+        });
+        await options.beforeTrustedScopedControl(Object.freeze({control:c,window:controller.ledger.window,clientSource:controller.receipt.clientSource,serverSource:controller.receipt.serverSource,work:capture.work,session:capture.session,claimRedactedBytes:capture.claimRedactedBytes,sessionRedactedBytes:capture.sessionRedactedBytes,snapshot:capture.snapshot,snapshotRawBytes:capture.snapshotRawBytes,channel,leaseExpiresAt:()=>{ensure();scopedSignal.throwIfAborted();if(preNativeControl!==c||!state.leaseExpiresAt)refuse('ACTUAL_CONTROL_LEASE_REQUIRED');return state.leaseExpiresAt;}}),scopedSignal);
+        refuse('CONTROL_CHECKPOINT_MUST_NOT_START_NATIVE');
+      }if(state.held){if(!options.beforeScopedControl)refuse('DECLARED_CONTROL_CHECKPOINT_REQUIRED');await options.beforeScopedControl(workId,scopedSignal);refuse('CONTROL_CHECKPOINT_MUST_NOT_START_NATIVE');}}};
     const config=await adapter.discover(context,saved.configuration);if(!adapter.startupCheck)refuse('READONLY_STARTUP_CHECK_REQUIRED');await adapter.startupCheck(config,context);
     bridge=await adapter.createBridge(config,context);await bridge.connector.start();await bridge.connector.checkStatus();
     const send=createHostTaskSender(options.stateDir,saved,()=>{ensure();return bridge!.connector;});
@@ -182,6 +247,20 @@ export async function createContinuationReceiver(options:{
       }finally{for(const f of flows)forget(f.workId);claims=[];claimIndex=0;}
     };
     const runOne=async(flowId:string,workId:string,caseId:string,evidenceSha256:string)=>(await runMany([{flowId,workId,caseId,evidenceSha256}]))[0];
+    const runPreNativeControl=async(input:PreNativeControl)=>{
+      ensure();if(active.size||recovery||preNativeControl||input.role!==role||!options.beforeTrustedScopedControl)refuse('EXACT_PRE_NATIVE_CONTROL_REQUIRED');
+      const filename=path.join(options.stateDir,'scoped-runs',input.workId+'.json');
+      const noJournal=async()=>{try{await fs.stat(filename);refuse('CONTROL_MUST_PRECEDE_NATIVE_JOURNAL');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}};
+      await noJournal();controller.beginPreNativeControl(input);preNativeControl=Object.freeze({...input});const baseline=controller.ledger.snapshot().chargedAttempts;
+      const state:ActiveWork={...input,flowId:'pre-native-control:'+input.controlId,humanEnd:false,settled:false,failed:false,held:true,workStop:new AbortController()};active.set(input.workId,state);claims=[input.workId];claimIndex=0;
+      try{
+        let errorCode:string|undefined;try{await bridge!.connector.scopedWakeWorkDriver().processWorkOnce(AbortSignal.any([signal,state.workStop!.signal]));}catch(error){errorCode=String((error as {code?:string}).code??'CONTROLLED_PRE_NATIVE_STOP');}
+        await noJournal();if(!state.controlCapture?.entered||state.settled)refuse('ACTUAL_CONTROL_SCOPE_REQUIRED');
+        // This is only execution/capture evidence. The caller still has to prove
+        // denial, ended scope, retryable settlement and canonical reoffer.
+        return Object.freeze({controlId:input.controlId,workId:input.workId,caseId:input.caseId,status:'stopped_before_native' as const,errorCode,claimRedactedSha256:hash(state.controlCapture.claimRedactedBytes),sessionRedactedSha256:hash(state.controlCapture.sessionRedactedBytes!),snapshotSha256:hash(state.controlCapture.snapshotRawBytes!),modelPrompts:0 as const,journalAbsent:true as const,modelChargedAttemptsBefore:baseline,modelChargedAttemptsAfter:controller.ledger.snapshot().chargedAttempts,sessionEndRawBytes:state.sessionEndRawBytes,failureRequestRedactedBytes:state.controlCapture.failureRequestRedactedBytes,failureResponseRawBytes:state.controlCapture.failureResponseRawBytes});
+      }finally{forget(input.workId);claims=[];claimIndex=0;preNativeControl=undefined;if(controller.active())controller.endPreNativeControl(input.controlId);}
+    };
     const runHeldControl=async(flowId:string,workId:string,caseId:string,evidenceSha256:string)=>{
       if(!options.beforeScopedControl||!options.verifyHeldControl)refuse('DECLARED_CONTROL_CHECKPOINT_REQUIRED');open([{flowId,workId,caseId,evidenceSha256}]);const state=active.get(workId)!;state.held=true;state.workStop=new AbortController();
       try{
@@ -200,7 +279,7 @@ export async function createContinuationReceiver(options:{
         if(!state.failed||hash(await fs.readFile(path.join(options.stateDir,'scoped-runs',expected.workId+'.json')))!==expected.journalSha256)throw failure??new Error('RETAINED_FAILURE_RECOVERY_UNVERIFIED');await options.record({kind:'retained_terminal_failed_without_reprompt',role,workId:expected.workId,journalUnchanged:true});
       }finally{forget(expected.workId);recovery=undefined;claims=[];claimIndex=0;}
     };
-    return{runOne,runMany,runHeldControl,recoverRetainedFailure,connector:bridge.connector,
+    return{runOne,runMany,runHeldControl,runPreNativeControl,scopedFacts,nativeFacts,recoverRetainedFailure,connector:bridge.connector,
       cancelHeldWork:(workId?:string)=>{if(workId)active.get(workId)?.workStop?.abort();else{if(active.size>1)refuse('EXACT_HELD_WORK_REQUIRED');for(const state of active.values())state.workStop?.abort();}},
       async awaitMeterIdle(){while(controller.ledger.snapshot().pending){ensure();await delay(20,undefined,{signal});}},
       async close(){local.abort();targets?.closeAll();await control?.close();await bridge?.close();active.clear();scopedTokens.clear();issuedTokens.clear();await unlock();}};
