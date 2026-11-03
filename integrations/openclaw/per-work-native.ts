@@ -22,7 +22,9 @@ export async function prepareOwnedOpenClawFactory(options:NativeFactoryPreparati
  const manifest=path.join(options.destinationNativeRoot,'envoi-native-source-copy.json');
  try{await fs.access(manifest);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;
   const source={'model-registry-Bc1CKDx-.mjs':await fs.readFile(path.join(options.sourceNativeRoot,'dist/model-registry-Bc1CKDx-.mjs'),'utf8'),'selection-BCmRjyeC.mjs':await fs.readFile(path.join(options.sourceNativeRoot,'dist/selection-BCmRjyeC.mjs'),'utf8')};
-  const patched=prepareNativeObserverPatch(source);await fs.mkdir(path.dirname(options.destinationNativeRoot),{recursive:true});await fs.mkdir(options.destinationNativeRoot,{recursive:false});await fs.cp(options.sourceNativeRoot,options.destinationNativeRoot,{recursive:true,force:false,errorOnExist:true,preserveTimestamps:true,dereference:true});
+  const patched=prepareNativeObserverPatch(source);await fs.mkdir(path.dirname(options.destinationNativeRoot),{recursive:true});
+  try{await fs.lstat(options.destinationNativeRoot);throw Error('INCOMPLETE_NATIVE_SOURCE_COPY_REVIEW_REQUIRED');}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+  await fs.cp(options.sourceNativeRoot,options.destinationNativeRoot,{recursive:true,force:false,errorOnExist:true,preserveTimestamps:true,dereference:true});
   for(const[name,bytes]of Object.entries(patched))await fs.writeFile(path.join(options.destinationNativeRoot,'dist',name),bytes,{mode:0o600});
   await fs.writeFile(manifest,JSON.stringify({nativeVersion:'2026.10.5',sources:await sourceHashes(options.destinationNativeRoot)}),{flag:'wx',mode:0o600});
  }
@@ -31,16 +33,18 @@ export async function prepareOwnedOpenClawFactory(options:NativeFactoryPreparati
  const pins=Object.freeze({clientSource:options.clientSource,nativeSourceSha256:closedNativeManifestDigest(sources),factoryPolicySha256:options.factoryPolicySha256}),factory=Object.freeze({})as OwnedOpenClawFactory;
  await fs.mkdir(options.workRoot,{recursive:true,mode:0o700});factories.set(factory,{options:Object.freeze({...options}),pins,sources,prepared:new Set()});return{factory,pins};
 }
-export async function assertOwnedOpenClawFactory(factory:OwnedOpenClawFactory,expected:Readonly<OwnedOpenClawFactoryPins>,signal:AbortSignal){signal.throwIfAborted();const state=factories.get(factory);if(!state)throw Error('PREPARED_OWNED_NATIVE_FACTORY_REQUIRED');
+async function checkFactory(factory:OwnedOpenClawFactory,expected:Readonly<OwnedOpenClawFactoryPins>,signal:AbortSignal,fullTree:boolean){signal.throwIfAborted();const state=factories.get(factory);if(!state)throw Error('PREPARED_OWNED_NATIVE_FACTORY_REQUIRED');
  if(Object.keys(expected).length!==3||Object.entries(state.pins).some(([k,v])=>expected[k as keyof OwnedOpenClawFactoryPins]!==v))throw Error('OWNED_NATIVE_FACTORY_BINDING_MISMATCH');
- await state.options.authorize();signal.throwIfAborted();if(await fileHash(state.options.childEntry)!==state.options.childEntrySha256||closedNativeManifestDigest(await sourceHashes(state.options.destinationNativeRoot))!==state.pins.nativeSourceSha256)throw Error('OWNED_NATIVE_FACTORY_SOURCE_DRIFT');
+ await state.options.authorize();signal.throwIfAborted();if(await fileHash(state.options.childEntry)!==state.options.childEntrySha256)throw Error('OWNED_NATIVE_FACTORY_SOURCE_DRIFT');
+ const critical=Object.fromEntries(await Promise.all(Object.entries(CLOSED_NATIVE_BOOTSTRAP_FILES).map(async([k,p])=>[k,await fileHash(path.join(state.options.destinationNativeRoot,p))])));if(Object.entries(critical).some(([k,v])=>state.sources[k]!==v)||fullTree&&await nativeCodeTreeDigest(state.options.destinationNativeRoot)!==state.sources.packageTree)throw Error('OWNED_NATIVE_FACTORY_SOURCE_DRIFT');
  return Object.freeze({...state.pins,kind:'actual_prepared_native_factory',nativeGatewayStarted:false,modelPromptsSubmitted:0});
 }
+export async function assertOwnedOpenClawFactory(factory:OwnedOpenClawFactory,expected:Readonly<OwnedOpenClawFactoryPins>,signal:AbortSignal){return checkFactory(factory,expected,signal,true);}
 export interface PrepareNativeWork{binding:ClosedNativeBinding;canonical:{recipientAgentId:string;installationId:string;fence:number};gatewayPort:number;proxyToken:string;proxyIdentity:string;signal:AbortSignal;}
 type Prepared={factory:OwnedOpenClawFactory;binding:ClosedNativeBinding;paths:{stateDirectory:string;configurationPath:string;workspace:string;agentState:string};target:OpenClawWorkTarget;};
 declare const workBrand:unique symbol;export type PreparedOwnedOpenClawWork=Readonly<{[workBrand]:true}>;const works=new WeakMap<object,Prepared>();
 /** Copies private native configuration locally; never copies an Envoi credential/journal store. */
-export async function prepareOwnedOpenClawWork(factory:OwnedOpenClawFactory,input:PrepareNativeWork){const state=factories.get(factory);if(!state)throw Error('PREPARED_OWNED_NATIVE_FACTORY_REQUIRED');await assertOwnedOpenClawFactory(factory,state.pins,input.signal);
+export async function prepareOwnedOpenClawWork(factory:OwnedOpenClawFactory,input:PrepareNativeWork){const state=factories.get(factory);if(!state)throw Error('PREPARED_OWNED_NATIVE_FACTORY_REQUIRED');await checkFactory(factory,state.pins,input.signal,false);
  const b=input.binding;if(!/^msg_[A-Za-z0-9_-]+$/.test(b.workId)||!/^agent_[A-Za-z0-9_-]+$/.test(input.canonical.recipientAgentId)||!/^installation_[A-Za-z0-9_-]+$/.test(input.canonical.installationId)||!Number.isSafeInteger(input.canonical.fence)||input.canonical.fence<1||state.prepared.has(b.workId)||!Number.isInteger(input.gatewayPort)||input.gatewayPort<1||input.gatewayPort>65535)throw Error('NEW_EXACT_NATIVE_WORK_REQUIRED');state.prepared.add(b.workId);
  const root=inside(state.options.workRoot,path.join(state.options.workRoot,b.workId)),paths={stateDirectory:path.join(root,'state'),configurationPath:path.join(root,'openclaw.json'),workspace:path.join(root,'workspace'),agentState:path.join(root,'agent-state')};
  await fs.mkdir(root,{recursive:false,mode:0o700});for(const d of[paths.stateDirectory,paths.workspace,paths.agentState])await fs.mkdir(d,{mode:0o700});
@@ -59,7 +63,7 @@ export async function prepareOwnedOpenClawWork(factory:OwnedOpenClawFactory,inpu
 }
 /** Exact canonical scope and per-work personal receipts are required AFTER private preparation. */
 export async function startOwnedOpenClawWork(factory:OwnedOpenClawFactory,prepared:PreparedOwnedOpenClawWork,options:{canonical:{recipientAgentId:string;installationId:string;fence:number};capabilitySha256:string;ownerSelectionSha256:string;meterToken:string;environment:NodeJS.ProcessEnv;signal:AbortSignal;authorize(target:OpenClawWorkTarget):Promise<void>;ports:OwnedClosedNativeOptions['ports']}){
- const state=factories.get(factory),work=works.get(prepared);if(!state||!work||work.factory!==factory)throw Error('EXACT_PREPARED_NATIVE_WORK_REQUIRED');await assertOwnedOpenClawFactory(factory,state.pins,options.signal);
+ const state=factories.get(factory),work=works.get(prepared);if(!state||!work||work.factory!==factory)throw Error('EXACT_PREPARED_NATIVE_WORK_REQUIRED');await checkFactory(factory,state.pins,options.signal,false);
  if(Object.entries(options.canonical).some(([k,v])=>work.target.binding[k as keyof typeof options.canonical]!==v))throw Error('PREPARED_NATIVE_CANONICAL_SCOPE_CHANGED');
  const target=Object.freeze({...work.target,binding:Object.freeze({...work.target.binding,...options.canonical}),ownerSelectionSha256:options.ownerSelectionSha256});await options.authorize(target);
  const handle=await startOwnedClosedNativeProcess({nodeExecutable:state.options.nodeExecutable,nativeEnvironmentFile:state.options.nativeEnvironmentFile,childEntry:state.options.childEntry,childEntrySha256:state.options.childEntrySha256,
