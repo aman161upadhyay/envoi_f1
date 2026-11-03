@@ -258,6 +258,9 @@ export async function requestBudgetMeter(options: {
   ledger: RequestBudgetLedger; bindings: ReadonlyArray<{ role: Role; token: string; models: readonly string[] }>;
   active?: () => boolean; signal: AbortSignal; fetch?: typeof fetch;
   allowWork?: (role:Role,nativeToken:string)=>boolean;
+  /** Consume an out-of-band, actual owned-native intent for these exact bytes.
+   * This callback NEVER charges: this meter remains the sole durable owner. */
+  authorizePhysical?(request:Readonly<{role:Role;nativeToken:string;window:string;bodySha256:string;deadlineUnixMs:number}>,signal:AbortSignal):Promise<void>;
 }) {
   const upstream = options.fetch ?? fetch, active = options.active ?? (() => false);
   const servedWindow = options.ledger.window;
@@ -295,6 +298,14 @@ export async function requestBudgetMeter(options: {
       const nativeToken = req.headers['x-envoi-meter-work'];
       if (!exactHash(nativeToken)) return respond(res, 403, 'NATIVE_WORK_BINDING_REQUIRED');
       if(options.allowWork&&!options.allowWork(binding.role,nativeToken))return respond(res,403,'NATIVE_WORK_NOT_ACTIVE');
+      if(options.authorizePhysical){
+        const commitment=Object.freeze({role:binding.role,nativeToken,window:servedWindow,bodySha256:hash(body),deadlineUnixMs:options.ledger.snapshot().activeDeadline!});
+        let abort=()=>{};
+        try{await Promise.race([Promise.resolve().then(()=>{controller.signal.throwIfAborted();return options.authorizePhysical!(commitment,controller.signal);}),
+          new Promise<never>((_,reject)=>{abort=()=>reject(controller.signal.reason);controller.signal.addEventListener('abort',abort,{once:true});if(controller.signal.aborted)abort();})]);}
+        finally{controller.signal.removeEventListener('abort',abort);}
+        controller.signal.throwIfAborted();
+      }
       attempt = await options.ledger.reserve(binding.role, nativeToken); // durable fsync BEFORE upstream bytes
       if (!active() || controller.signal.aborted || options.allowWork&&!options.allowWork(binding.role,nativeToken)) return respond(res, 503, 'WINDOW_NOT_ACTIVE');
       const headers = new Headers();
