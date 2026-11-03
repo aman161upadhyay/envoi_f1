@@ -96,10 +96,11 @@ describe('scoped connector wake driver', () => {
     const test = harness();
     const driver = test.connector.scopedWakeWorkDriver();
     expect(Object.isFrozen(driver)).toBe(true);
-    expect(Object.keys(driver).sort()).toEqual(['nextAvailableInMs', 'processWorkOnce', 'revalidateLiveLeases']);
+    expect(Object.keys(driver).sort()).toEqual(['nextAvailableInMs', 'processWorkBatch', 'processWorkOnce', 'revalidateLiveLeases']);
     expect(JSON.stringify(driver)).not.toMatch(/PRIVATE|token|lease/i);
     test.options.caseSessionHandler = undefined;
     expect(() => driver.processWorkOnce()).toThrow(expect.objectContaining({ code: 'SCOPED_HANDLER_REQUIRED' }));
+    expect(() => driver.processWorkBatch([{workId:'msg_explicit',caseId:'case_explicit'}])).toThrow(expect.objectContaining({ code: 'SCOPED_HANDLER_REQUIRED' }));
     await expect(driver.revalidateLiveLeases()).rejects.toMatchObject({ code: 'SCOPED_HANDLER_REQUIRED' });
     expect(test.fetcher).not.toHaveBeenCalled();
   });

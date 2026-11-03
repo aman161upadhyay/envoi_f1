@@ -27,6 +27,24 @@ function claim(flowId:string,role:'je1'|'je2'|'testowner',flowCases:Record<strin
   if(flowId==='declined-resume')Object.assign(message,{kind:'humanDecision',type:'humanDecision',inboxId:'inbox_test',recipientInboxId:'inbox_test',senderType:'human',senderHumanId:'human_fixture',from:{humanId:'human_fixture'},counterpartyAgentId:'agent_other',counterpartyInboxId:'inbox_other',counterpartyAddress:'other@inert.example',requestId:'request_fixture',policyEvaluationId:'policy_eval_fixture',action:'proposal.accept',outcome,text:'Declined. Leave open.',status:'delivered',createdAt:at,deliveredAt:at,updatedAt:at});
   return {workId,message:message as {id:string;caseId:string;[key:string]:unknown}};
 }
+it('separates an exact pre-native control from graph admission and leaves all physical history untouched',async()=>{
+  const s=await setup(),c=await ContinuationController.open(s),before=await fs.readFile(c.ledger.filename,'utf8');
+  const work=claim('private-backlog','je2',s.flowCases),control={controlId:'pause-private',mode:'pause' as const,role:'je2' as const,caseId:work.message.caseId,workId:work.workId,evidenceSha256:h('4')};
+  c.beginPreNativeControl(control);expect(c.modelActive()).toBe(false);
+  c.observePreNativeControlClaim(control.controlId,'je2',work);
+  expect(()=>c.observePreNativeControlClaim(control.controlId,'je2',{...work,message:{...work.message,recipientAgentId:'agent_other'}})).toThrow('CANONICAL_CONTROL_WORK_MISMATCH');
+  expect(()=>c.releaseGroup(['private-backlog'])).toThrow('PRE_NATIVE_CONTROL_ACTIVE');
+  await expect(c.nativeGuard('je2',h('6'))({workId:work.workId,sessionId:'native_forbidden',deadlineUnixMs:Date.now()+1000},new AbortController().signal)).rejects.toThrow('PRE_NATIVE_CONTROL_FORBIDS_NATIVE');
+  c.endPreNativeControl(control.controlId);expect(await fs.readFile(c.ledger.filename,'utf8')).toBe(before);
+  expect(c.summary().budget.chargedAttempts).toBe(30);expect(c.summary().released).toEqual([]);
+  expect(()=>c.beginPreNativeControl(control)).toThrow('EXACT_PRE_NATIVE_CONTROL_REQUIRED');
+  c.releaseGroup(['private-backlog']);
+});
+it('refuses unknown cases and controls while a native group or physical request is unresolved',async()=>{
+  const s=await setup(),c=await ContinuationController.open(s),control={controlId:'expiry',mode:'expiry' as const,role:'je1' as const,caseId:s.flowCases.green,workId:'msg_control',evidenceSha256:h('4')};
+  expect(()=>c.beginPreNativeControl({...control,caseId:'case_unknown'})).toThrow('EXACT_PRE_NATIVE_CONTROL_REQUIRED');
+  c.releaseGroup(['green']);expect(()=>c.beginPreNativeControl(control)).toThrow('PRIOR_FLOW_NOT_RECONCILED');
+});
 it('refuses missing new approval, old source, stale guards and expired windows before any seed',async()=>{
   const s=await setup();
   for(const receipt of [{...s.receipt,ownerApproved:false},{...s.receipt,clientSource:h('f')},{...s.receipt,hardStopUtc:new Date(Date.now()-1).toISOString()}])await expect(ContinuationController.open({...s,receipt:receipt as ContinuationReceipt})).rejects.toThrow('FRESH_EXACT_CONTINUATION_APPROVAL_REQUIRED');

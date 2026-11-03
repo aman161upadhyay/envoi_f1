@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { nativeWorkToken, RequestBudgetLedger, requestBudgetMeter, type ModelBudgetAmendment } from './request-budget';
 import { continuationAllocation,continuationRequirements } from './continuation-plan';
@@ -144,19 +145,58 @@ describe('durable physical-attempt budget', () => {
 });
 
 describe('authenticated physical request meter with a mocked fixed HTTPS upstream',()=>{
-  async function meter(options: { deadlineMs?:number; upstream?:typeof fetch;allowWork?:(role:string,token:string)=>boolean }={}) {
+  async function meter(options: { deadlineMs?:number; upstream?:typeof fetch;allowWork?:(role:string,token:string)=>boolean;authorizePhysical?:Parameters<typeof requestBudgetMeter>[0]['authorizePhysical'] }={}) {
     const s=await setup();await s.ledger.selectPhase('hermes',['private'],Date.now()+(options.deadlineMs??10000));const controller=new AbortController();let current=true;
     const upstream=options.upstream??vi.fn(async(url,init)=>{
       expect(url).toBe('https://api.anthropic.com/v1/messages');expect(init?.redirect).toBe('error');expect(s.ledger.snapshot().chargedAttempts).toBeGreaterThan(30);
       expect((await fs.readFile(s.filename,'utf8')).includes('"kind":"attempt"')).toBe(true);return Response.json({id:'inert'});
     });
-    const server=await requestBudgetMeter({ledger:s.ledger,bindings:[{role:'je2',token:s.tokens.je2,models:['inert-model']}],active:()=>current,signal:controller.signal,fetch:upstream,allowWork:options.allowWork});
+    const server=await requestBudgetMeter({ledger:s.ledger,bindings:[{role:'je2',token:s.tokens.je2,models:['inert-model']}],active:()=>current,signal:controller.signal,fetch:upstream,allowWork:options.allowWork,authorizePhysical:options.authorizePhysical});
     cleanups.push(async()=>{controller.abort();await server.close();});
     const send=(headers:Record<string,string>={},body=JSON.stringify({model:'inert-model',messages:[]}))=>fetch(server.origin+'/v1/messages',{method:'POST',headers:{'content-type':'application/json','x-phase-c-meter':s.tokens.je2,'x-envoi-meter-role':'je2','x-envoi-meter-window':s.ledger.window,'x-envoi-meter-work':s.work.je2,...headers},body});
     return {...s,server,controller,upstream,send,stop:()=>{current=false;}};
   }
   it('authenticates and fsyncs exactly one charge before the fixed upstream sees bytes',async()=>{
     const s=await meter();expect((await s.send()).status).toBe(200);await vi.waitFor(()=>expect(s.ledger.snapshot().pending).toBe(0));expect(s.ledger.snapshot().chargedAttempts).toBe(31);expect(s.upstream).toHaveBeenCalledTimes(1);
+  });
+  it('consumes one actual native body commitment before exactly one durable reservation',async()=>{
+    let consumed=false;const observed:any[]=[];
+    const s=await meter({authorizePhysical:async(request)=>{observed.push(request);if(consumed)throw Error('NO_NATIVE_INTENT');consumed=true;
+      expect(request.bodySha256).toBe(createHash('sha256').update(JSON.stringify({model:'inert-model',messages:[]})).digest('hex'));
+      expect(s.ledger.snapshot().chargedAttempts).toBe(30);}});
+    expect((await s.send()).status).toBe(200);await vi.waitFor(()=>expect(s.ledger.snapshot().pending).toBe(0));
+    expect((await s.send()).status).toBe(503);expect(s.ledger.snapshot().chargedAttempts).toBe(31);expect(s.upstream).toHaveBeenCalledTimes(1);
+    expect(observed[0]).toMatchObject({role:'je2',nativeToken:s.work.je2,window:s.ledger.window,deadlineUnixMs:s.ledger.snapshot().activeDeadline});
+  });
+  it('refuses headers alone or changed body bytes without any charge/upstream dispatch',async()=>{
+    const commitment=createHash('sha256').update(JSON.stringify({model:'inert-model',messages:[]})).digest('hex');
+    const s=await meter({authorizePhysical:async request=>{if(request.bodySha256!==commitment)throw Error('UNOBSERVED_BODY');}});
+    expect((await s.send({},JSON.stringify({model:'inert-model',messages:[{role:'user',content:'changed'}]}))).status).toBe(503);
+    expect(s.ledger.snapshot().chargedAttempts).toBe(30);expect(s.upstream).not.toHaveBeenCalled();
+  });
+  it('bounds an unresponsive native authorizer by the original control signal',async()=>{
+    let arrive=()=>{};const arrived=new Promise<void>(r=>{arrive=r;});
+    const s=await meter({authorizePhysical:async()=>{arrive();await new Promise(()=>{});}});
+    const pending=s.send();await arrived;s.controller.abort();expect((await pending).status).toBe(503);
+    expect(s.ledger.snapshot().chargedAttempts).toBe(30);expect(s.upstream).not.toHaveBeenCalled();
+  });
+  it('reports the same consumed ticket and exact fsynced reservation through actual response drain',async()=>{
+    const events:any[]=[];const s=await meter({authorizePhysical:async()=>({onMeterEvent:event=>{events.push(event);}})});
+    expect((await s.send()).status).toBe(200);await vi.waitFor(()=>expect(events.map(e=>e.phase)).toEqual(['reserved','dispatched','response']));
+    expect(new Set(events.map(e=>e.reservationId)).size).toBe(1);expect(s.ledger.snapshot()).toMatchObject({chargedAttempts:31,pending:0});
+  });
+  it('keeps actual unknown and not-forwarded meter events distinct, with one charge each',async()=>{
+    const lost:any[]=[];const s=await meter({upstream:vi.fn(async()=>{throw Error('LOST');}),authorizePhysical:async()=>({onMeterEvent:e=>{lost.push(e);}})});
+    expect((await s.send()).status).toBe(503);await vi.waitFor(()=>expect(lost.map(e=>e.phase)).toEqual(['reserved','lost']));
+    const stopped:any[]=[];const t=await meter({authorizePhysical:async()=>({onMeterEvent:e=>{stopped.push(e);if(e.phase==='reserved')t.stop();}})});
+    expect((await t.send()).status).toBe(503);await vi.waitFor(()=>expect(stopped.map(e=>e.phase)).toEqual(['reserved','not_forwarded']));
+    expect(t.upstream).not.toHaveBeenCalled();expect(s.ledger.snapshot().chargedAttempts).toBe(31);expect(t.ledger.snapshot().chargedAttempts).toBe(31);
+  });
+  it('never double-finishes the durable ledger if a terminal observer fails after fsync',async()=>{
+    const events:string[]=[];const s=await meter({authorizePhysical:async()=>({onMeterEvent:e=>{events.push(e.phase);if(e.phase==='response')throw Error('OBSERVER_FAILED');}})});
+    await(await s.send()).text();await vi.waitFor(()=>expect(events).toEqual(['reserved','dispatched','response']));
+    expect(s.ledger.snapshot()).toMatchObject({chargedAttempts:31,pending:0});expect(s.upstream).toHaveBeenCalledTimes(1);
+    const rows=(await fs.readFile(s.filename,'utf8')).trim().split('\n').map(s=>JSON.parse(s));expect(rows.filter(r=>r.kind==='finished')).toHaveLength(1);
   });
   it('denies a closed work fence even while another cohort flow keeps the model phase live',async()=>{
     let allowed=true;const s=await meter({allowWork:()=>allowed});

@@ -17,6 +17,9 @@ const object = (value: unknown): value is Record<string, any> => value !== null 
 const failure = (code = 'HERMES_SCOPED_UNAVAILABLE') => new EnvoiError('Hermes scoped execution unavailable; preserve the turn journal for recovery', undefined, code);
 const daemonUnavailable = () => failure('HERMES_DAEMON_UNREACHABLE');
 const protocol = 'hermes-gateway-v1';
+// Exact native JSON-RPC response bytes, retained only for that parsed result's
+// lifetime. Never reconstruct a native receipt from an Envoi run journal.
+const nativeRpcBytes=new WeakMap<object,string>();
 const requiredCapabilities = ['acp-editor-policy-v1', 'acp-session-mcp-v1'];
 
 export interface HermesScopedHost {
@@ -162,7 +165,7 @@ export function hermesSocketWire(socket: WebSocket): HermesWire {
       if (object(frame.error)) {
         const reason = frame.error.message === 'stale_generation' ? 'HERMES_STALE_GENERATION' : 'HERMES_SCOPED_REFUSED';
         operation.reject(failure(reason));
-      } else if (object(frame.result)) operation.resolve(frame.result);
+      } else if (object(frame.result)){nativeRpcBytes.set(frame.result,event.data);operation.resolve(frame.result);}
       else { operation.reject(failure()); close(); }
     } catch { close(); }
   };
@@ -283,7 +286,7 @@ async function cancelAdmission(wire: HermesHostWire, sessionId: string, admissio
 }
 
 /** Read the original admission only. This never submits, interrupts or repairs a turn. */
-export async function inspectHermesTerminalTurn(host: HermesScopedHost, run: ScopedRunRecord, signal: AbortSignal): Promise<string> {
+export async function inspectHermesTerminalEvidence(host: HermesScopedHost, run: ScopedRunRecord, signal: AbortSignal) {
   const state = run.input[0];
   if (!hermesJournalMatches(run, host) || run.input.length !== 1 || state?.kind !== 'hermes-scoped-v1'
     || run.pending.length || run.admission || typeof state.sessionId !== 'string' || !state.sessionId || state.sessionId.length > 256
@@ -298,11 +301,20 @@ export async function inspectHermesTerminalTurn(host: HermesScopedHost, run: Sco
     const current = receipt(await wire.rpc('prompt.receipt', { session_id: state.sessionId, admission_id: state.admissionId }, bounded), state.sessionId, state.admissionId, wire.profileId);
     if (current.status !== 'terminal' || !['completed', 'failed', 'interrupted', 'cancelled', 'rejected'].includes(current.outcome))
       throw failure('HERMES_TURN_RECOVERY_REQUIRED');
-    return current.outcome;
+    const receiptRawBytes=nativeRpcBytes.get(current);
+    if(!receiptRawBytes||current.input_id!==undefined&&(typeof state.inputId!=='string'||current.input_id!==state.inputId))throw failure('HERMES_TURN_RECOVERY_REQUIRED');
+    return Object.freeze({receipt:Object.freeze({...current,ref:Object.freeze({...current.ref})}),receiptRawBytes,
+      sessionId:state.sessionId,admissionId:state.admissionId,journalInputId:state.inputId,
+      profileId:wire.profileId,instanceId:wire.instanceId,outcome:current.outcome as string});
   } finally {
     if (subscription) await wire.rpc('session.detach', { session_id: state.sessionId, subscription_id: subscription }, AbortSignal.timeout(1000)).catch(() => {});
     wire.close();
   }
+}
+
+/** Backwards-compatible terminal verdict from the same read-only native proof. */
+export async function inspectHermesTerminalTurn(host: HermesScopedHost, run: ScopedRunRecord, signal: AbortSignal): Promise<string> {
+  return(await inspectHermesTerminalEvidence(host,run,signal)).outcome;
 }
 
 export async function checkHermesRequestGate(host: HermesScopedHost, expected: NativeRequestGateExpectation,

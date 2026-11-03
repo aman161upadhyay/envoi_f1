@@ -9,6 +9,7 @@ import { scopedTurnHandler } from '../agent-bridges/scoped-turn';
 import { FileScopedRunStore } from '../grok/scoped-store';
 import { openClawScopedTurn } from './scoped-turn';
 import { guardScopedPreparation,type ScopedPreparationGuard } from '../hermes/native-binding';
+import { OpenClawTargetRegistry, type OpenClawTargetResolver, type OpenClawTargetSelectionAuthority } from './scoped-target';
 
 export interface BridgeConfiguration {
   apiUrl: string;
@@ -20,21 +21,31 @@ export interface BridgeConfiguration {
 }
 
 /** Legacy setup and Quick Connect share the durable work and reply implementation. */
-export async function createOpenClawBridge(config: BridgeConfiguration, options: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number;beforeScopedTurn?:ScopedPreparationGuard } = {}) {
+export async function createOpenClawBridge(config: BridgeConfiguration, options: { env?: NodeJS.ProcessEnv; fetch?: typeof fetch; pollIntervalMs?: number;beforeScopedTurn?:ScopedPreparationGuard;openClawTargetResolver?:OpenClawTargetResolver;openClawTargetSelection?:OpenClawTargetSelectionAuthority } = {}) {
   const env = await openClawRuntimeEnvironment(config.stateDir, options.env ?? process.env, config);
   if (env.ENVOI_SCOPED_TOOLS === 'true') {
     const store = new FileBridgeStore(config.stateDir);
     await store.init();
-    if (!await store.load()) throw new Error('No connector credentials were saved. Run setup first');
+    const saved = await store.load();
+    if (!saved) throw new Error('No connector credentials were saved. Run setup first');
     await saveOpenClawScopedMode(config.stateDir, env);
     const runs = new FileScopedRunStore(config.stateDir);
+    const targets = options.openClawTargetResolver ? new OpenClawTargetRegistry(options.openClawTargetResolver,options.openClawTargetSelection) : undefined;
     const connector = new EnvoiConnector(config.apiUrl, store, {
       ...(options.fetch ? { fetch: options.fetch } : {}),
       ...(options.pollIntervalMs ? { pollIntervalMs: options.pollIntervalMs } : {}),
       caseSessionHandler: scopedTurnHandler({
         admit: message => store.admit(message),
         run: async(turn,host)=>{await guardScopedPreparation(options.beforeScopedTurn,host.workId,turn.signal);
-          return openClawScopedTurn({ gatewayUrl: config.gatewayUrl, gatewayToken: config.gatewayToken, agentId: config.agentId, store: runs, fetch: options.fetch })(turn,host);},
+          if (!targets) return openClawScopedTurn({ gatewayUrl: config.gatewayUrl, gatewayToken: config.gatewayToken, agentId: config.agentId, store: runs, fetch: options.fetch })(turn,host);
+          if (!host.workId) throw new Error('Trusted scoped work identity required');
+          const workId = host.workId, target = await targets.resolve(workId, turn.signal);
+          try {
+            if (target.binding.recipientAgentId !== saved.agentId) throw new Error('Trusted OpenClaw target names another agent');
+            return await openClawScopedTurn({ gatewayUrl: target.gatewayUrl, gatewayToken: target.gatewayToken, agentId: target.agentId, store: runs,
+              fetch: (input, init = {}) => targets.dispatch(workId, input, init, options.fetch ?? fetch) })(turn, host);
+          } finally { targets.close(workId); }
+        },
         async beforeEndTurn(host) {
           if (!host.workId) throw new Error('Scoped runtime needs trusted work identity');
           const record = await runs.load(host.workId);
@@ -43,8 +54,9 @@ export async function createOpenClawBridge(config: BridgeConfiguration, options:
         }
       })
     });
-    return { connector, store, close: async () => {} };
+    return { connector, store, close: async () => { targets?.closeAll(); } };
   }
+  if (options.openClawTargetResolver) throw new Error('Trusted per-work OpenClaw targets require scoped mode');
   const relayToken = env.OPENCLAW_MCP_RELAY_TOKEN;
   if (env.OPENCLAW_MCP_RELAY_PORT && !relayToken) throw new Error('OPENCLAW_MCP_RELAY_TOKEN is required when the relay port is configured');
   if (env.OPENCLAW_MCP_WRITE_ENABLED && env.OPENCLAW_MCP_WRITE_ENABLED !== 'true') throw new Error('OPENCLAW_MCP_WRITE_ENABLED must be true when set');

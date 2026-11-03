@@ -187,8 +187,32 @@ export interface CaseSessionWorkHandler {
 
 export interface ScopedWakeWorkDriver {
   processWorkOnce(signal?: AbortSignal): Promise<boolean>;
+  /** Trusted opt-in only: at most two exact, distinct case/work pairs. Claims
+   * validate serially before either handler is admitted; leases renew while
+   * waiting for that admission barrier. Outcomes remain per work. */
+  processWorkBatch(expectations: readonly ScopedWorkExpectation[], signal?: AbortSignal): Promise<readonly ScopedWorkOutcome[]>;
   revalidateLiveLeases(signal?: AbortSignal): Promise<void>;
   nextAvailableInMs(): number | undefined;
+}
+export type ScopedWorkExpectation = Readonly<{workId: string; caseId: string}>;
+export type ScopedWorkOutcome = ScopedWorkExpectation & ({status: 'fulfilled'; worked: boolean} | {status: 'rejected'; error: unknown});
+
+/** Trusted operator fixture only. Never part of model context or a scoped-tool fallback. */
+export interface SyntheticPolicyFixtureInput {
+  fixtureId: string;
+  windowId: string;
+  approvalSha256: string;
+  approvalDecisionRaw: string;
+  expected: Readonly<{inboxId:string;agentId:string;installationId:string;caseId:string;workId:string;proposalId:string;optionId:string}>;
+  expiresAt: string;
+}
+export interface SyntheticPolicyFixtureResult {
+  id:string;actor:string;requestedAction:'proposal.accept';decision:'needsHuman'|'deny'|'allow';expiresAt:string;
+}
+
+/** Trusted operator denial probe; the lease must already belong to this SDK. */
+export interface StaleControlSettlementProbe {
+  workId:string;leaseToken:string;leaseExpiresAt:string;expected:'paused'|'revoked'|'expired';
 }
 
 export interface ConnectorOptions extends ClientOptions {
@@ -347,6 +371,7 @@ export class EnvoiConnector {
   private stateObserver?: (lifecycle: ConnectorLifecycle) => void;
   private refreshInFlight: Promise<ConnectorSession> | null = null;
   private workInFlight: Promise<boolean> | null = null;
+  private explicitScopedBatch = false;
   private workFollowup = false;
   private nextClaimAt = Infinity;
   private wakeTrigger?: () => void;
@@ -355,6 +380,8 @@ export class EnvoiConnector {
   private readonly activeLeaseChecks = new Map<() => Promise<void>, AbortController>();
   private caseSessionsAvailable = false;
   private readonly mintingCaseWork = new Set<string>();
+  private readonly syntheticFixtureUses = new Set<string>();
+  private readonly controlProbeLeases = new Map<string,{workId:string;leaseExpiresAt:string;retired:boolean;processed:boolean;used:Set<string>}>();
   private wakeTransport: 'not_started' | 'connecting' | 'connected' | 'disconnected' = 'not_started';
   private lastWakeReadyAt?: string;
   private lastWakeEventAt?: string;
@@ -584,7 +611,136 @@ export class EnvoiConnector {
     return session.agentApiToken;
   }
 
+  /** One non-idempotent, separately approved synthetic setup write. The host must
+   * persist its intent/reservation BEFORE invoking this and reconcile every unknown
+   * result without retry. This method shares the normal refresh/store owner, exports
+   * no credential, and deliberately does not use withFreshSession's 401 replay.
+   * The REST route is NOT lease/session-fenced; expected work pins are operator
+   * linkage, not a claim that operational authority became case-session authority.
+   * Actual human-policy provenance is verified by the trusted receipt reader. */
+  async evaluateSyntheticPolicyFixtureOnce(input:Readonly<SyntheticPolicyFixtureInput>, signal?:AbortSignal):Promise<SyntheticPolicyFixtureResult> {
+    const refuse=(code:string):never=>{throw new EnvoiError('Synthetic authority fixture requires reconciliation',undefined,code);};
+    const exact=(v:unknown,keys:string[]):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v)
+      &&Object.keys(v).sort().join()===keys.sort().join();
+    const sha=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+    if(!this.options.caseSessionHandler||!exact(input,['fixtureId','windowId','approvalSha256','approvalDecisionRaw','expected','expiresAt'])
+      ||!sha(input.fixtureId)||!sha(input.windowId)||!sha(input.approvalSha256)||typeof input.approvalDecisionRaw!=='string'
+      ||new TextEncoder().encode(input.approvalDecisionRaw).length>32768
+      ||!exact(input.expected,['inboxId','agentId','installationId','caseId','workId','proposalId','optionId']))refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');
+    const expected=Object.freeze({...input.expected});
+    const request=Object.freeze({fixtureId:input.fixtureId,windowId:input.windowId,expiresAt:input.expiresAt,
+      approvalSha256:input.approvalSha256,approvalDecisionRaw:input.approvalDecisionRaw,expected});
+    for(const [key,prefix]of Object.entries({inboxId:'inbox_',agentId:'agent_',installationId:'installation_',caseId:'case_',workId:'msg_',proposalId:'proposal_',optionId:'option_'}))
+      if(typeof expected[key as keyof typeof expected]!=='string'||!new RegExp('^'+prefix+'[A-Za-z0-9_-]+$').test(expected[key as keyof typeof expected]))refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');
+    let decision:Record<string,unknown>;
+    try{decision=JSON.parse(request.approvalDecisionRaw);}catch{return refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');}
+    if(!exact(decision,['purpose','version','ownerApproved','policyApprovalSha256','fixtureId','windowId','expected','expiresAt','notAfterUtc'])
+      ||decision.purpose!=='phase-c-synthetic-expiry-fixture-execution'||decision.version!==1||decision.ownerApproved!==true
+      ||!sha(decision.policyApprovalSha256)||decision.fixtureId!==request.fixtureId||decision.windowId!==request.windowId
+      ||!exact(decision.expected,Object.keys(expected))||Object.keys(expected).some(key=>(decision.expected as Record<string,unknown>)[key]!==expected[key as keyof typeof expected])
+      ||decision.expiresAt!==request.expiresAt||typeof decision.notAfterUtc!=='string')refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');
+    const expiry=Date.parse(request.expiresAt),stop=Date.parse(decision.notAfterUtc as string);
+    if(!Number.isFinite(expiry)||!Number.isFinite(stop)||new Date(expiry).toISOString()!==request.expiresAt
+      ||new Date(stop).toISOString()!==decision.notAfterUtc||expiry<=Date.now()||stop<=expiry||stop>Date.now()+900000)refuse('SYNTHETIC_FIXTURE_DEADLINE');
+    const raw=request.approvalDecisionRaw;
+    const actualHash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(raw)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+    if(actualHash!==request.approvalSha256)refuse('SYNTHETIC_FIXTURE_APPROVAL_REQUIRED');
+    if(this.syntheticFixtureUses.has(request.fixtureId))refuse('SYNTHETIC_FIXTURE_ALREADY_ATTEMPTED');
+    this.syntheticFixtureUses.add(request.fixtureId);
+    signal?.throwIfAborted();await this.guard(true);
+    const action=new AbortController();this.activeActions.add(action);
+    const bounded=AbortSignal.any([action.signal,...(signal?[signal]:[]),AbortSignal.timeout(this.options.timeoutMs??30000)]);
+    const epoch=this.actionEpoch;
+    const check=async()=>{bounded.throwIfAborted();await this.guard(true);if(epoch!==this.actionEpoch)refuse('REQUEST_CANCELLED');if(Date.now()>=expiry||Date.now()>=stop)refuse('SYNTHETIC_FIXTURE_DEADLINE');};
+    const read=async(response:Response):Promise<Record<string,unknown>>=>{
+      const reader=response.body?.getReader();if(!reader)return refuse('SYNTHETIC_FIXTURE_RESULT_UNKNOWN');
+      const chunks:Uint8Array[]=[];let size=0;
+      const cancel=()=>{void reader.cancel().catch(()=>{});};
+      bounded.addEventListener('abort',cancel,{once:true});
+      try{while(true){bounded.throwIfAborted();const part=await abortableTurn(()=>reader.read(),bounded);if(part.done)break;size+=part.value.length;if(size>65536){cancel();refuse('SYNTHETIC_FIXTURE_RESULT_UNKNOWN');}chunks.push(part.value);}}
+      finally{bounded.removeEventListener('abort',cancel);reader.releaseLock();}
+      const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+      return responsePayload<Record<string,unknown>>(new Response(bytes,{status:response.status,headers:response.headers}),'Synthetic fixture request failed');
+    };
+    try{
+      const session=await abortableTurn(()=>this.freshSession(),bounded);await check();
+      if(session.agentId!==expected.agentId||session.inboxId!==expected.inboxId)refuse('SYNTHETIC_FIXTURE_IDENTITY_MISMATCH');
+      const fetcher=this.options.fetch??fetch;
+      const boundedFetch=async(url:string,init:RequestInit)=>abortableTurn(async()=>{
+        const response=await fetcher(url,init);
+        if(bounded.aborted){void response.body?.cancel().catch(()=>{});bounded.throwIfAborted();}
+        return response;
+      },bounded);
+      const status=await read(await boundedFetch(this.origin+'/api/agent/status',{headers:{authorization:'Bearer '+session.agentApiToken},credentials:'omit',redirect:'error',signal:bounded}));
+      await check();
+      if(status.state!=='active'||status.inboxId!==expected.inboxId||(status.agent as {id?:unknown})?.id!==expected.agentId
+        ||(status.installation as {id?:unknown})?.id!==expected.installationId)refuse('SYNTHETIC_FIXTURE_IDENTITY_MISMATCH');
+      const response=await boundedFetch(`${this.origin}/api/inboxes/${encodeURIComponent(expected.inboxId)}/cases/${encodeURIComponent(expected.caseId)}/policy-evaluations`,{
+        method:'POST',credentials:'omit',redirect:'error',signal:bounded,headers:{'content-type':'application/json',authorization:'Bearer '+session.agentApiToken},
+        body:JSON.stringify({requestedAction:'proposal.accept',actionPayload:{proposalId:expected.proposalId,optionId:expected.optionId},expiresAt:request.expiresAt,grantType:'oneTime'})});
+      const result=await read(response);await check();
+      if(response.status!==201||typeof result.id!=='string'||!/^policy_eval_[A-Za-z0-9_-]+$/.test(result.id)||result.actor!==expected.agentId
+        ||result.requestedAction!=='proposal.accept'||!['needsHuman','deny','allow'].includes(String(result.decision))||result.expiresAt!==request.expiresAt)refuse('SYNTHETIC_FIXTURE_RESULT_UNKNOWN');
+      return{id:result.id as string,actor:expected.agentId,requestedAction:'proposal.accept',decision:result.decision as SyntheticPolicyFixtureResult['decision'],expiresAt:request.expiresAt};
+    }catch(error){
+      if(error instanceof EnvoiError){await this.observeError(error);throw new EnvoiError('Synthetic authority fixture stopped; reconcile its existing intent',error.status,error.code??'SYNTHETIC_FIXTURE_RESULT_UNKNOWN');}
+      await this.guard(true);
+      throw new EnvoiError('Synthetic authority fixture stopped; reconcile its existing intent',undefined,bounded.aborted?'REQUEST_CANCELLED':'SYNTHETIC_FIXTURE_RESULT_UNKNOWN');
+    }finally{this.activeActions.delete(action);}
+  }
+
   get wakeOrigin(): string { return this.origin; }
+
+  /** One actual server-denial probe against a captured retired claim. It cannot
+   * settle a live lease, refresh a revoked credential, or replay an uncertain POST.
+   * Returned raw envelopes stay in the trusted operator, never model context. */
+  async probeStaleControlSettlementOnce(input:Readonly<StaleControlSettlementProbe>,options:{signal:AbortSignal}) {
+    const refuse=(code:string):never=>{throw new EnvoiError('Retired control probe requires reconciliation',undefined,code);};
+    const request=Object.freeze({...input});
+    if(!this.options.caseSessionHandler||Object.keys(request).sort().join()!=='expected,leaseExpiresAt,leaseToken,workId'
+      ||!/^msg_[A-Za-z0-9_-]+$/.test(request.workId)||!['paused','revoked','expired'].includes(request.expected))refuse('ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED');
+    const lease=this.controlProbeLeases.get(request.leaseToken);
+    const eligible=()=>{if(!lease||lease.workId!==request.workId||lease.leaseExpiresAt!==request.leaseExpiresAt||!lease.retired||lease.processed
+      ||request.expected==='expired'&&Date.now()<Date.parse(lease.leaseExpiresAt)+1500)refuse('ACTUAL_RETIRED_CONTROL_LEASE_REQUIRED');};
+    eligible();if(lease!.used.has(request.expected))refuse('CONTROL_PROBE_ALREADY_ATTEMPTED');
+    lease!.used.add(request.expected); // Burn before any await; unknown outcomes are not retried.
+    const signal=AbortSignal.any([options.signal,AbortSignal.timeout(Math.min(this.options.timeoutMs??30000,30000))]);
+    const fetcher=this.options.fetch??fetch;
+    const exchange=async(url:string,init:RequestInit)=>abortableTurn(async()=>{
+      signal.throwIfAborted();const response=await fetcher(url,{...init,credentials:'omit',redirect:'error',signal});
+      if(signal.aborted){void response.body?.cancel().catch(()=>{});signal.throwIfAborted();}
+      const reader=response.body?.getReader();if(!reader)return refuse('CONTROL_PROBE_RESULT_UNKNOWN');
+      const chunks:Uint8Array[]=[];let length=0;
+      const cancel=()=>{void reader.cancel().catch(()=>{});};signal.addEventListener('abort',cancel,{once:true});
+      try{while(true){const part=await abortableTurn(()=>reader.read(),signal);if(part.done)break;length+=part.value.length;
+        if(length>65536){cancel();refuse('CONTROL_PROBE_RESULT_UNKNOWN');}chunks.push(part.value);}}
+      finally{signal.removeEventListener('abort',cancel);reader.releaseLock();}
+      const bytes=new Uint8Array(length);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
+      const raw=new TextDecoder().decode(bytes);let value:Record<string,unknown>;
+      try{value=JSON.parse(raw);}catch{return refuse('CONTROL_PROBE_RESULT_UNKNOWN');}
+      if(!value||typeof value!=='object'||Array.isArray(value))refuse('CONTROL_PROBE_RESULT_UNKNOWN');
+      return{status:response.status,raw,value};
+    },signal);
+    try{
+      signal.throwIfAborted();
+      const session=request.expected==='revoked'?validSession(await this.store.load()):await abortableTurn(()=>this.freshSession(),signal);
+      signal.throwIfAborted();eligible();
+      const status=await exchange(this.origin+'/api/agent/status',{headers:{authorization:'Bearer '+session.agentApiToken}});
+      if(request.expected==='revoked'){
+        if(![401,403].includes(status.status)||!['CREDENTIAL_REVOKED','REVOKED'].includes(String(status.value.code)))refuse('ACTUAL_CONTROL_PRECONDITION_REQUIRED');
+      }else if(status.status!==200||status.value.inboxId!==session.inboxId||(status.value.agent as {id?:unknown})?.id!==session.agentId
+        ||status.value.state!==(request.expected==='paused'?'paused':'active'))refuse('ACTUAL_CONTROL_PRECONDITION_REQUIRED');
+      signal.throwIfAborted();eligible();
+      const settlement=await exchange(this.origin+'/api/agent/work/'+encodeURIComponent(request.workId)+'/complete',{
+        method:'POST',headers:{authorization:'Bearer '+session.agentApiToken,'content-type':'application/json','Idempotency-Key':'control-denial:'+crypto.randomUUID()},
+        body:JSON.stringify({leaseToken:request.leaseToken})});
+      if(settlement.status>=200&&settlement.status<300){await this.transition('STOPPED');return refuse('STALE_CONTROL_UNEXPECTEDLY_PROCESSED');}
+      return{status:Object.freeze({status:status.status,raw:status.raw}),settlement:Object.freeze({status:settlement.status,raw:settlement.raw})};
+    }catch(error){
+      if(error instanceof EnvoiError)throw error;
+      throw new EnvoiError('Retired control probe stopped; do not repeat its POST',undefined,signal.aborted?'REQUEST_CANCELLED':'CONTROL_PROBE_RESULT_UNKNOWN');
+    }
+  }
 
   async wakeRequest(route: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     signal?.throwIfAborted();
@@ -862,6 +1018,10 @@ export class EnvoiConnector {
           throw error;
         });
       },
+      processWorkBatch: (expectations: readonly ScopedWorkExpectation[], signal?: AbortSignal) => {
+        assertScoped();
+        return this.processScopedWorkBatch(expectations, signal);
+      },
       revalidateLiveLeases: async (signal?: AbortSignal) => {
         assertScoped();
         signal?.throwIfAborted();
@@ -885,6 +1045,7 @@ export class EnvoiConnector {
 
   /** Handles canonical work. True means work was consumed, including a permanent failure; consult its receipt for success. */
   processWorkOnce(signal?: AbortSignal): Promise<boolean> {
+    if (this.explicitScopedBatch) return Promise.reject(new EnvoiError('An explicit scoped batch owns work processing', undefined, 'SCOPED_BATCH_IN_FLIGHT'));
     if (this.workInFlight) { this.workFollowup = true; return this.workInFlight; }
     this.workInFlight = (async () => {
       let worked = false;
@@ -897,34 +1058,74 @@ export class EnvoiConnector {
     return this.workInFlight;
   }
 
+  private async processScopedWorkBatch(expectations: readonly ScopedWorkExpectation[], signal?: AbortSignal): Promise<readonly ScopedWorkOutcome[]> {
+    if (this.explicitScopedBatch || this.workInFlight) throw new EnvoiError('Work processing is already in flight', undefined, 'SCOPED_BATCH_IN_FLIGHT');
+    if (!Array.isArray(expectations) || expectations.length < 1 || expectations.length > 2
+      || expectations.some(e => !e || !/^msg_[A-Za-z0-9_-]+$/.test(e.workId) || !/^case_[A-Za-z0-9_-]+$/.test(e.caseId))
+      || new Set(expectations.map(e => e.workId)).size !== expectations.length || new Set(expectations.map(e => e.caseId)).size !== expectations.length)
+      throw new TypeError('At most two distinct exact scoped work/case expectations are required');
+    const expected = expectations.map(e => Object.freeze({workId:e.workId,caseId:e.caseId}));
+    this.explicitScopedBatch = true;
+    const stop = new AbortController(), batchSignal = AbortSignal.any([stop.signal,...(signal ? [signal] : [])]);
+    let admit!: () => void, refuseAdmission!: (reason: unknown) => void;
+    const barrier = new Promise<void>((resolve,reject) => {admit=resolve;refuseAdmission=reject;});void barrier.catch(()=>{});
+    const flights: Promise<boolean>[] = [];
+    try {
+      for (const item of expected) {
+        batchSignal.throwIfAborted();
+        const work = await this.claimWorkAttempt(batchSignal);
+        if (!work || work.workId !== item.workId || work.message.caseId !== item.caseId)
+          throw new EnvoiError('Claim does not match the explicit scoped batch', undefined, 'SCOPED_BATCH_CLAIM_MISMATCH');
+        // Start the existing per-work lease lifecycle now, but neither admit nor
+        // run a handler until every serial claim has been validated.
+        const flight = this.processClaimedWork(work,batchSignal,()=>barrier);void flight.catch(()=>{});flights.push(flight);
+      }
+      batchSignal.throwIfAborted();admit();
+      const outcomes = await Promise.allSettled(flights);
+      return outcomes.map((outcome,index) => outcome.status === 'fulfilled'
+        ? {...expected[index],status:'fulfilled' as const,worked:outcome.value}
+        : {...expected[index],status:'rejected' as const,error:outcome.reason});
+    } catch (error) {
+      refuseAdmission(error);stop.abort(error);
+      await Promise.allSettled(flights);
+      throw error;
+    } finally {this.explicitScopedBatch=false;}
+  }
+
   private async processWorkAttempt(signal?: AbortSignal): Promise<boolean> {
+    const work = await this.claimWorkAttempt(signal);
+    return work ? this.processClaimedWork(work,signal) : false;
+  }
+
+  private async claimWorkAttempt(signal?: AbortSignal): Promise<WorkLease | null> {
     const scoped = this.options.caseSessionHandler;
     const handler = scoped ?? this.options.handler;
     if (!handler) throw new TypeError('A durable work handler is required');
-    if (signal?.aborted) return false;
+    if (signal?.aborted) return null;
     await this.guard();
-    if ((await this.lifecycle()).paused) return false;
+    if ((await this.lifecycle()).paused) return null;
     if (scoped) {
       await this.checkStatus();
       if (!this.caseSessionsAvailable) throw new EnvoiError('Case sessions are unavailable', 404, 'FEATURE_DISABLED');
-      if ((await this.lifecycle()).paused) return false;
+      if ((await this.lifecycle()).paused) return null;
     }
     let claimed: { work: WorkLease | null; state?: string; nextAvailableInMs?: number };
-    try { claimed = await this.postWork<{ work: WorkLease | null; state?: string }>('/api/agent/work/claim', { acceptHumanInstructions: true }); }
+    if (scoped) signal?.throwIfAborted();
+    try { claimed = await this.postWork<{ work: WorkLease | null; state?: string }>('/api/agent/work/claim', { acceptHumanInstructions: true }, undefined, scoped ? signal : undefined); }
     catch (error) {
       if (error instanceof EnvoiError && [404, 405, 501].includes(error.status || 0)) throw new ConnectorContractError();
       throw error;
     }
     this.lastWorkClaimAt = new Date().toISOString();
-    if (claimed.state === 'paused') { await this.observeError(new EnvoiError('Paused', undefined, 'AGENT_PAUSED')); return false; }
+    if (claimed.state === 'paused') { await this.observeError(new EnvoiError('Paused', undefined, 'AGENT_PAUSED')); return null; }
     this.nextClaimAt = Infinity;
     if (claimed.work === null) {
       if (claimed.state === 'idle' && Number.isSafeInteger(claimed.nextAvailableInMs) && claimed.nextAvailableInMs! >= 0)
         this.nextClaimAt = Date.now() + Math.max(1000, claimed.nextAvailableInMs!);
-      return false;
+      return null;
     }
     const work = claimed.work;
-    if (!work || typeof work.workId !== 'string' || typeof work.leaseToken !== 'string' || !Number.isFinite(Date.parse(work.leaseExpiresAt)) || typeof work.message?.id !== 'string' || !work.message.id) {
+    if (!work || typeof work.workId !== 'string' || typeof work.leaseToken !== 'string' || !Number.isFinite(Date.parse(work.leaseExpiresAt)) || typeof work.message?.id !== 'string' || !work.message.id || scoped && work.message.id !== work.workId) {
       throw new EnvoiError('Envoi returned an invalid work claim');
     }
     const session = validSession(await this.store.load());
@@ -940,6 +1141,21 @@ export class EnvoiConnector {
     }
     if (work.message.recipientAgentId !== session.agentId || work.message.status === 'processed') {
       throw new EnvoiError('Envoi returned work for the wrong recipient');
+    }
+    return work;
+  }
+
+  private async processClaimedWork(work: WorkLease, signal?: AbortSignal, admission?: () => Promise<void>): Promise<boolean> {
+    const scoped = this.options.caseSessionHandler, handler = scoped ?? this.options.handler;
+    if (!handler) throw new TypeError('A durable work handler is required');
+    const probeLease=scoped?{workId:work.workId,leaseExpiresAt:work.leaseExpiresAt,retired:false,processed:false,used:new Set<string>()}:undefined;
+    if(probeLease){
+      // Bounded diagnostics must never impose a lifetime work cap on a connector.
+      const previous=this.controlProbeLeases.get(work.leaseToken);
+      if(previous&&!previous.retired)throw new ConnectorContractError();
+      if(this.controlProbeLeases.size>=64){const oldest=[...this.controlProbeLeases].find(([,entry])=>entry.retired);if(oldest)this.controlProbeLeases.delete(oldest[0]);}
+      if(this.controlProbeLeases.size>=64)throw new ConnectorContractError();
+      this.controlProbeLeases.set(work.leaseToken,probeLease);
     }
     const workPath = `/api/agent/work/${encodeURIComponent(work.workId)}`;
     // The server scopes idempotency by agent, so a reclaimed lease needs new
@@ -974,6 +1190,7 @@ export class EnvoiConnector {
         if (renewed.workId !== work.workId || renewed.leaseToken !== work.leaseToken || !Number.isFinite(Date.parse(renewed.leaseExpiresAt))) throw new EnvoiError('Envoi returned an invalid lease renewal');
         if (Date.parse(renewed.leaseExpiresAt) <= Date.now()) throw new EnvoiError('Envoi returned an expired lease renewal');
         leaseExpiresAt = renewed.leaseExpiresAt;
+        if(probeLease)probeLease.leaseExpiresAt=renewed.leaseExpiresAt;
         scheduleDeadline();
       })().catch(error => {
         if (retiring) return;
@@ -1018,6 +1235,7 @@ export class EnvoiConnector {
     let humanReplyError: unknown = null;
     try {
       if (workAbort.signal.aborted) throw new EnvoiError('Work claim was interrupted before admission');
+      if (admission) await abortableTurn(admission,workAbort.signal);
       await this.guard(true);
       await handler.admit(work.message);
       if (workAbort.signal.aborted) throw new EnvoiError('Work lease was interrupted before acknowledgement');
@@ -1053,6 +1271,7 @@ export class EnvoiConnector {
         throw new EnvoiError('Envoi returned an invalid completion');
       }
       settled = true;
+      if(probeLease)probeLease.processed=true;
       await stopRenewal();
       return true;
     } catch (error) {
@@ -1085,6 +1304,7 @@ export class EnvoiConnector {
       this.activeWork.delete(workAbort);
       signal?.removeEventListener('abort', onAbort);
       await stopRenewal();
+      if(probeLease)probeLease.retired=true;
     }
   }
 
@@ -1380,13 +1600,13 @@ export class EnvoiConnector {
   }
 }
 
-function abortableTurn(run: () => Promise<void>, signal: AbortSignal): Promise<void> {
+function abortableTurn<T>(run: () => Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const abort = () => reject(signal.reason);
     signal.addEventListener('abort', abort, { once: true });
     Promise.resolve().then(() => { signal.throwIfAborted(); return run(); }).then(
-      () => { signal.removeEventListener('abort', abort); if (signal.aborted) reject(signal.reason); else resolve(); },
+      value => { signal.removeEventListener('abort', abort); if (signal.aborted) reject(signal.reason); else resolve(value); },
       error => { signal.removeEventListener('abort', abort); reject(signal.aborted ? signal.reason : error); }
     );
   });

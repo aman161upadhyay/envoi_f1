@@ -4,8 +4,11 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import {defaultContinuationFlowPolicy,sameContinuationFlowPolicy,validateReviewedContinuationPlan,validateReviewedGraphApproval,type ReviewedContinuationPlan} from './continuation-plan';
 
 export const REQUEST_CAPS = Object.freeze({ models: 48, messages: 60, cases: 9, installations: 5, assets: 6 });
+export type PhysicalMeterEvent=Readonly<{phase:'reserved'|'dispatched'|'response'|'lost'|'aborted'|'not_forwarded';reservationId:string}>;
+export type PhysicalMeterAuthorization=Readonly<{onMeterEvent(event:PhysicalMeterEvent):void|Promise<void>}>;
 export type ModelBudgetAmendment = Readonly<{ purpose:'phase-c-decline-continuation'; models:number; approvalReceiptSha256:string }>;
 type Role = 'je1' | 'je2' | 'testowner' | 'openclaw';
 type Flow = Readonly<{ id: string; role: Role; requests: number; workHash: string | null }>;
@@ -13,6 +16,9 @@ type Prior = { actualCalls: number; actualHermesApiCalls: number; openClawProvid
   possibleHostMessageEffects: number; canonicalEffects: number; caseIds: string[]; newInstallationsUsed: number;
   priorUploadedAssets: number; stopped: boolean; failure: string; [key: string]: unknown };
 type RecordLine = { previous: string; kind: string; [key: string]: unknown };
+export type ReviewedGraphAmendmentProof=Readonly<{expectedWindow:string;allHostsStopped:boolean;canonicalLeasesZero:boolean;previousNativeTerminal:boolean;chargedAttempts:number;
+  graphApprovalRaw:string;clientSource:string;serverSource:string;packetSha256:string}>;
+const nativeHistoryKinds=new Set(['binding','phase','attempt','dispatched','finished']);
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 function refuse(code: string): never { throw Object.assign(new Error(code), { code }); }
 const exactHash = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
@@ -80,7 +86,9 @@ export class RequestBudgetLedger {
   }
 
   get window() { return (this.lines.filter(l => l.kind === 'window').at(-1)?.window ?? this.lines[0].window) as string; }
-  get flows() { return structuredClone(this.lines[0].flows) as Flow[]; }
+  get reviewedPlan() { return structuredClone(this.lines.filter(l=>l.kind==='plan').at(-1)?.plan) as ReviewedContinuationPlan|undefined; }
+  get reviewedGraphApprovalRaw(){return (this.lines.filter(l=>l.kind==='plan').at(-1)?.proof as ReviewedGraphAmendmentProof|undefined)?.graphApprovalRaw;}
+  get flows() { const plan=this.reviewedPlan;return plan?plan.flows.map(({policy:_policy,...flow})=>flow):structuredClone(this.lines[0].flows) as Flow[]; }
   get prior() { return structuredClone(this.lines[0].prior) as Prior; }
   get modelCap() { return approvedCaps(this.lines[0].modelBudgetAmendment).models; }
   snapshot() {
@@ -106,9 +114,39 @@ export class RequestBudgetLedger {
     if (!flows.length || new Set(flows.map(f => f.id)).size !== flows.length || flows.some(f => !/^[a-z0-9-]{1,80}$/.test(f.id)
       || !['je1','je2','testowner','openclaw'].includes(f.role) || !Number.isSafeInteger(f.requests) || f.requests < 1
       || f.workHash !== null && !exactHash(f.workHash))) refuse('REQUEST_LEDGER_FLOW_INVALID');
-    if (this.lines.some(l => !['seed','binding','phase','attempt','dispatched','finished','window'].includes(l.kind))) refuse('REQUEST_LEDGER_RECORD_INVALID');
+    if (this.lines.some(l => !['seed','binding','phase','attempt','dispatched','finished','window','plan'].includes(l.kind))) refuse('REQUEST_LEDGER_RECORD_INVALID');
+    this.validatePlans();
     if (s.chargedAttempts > this.modelCap || this.flows.reduce((n, f) => n + f.requests, 0) > this.modelCap-30) refuse('REQUEST_LEDGER_CAP_INVALID');
     for (const flow of this.flows) if (s.requests.filter(r => r.flow === flow.id).length > flow.requests) refuse('REQUEST_LEDGER_FLOW_INVALID');
+  }
+  private validatePlans(){
+    let previousFlows=structuredClone(this.lines[0].flows) as Flow[];
+    let policies=new Map(previousFlows.map(f=>[f.id,defaultContinuationFlowPolicy(f.id)]));
+    let previousPlan:ReviewedContinuationPlan|undefined;
+    let window=this.lines[0].window;
+    const approvals=new Set<string>();
+    for(let index=1;index<this.lines.length;index++){
+      const row=this.lines[index];if(row.kind==='window')window=row.window;
+      if(row.kind!=='plan')continue;
+      const plan=validateReviewedContinuationPlan(row.plan);
+      const proof=row.proof as ReviewedGraphAmendmentProof;
+      const prefix=this.lines.slice(0,index),attempts=prefix.filter(r=>r.kind==='attempt');
+      if(!previousPlan&&prefix.some(r=>nativeHistoryKinds.has(r.kind)))refuse('FIRST_REVIEWED_GRAPH_REQUIRES_UNUSED_NATIVE_HISTORY');
+      const approval=validateReviewedGraphApproval(proof?.graphApprovalRaw,{planSha256:plan.planSha256,window:String(window),clientSource:proof?.clientSource,serverSource:proof?.serverSource,packetSha256:proof?.packetSha256});
+      if(approval.approvalHash!==plan.ownerApprovalHash||row.approvalHash!==approval.approvalHash)refuse('GRAPH_SOURCE_APPROVAL_HASH_MISMATCH');
+      if(row.window!==window||proof?.expectedWindow!==window||proof.allHostsStopped!==true||proof.canonicalLeasesZero!==true||proof.previousNativeTerminal!==true
+        ||proof.chargedAttempts!==30+attempts.length||approvals.has(plan.ownerApprovalHash)
+        ||attempts.some(a=>!prefix.some(f=>f.kind==='finished'&&f.attempt===a.attempt))
+        ||attempts.some(a=>!prefix.some(f=>f.kind==='dispatched'&&f.attempt===a.attempt)&&!prefix.some(f=>f.kind==='finished'&&f.attempt===a.attempt&&f.outcome==='not_forwarded'))
+        ||plan.flows.reduce((n,f)=>n+f.requests,0)>this.modelCap-30)refuse('REVIEWED_GRAPH_RECONCILIATION_REQUIRED');
+      for(const old of previousFlows){
+        const next=plan.flows.find(f=>f.id===old.id),charged=attempts.filter(a=>a.flow===old.id).length;
+        if(!next||next.role!==old.role||next.workHash!==old.workHash||next.requests>old.requests||next.requests<charged
+          ||!sameContinuationFlowPolicy(next.policy,policies.get(old.id)!)||previousPlan&&plan.flowCases[old.id]!==previousPlan.flowCases[old.id])refuse('REVIEWED_GRAPH_HISTORY_CHANGED');
+      }
+      if(previousPlan&&Object.keys(previousPlan.actorIds).some(role=>previousPlan!.actorIds[role as Role]!==plan.actorIds[role as Role]))refuse('REVIEWED_GRAPH_HISTORY_CHANGED');
+      approvals.add(plan.ownerApprovalHash);previousFlows=plan.flows.map(({policy:_policy,...flow})=>flow);policies=new Map(plan.flows.map(f=>[f.id,f.policy]));previousPlan=plan;
+    }
   }
   /** Called only by the trusted before-submit guard, after authenticated canonical receipt checks. */
   async bindWork(flowId: string, proof: { canonicalWorkHash: string; nativeToken: string; evidenceHash: string }) {
@@ -155,12 +193,36 @@ export class RequestBudgetLedger {
       await this.append('window', { window, proof: structuredClone(proof) });
     });
   }
+  /** Explicit reviewed graph metadata only: no implicit adoption, new seed, budget increase or deadline reset. */
+  async amendReviewedPlan(value:ReviewedContinuationPlan,proof:ReviewedGraphAmendmentProof){
+    return this.serialized(async()=>{
+      const plan=validateReviewedContinuationPlan(value),current=this.reviewedPlan,s=this.snapshot();
+      if(!current&&this.lines.some(r=>nativeHistoryKinds.has(r.kind)))refuse('FIRST_REVIEWED_GRAPH_REQUIRES_UNUSED_NATIVE_HISTORY');
+      const approval=validateReviewedGraphApproval(proof.graphApprovalRaw,{planSha256:plan.planSha256,window:this.window,clientSource:proof.clientSource,serverSource:proof.serverSource,packetSha256:proof.packetSha256});
+      if(approval.approvalHash!==plan.ownerApprovalHash)refuse('GRAPH_SOURCE_APPROVAL_HASH_MISMATCH');
+      if(proof.expectedWindow!==this.window||proof.allHostsStopped!==true||proof.canonicalLeasesZero!==true||proof.previousNativeTerminal!==true
+        ||proof.chargedAttempts!==s.chargedAttempts||s.pending||s.unresolvedDispatches)refuse('REVIEWED_GRAPH_RECONCILIATION_REQUIRED');
+      if(current&&JSON.stringify(current)===JSON.stringify(plan))return;
+      if(this.lines.some(l=>l.kind==='plan'&&(l.plan as ReviewedContinuationPlan).ownerApprovalHash===plan.ownerApprovalHash)
+        ||plan.flows.reduce((n,f)=>n+f.requests,0)>this.modelCap-30)refuse('REVIEWED_GRAPH_RECONCILIATION_REQUIRED');
+      for(const old of this.flows){
+        const next=plan.flows.find(f=>f.id===old.id),policy=current?.flows.find(f=>f.id===old.id)?.policy??defaultContinuationFlowPolicy(old.id);
+        if(!next||next.role!==old.role||next.workHash!==old.workHash||next.requests>old.requests||next.requests<s.requests.filter(r=>r.flow===old.id).length
+          ||!sameContinuationFlowPolicy(next.policy,policy)||current&&next&&plan.flowCases[old.id]!==current.flowCases[old.id])refuse('REVIEWED_GRAPH_HISTORY_CHANGED');
+      }
+      if(current&&Object.keys(current.actorIds).some(role=>current.actorIds[role as Role]!==plan.actorIds[role as Role]))refuse('REVIEWED_GRAPH_HISTORY_CHANGED');
+      await this.append('plan',{window:this.window,plan,proof:structuredClone(proof),approvalHash:approval.approvalHash});
+    });
+  }
   async selectPhase(phase: 'hermes' | 'openclaw', active: readonly string[], absoluteDeadline: number) {
     return this.serialized(async () => {
       if (this.snapshot().pending) refuse('UNKNOWN_PROVIDER_ATTEMPT');
       if (!active.length || active.some(id => !this.flows.some(f => f.id === id && (phase === 'openclaw' ? f.role === 'openclaw' : f.role !== 'openclaw')))) refuse('HOST_PHASE_REFUSED');
       const roles = active.map(id => this.flows.find(f => f.id === id)!.role);
-      if (new Set(roles).size !== roles.length || active.some(id => !this.lines.some(l => l.kind === 'binding' && l.flow === id && l.window === this.window))) refuse('AMBIGUOUS_OR_UNBOUND_WORK');
+      const sameRole=new Set(roles).size!==roles.length;
+      if(sameRole&&(!this.reviewedPlan?.allowSameRoleCohorts||active.length!==2||new Set(active.map(id=>this.reviewedPlan!.flowCases[id])).size!==2)
+        ||this.reviewedPlan&&active.length>2
+        ||active.some(id=>!this.lines.some(l=>l.kind==='binding'&&l.flow===id&&l.window===this.window)))refuse('AMBIGUOUS_OR_UNBOUND_WORK');
       if (!Number.isSafeInteger(absoluteDeadline) || absoluteDeadline <= Date.now() || absoluteDeadline > Date.now() + 120000) refuse('NATIVE_DEADLINE_REQUIRED');
       if (this.lines.some(l => l.kind === 'phase' && (l.active as string[]).some(id => active.includes(id)))) refuse('NATIVE_DEADLINE_CANNOT_RESET');
       await this.append('phase', { phase, active, deadline: absoluteDeadline });
@@ -198,6 +260,9 @@ export async function requestBudgetMeter(options: {
   ledger: RequestBudgetLedger; bindings: ReadonlyArray<{ role: Role; token: string; models: readonly string[] }>;
   active?: () => boolean; signal: AbortSignal; fetch?: typeof fetch;
   allowWork?: (role:Role,nativeToken:string)=>boolean;
+  /** Consume an out-of-band, actual owned-native intent for these exact bytes.
+   * This callback NEVER charges: this meter remains the sole durable owner. */
+  authorizePhysical?(request:Readonly<{role:Role;nativeToken:string;window:string;bodySha256:string;deadlineUnixMs:number}>,signal:AbortSignal):Promise<void|PhysicalMeterAuthorization>;
 }) {
   const upstream = options.fetch ?? fetch, active = options.active ?? (() => false);
   const servedWindow = options.ledger.window;
@@ -229,13 +294,23 @@ export async function requestBudgetMeter(options: {
     const abort = () => controller.abort(); res.once('close', abort); options.signal.addEventListener('abort', abort, { once: true });
     const monitor = setInterval(() => { if (!active() || options.signal.aborted || Date.now() >= (options.ledger.snapshot().activeDeadline ?? 0)) abort(); }, 20);
     let attempt: string | undefined;
+    let physicalAuthorization:void|PhysicalMeterAuthorization=undefined;
     let upstreamCalled = false;
     try {
       if (!active() || options.signal.aborted) return respond(res, 503, 'WINDOW_NOT_ACTIVE');
       const nativeToken = req.headers['x-envoi-meter-work'];
       if (!exactHash(nativeToken)) return respond(res, 403, 'NATIVE_WORK_BINDING_REQUIRED');
       if(options.allowWork&&!options.allowWork(binding.role,nativeToken))return respond(res,403,'NATIVE_WORK_NOT_ACTIVE');
+      if(options.authorizePhysical){
+        const commitment=Object.freeze({role:binding.role,nativeToken,window:servedWindow,bodySha256:hash(body),deadlineUnixMs:options.ledger.snapshot().activeDeadline!});
+        let abort=()=>{};
+        try{physicalAuthorization=await Promise.race([Promise.resolve().then(()=>{controller.signal.throwIfAborted();return options.authorizePhysical!(commitment,controller.signal);}),
+          new Promise<never>((_,reject)=>{abort=()=>reject(controller.signal.reason);controller.signal.addEventListener('abort',abort,{once:true});if(controller.signal.aborted)abort();})]);}
+        finally{controller.signal.removeEventListener('abort',abort);}
+        controller.signal.throwIfAborted();
+      }
       attempt = await options.ledger.reserve(binding.role, nativeToken); // durable fsync BEFORE upstream bytes
+      await physicalAuthorization?.onMeterEvent({phase:'reserved',reservationId:attempt});
       if (!active() || controller.signal.aborted || options.allowWork&&!options.allowWork(binding.role,nativeToken)) return respond(res, 503, 'WINDOW_NOT_ACTIVE');
       const headers = new Headers();
       const hop = new Set(['host','content-length','connection','transfer-encoding','te','trailer','upgrade','keep-alive','proxy-authenticate','proxy-authorization']);
@@ -247,13 +322,17 @@ export async function requestBudgetMeter(options: {
       upstreamCalled = true;
       const response = await upstream('https://api.anthropic.com/v1/messages', { method: 'POST', redirect: 'error', headers, body, signal: controller.signal });
       await options.ledger.markDispatched(attempt);
+      await physicalAuthorization?.onMeterEvent({phase:'dispatched',reservationId:attempt});
       if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); refuse('UPSTREAM_REDIRECT_REFUSED'); }
       res.writeHead(response.status, { 'content-type': response.headers.get('content-type') ?? 'application/json', 'cache-control': 'no-store' });
       if (response.body) await pipeline(Readable.fromWeb(response.body as never), res); else res.end();
-      await options.ledger.finish(attempt, 'response'); attempt = undefined;
+      const completed=attempt;await options.ledger.finish(completed, 'response');attempt=undefined;
+      await physicalAuthorization?.onMeterEvent({phase:'response',reservationId:completed});
     } finally {
       clearInterval(monitor); res.removeListener('close', abort); options.signal.removeEventListener('abort', abort); controllers.delete(controller);
-      if (attempt) await options.ledger.finish(attempt, !upstreamCalled ? 'not_forwarded' : controller.signal.aborted ? 'aborted' : 'lost');
+      if (attempt){const completed=attempt,outcome=!upstreamCalled?'not_forwarded':controller.signal.aborted?'aborted':'lost';
+        await options.ledger.finish(completed,outcome);attempt=undefined;
+        await physicalAuthorization?.onMeterEvent({phase:outcome,reservationId:completed});}
     }
   }
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
