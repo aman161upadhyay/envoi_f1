@@ -22,6 +22,7 @@ it('prepares and revalidates an actual separate code copy without starting a gat
 it('rejects canonical same/nested copy paths and original-profile nesting before creating destinations',async()=>{
  const s=await setup();for(const destination of[path.join(s.native,'.'),path.join(s.native,'child-copy'),s.root])await expect(prepareOwnedOpenClawFactory({...s.options,destinationNativeRoot:destination})).rejects.toThrow(/SEPARATE_NATIVE_PACKAGE_COPY_REQUIRED|DISJOINT_NATIVE_COPY_PATHS_REQUIRED/);
  await expect(prepareOwnedOpenClawFactory({...s.options,workRoot:s.root})).rejects.toThrow('DISJOINT_NATIVE_COPY_PATHS_REQUIRED');expect(await fs.readFile(path.join(s.native,'package.json'),'utf8')).toBe('{"version":"2026.10.5"}');
+ await expect(prepareOwnedOpenClawFactory({...s.options,workRoot:path.join(s.native,'private-work')})).rejects.toThrow('DISJOINT_NATIVE_COPY_PATHS_REQUIRED');await expect(fs.access(s.options.destinationNativeRoot)).rejects.toMatchObject({code:'ENOENT'});await expect(fs.access(path.join(s.native,'private-work'))).rejects.toMatchObject({code:'ENOENT'});
 });
 it('copies private native config only, preserves provider auth/model and original enrollment, and invokes actual allocator with exact per-work pins',async()=>{
  const s=await setup(),original=await fs.readFile(path.join(s.profile,'openclaw.json')),{factory,pins}=await prepareOwnedOpenClawFactory(s.options),signal=new AbortController().signal;
