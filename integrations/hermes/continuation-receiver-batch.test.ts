@@ -6,10 +6,15 @@ import {contractRegistry,loadContractFixture} from '../contract-fixtures/setup';
 import {createContinuationReceiver} from './continuation-receiver';
 import type {ContinuationController} from './continuation-controller';
 import {openClawTargetDigest,type OpenClawTargetResolver,type OpenClawWorkTarget,type OpenClawTargetSelectionAuthority} from '../openclaw/scoped-target';
-const state=vi.hoisted(()=>({saved:{} as any,context:{} as any,create:undefined as any}));
+import {startOwnedClosedNativeProcess,closedNativeManifestDigest} from '../openclaw/owned-native-process';
+import {EventEmitter} from 'node:events';
+import {prepareOwnedOpenClawFactory} from '../openclaw/per-work-native';
+import {CLOSED_NATIVE_BOOTSTRAP_FILES} from '../openclaw/closed-native-bootstrap';
+import nativeFixture from '../openclaw/native-observer-sources.fixture.json';
+const state=vi.hoisted(()=>({saved:{} as any,context:{} as any,create:undefined as any,discoverCount:0,startupCount:0}));
 vi.mock('../connector/core',()=>({readConnection:async()=>state.saved}));
 vi.mock('../connector/store',()=>({acquireConnectorLock:async()=>async()=>{},privateJson:async()=>{throw Error('UNEXPECTED_TASK_WRITE');}}));
-vi.mock('../connector/adapters',()=>({adapterFor:()=>({discover:async()=>state.saved.configuration,startupCheck:async()=>{},createBridge:async(_c:unknown,ctx:unknown)=>{state.context=ctx;return state.create(ctx);}})}));
+vi.mock('../connector/adapters',()=>({adapterFor:()=>({discover:async()=>{state.discoverCount++;return state.saved.configuration;},startupCheck:async()=>{state.startupCount++;},createBridge:async(_c:unknown,ctx:unknown)=>{state.context=ctx;return state.create(ctx);}})}));
 vi.mock('../connector/control',()=>({startControl:async()=>({close:async()=>{}})}));
 const contract=contractRegistry.contracts.find(c=>c.id==='case-session')!,origin='https://sinaloa-staging.rachelgonsalves821.workers.dev';
 const rpc=(name:string,args:unknown={})=>JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}});
@@ -17,7 +22,7 @@ const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>{re
 const cleanups:Array<()=>Promise<unknown>>=[];
 beforeEach(()=>{vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-17T12:00:06Z'));});
 afterEach(async()=>{for(const fn of cleanups.splice(0).reverse())await fn();vi.useRealTimers();vi.restoreAllMocks();});
-async function setup({role='je1',process,tokenReuse=false,noAction=false,removeAfter=false,tamperAfterEnd=false,expectedCaseState,returnedCaseState='inProgress',decisionOutcome,targetResolver,targetSelection}:{role?:'je1'|'testowner'|'openclaw';process?:(channel:any,context:any)=>Promise<void>;tokenReuse?:boolean;noAction?:boolean;removeAfter?:boolean;tamperAfterEnd?:boolean;expectedCaseState?:'inProgress'|'completed';returnedCaseState?:'inProgress'|'completed';decisionOutcome?:'declined'|null;targetResolver?:OpenClawTargetResolver;targetSelection?:OpenClawTargetSelectionAuthority}={}){
+async function setup({role='je1',process,tokenReuse=false,noAction=false,removeAfter=false,tamperAfterEnd=false,expectedCaseState,returnedCaseState='inProgress',decisionOutcome,targetResolver,targetSelection,ownedNative}:{role?:'je1'|'testowner'|'openclaw';process?:(channel:any,context:any)=>Promise<void>;tokenReuse?:boolean;noAction?:boolean;removeAfter?:boolean;tamperAfterEnd?:boolean;expectedCaseState?:'inProgress'|'completed';returnedCaseState?:'inProgress'|'completed';decisionOutcome?:'declined'|null;targetResolver?:OpenClawTargetResolver;targetSelection?:OpenClawTargetSelectionAuthority;ownedNative?:Parameters<typeof createContinuationReceiver>[0]['openClawOwnedNative']}={}){
  const dir=await fs.mkdtemp(path.join(tmpdir(),'envoi-rx-batch-'));cleanups.push(async()=>{const target=path.resolve(dir);if(!target.startsWith(path.resolve(tmpdir())+path.sep)||!path.basename(target).startsWith('envoi-rx-batch-'))throw Error('CLEANUP_REFUSED');await fs.rm(target,{recursive:true,force:true});});
  const expected={address:'example@envoi.mail',agentId:'agent_example',inboxId:'inbox_example',installationId:'installation_example'};
  state.saved={version:1,runtime:role==='openclaw'?'openclaw':'hermes',apiUrl:origin,address:expected.address,configuration:{gatewayUrl:'http://127.0.0.1:19002',agentId:'inert'},activationSetup:{agentId:expected.agentId,inboxId:expected.inboxId,installationId:expected.installationId}};
@@ -52,7 +57,7 @@ async function setup({role='je1',process,tokenReuse=false,noAction=false,removeA
   }}});return{connector,close:async()=>{}};
  };
  const gate={policySha256:'b'.repeat(64),moduleSha256:'c'.repeat(64),factoriesSha256:'d'.repeat(64),profileHash:'e'.repeat(64),window:'a'.repeat(64),role:role==='openclaw'?'je1' as const:role,meterToken:'f'.repeat(64)};
- const receiver=await createContinuationReceiver({controller,role,stateDir:dir,env:{ENVOI_SCOPED_TOOLS:'true',ENVOI_HERMES_GATE_REQUIRED:'1'},meterToken:'f'.repeat(64),nativeGate:role==='openclaw'?undefined:gate,expected,allowedNewSends:[],fetch:fetcher,reserveOperation,record,openClawTargetResolver:targetResolver,openClawTargetSelection:targetSelection,
+ const receiver=await createContinuationReceiver({controller,role,stateDir:dir,env:{ENVOI_SCOPED_TOOLS:'true',ENVOI_HERMES_GATE_REQUIRED:'1'},meterToken:'f'.repeat(64),nativeGate:role==='openclaw'?undefined:gate,expected,allowedNewSends:[],fetch:fetcher,reserveOperation,record,openClawTargetResolver:targetResolver,openClawTargetSelection:targetSelection,openClawOwnedNative:ownedNative,
   observeTransport:async(input,init,next)=>{const end=new URL(String(input)).pathname.match(/\/work\/([^/]+)\/session\/end$/);if(end)fenceOrder.push({kind:'outer_end_observer',workId:end[1]});const response=await next(input,init);if(end&&tamperAfterEnd)await fs.appendFile(path.join(dir,'scoped-runs',end[1]+'.json'),'\n');return response;}});cleanups.push(receiver.close);
  const flows=works.map((w,index)=>({flowId:index?'second':'first',workId:w.workId,caseId:w.message.caseId,evidenceSha256:String(index+1).repeat(64)}));
  return{receiver,controller,native,flows,fetcher,record,reserveOperation,calls,tokens,fenceOrder,claims:()=>claims};
@@ -111,7 +116,7 @@ function fakeTarget(id:string):OpenClawWorkTarget{
  gatewayUrl:'http://127.0.0.1:'+(id==='msg_a'?41001:41002),gatewayToken:'inert-target-'+id,agentId:'inert',processIdentity:'process_'+id,configurationSha256:'b'.repeat(64),stateDirectorySha256:(id==='msg_a'?'1':'2').repeat(64),configurationPathSha256:(id==='msg_a'?'3':'4').repeat(64),workspaceSha256:(id==='msg_a'?'5':'6').repeat(64),agentStateSha256:(id==='msg_a'?'7':'8').repeat(64),proxyOrigin:'http://127.0.0.1:'+(id==='msg_a'?42001:42002),proxyIdentity:'proxy_'+id,deadlineUnixMs:Date.now()+10000,ownerSelectionSha256:'c'.repeat(64),
  toolChannelSha256:createHash('sha256').update(JSON.stringify(['a'.repeat(64),id,caseId,sessionId,1,token,{kind:'mcp_streamable_http',url:origin+'/mcp'}])).digest('hex')};
 }
-function fakeSelection(target:(id:string)=>OpenClawWorkTarget):OpenClawTargetSelectionAuthority{return{clientSource:'d'.repeat(40),nativeSourceSha256:'e'.repeat(64),window:'a'.repeat(64),readPersonalSelection:async id=>{const t=target(id);return{receiptSha256:t.ownerSelectionSha256,clientSource:'d'.repeat(40),nativeSourceSha256:'e'.repeat(64),window:'a'.repeat(64),role:'openclaw',workId:id,caseSessionId:t.binding.caseSessionId,toolChannelSha256:t.toolChannelSha256,targetSha256:openClawTargetDigest(t)};}};}
+function fakeSelection(target:(id:string)=>OpenClawWorkTarget,nativeSourceSha256='e'.repeat(64)):OpenClawTargetSelectionAuthority{return{clientSource:'d'.repeat(40),nativeSourceSha256,window:'a'.repeat(64),readPersonalSelection:async id=>{const t=target(id);return{receiptSha256:t.ownerSelectionSha256,clientSource:'d'.repeat(40),nativeSourceSha256,window:'a'.repeat(64),role:'openclaw',workId:id,caseSessionId:t.binding.caseSessionId,toolChannelSha256:t.toolChannelSha256,targetSha256:openClawTargetDigest(t)};}};}
 it('routes a reviewed immutable target using the actual SDK-minted canonical session and private channel hash, then rejects late dispatch',async()=>{
  const resolver=vi.fn(async(id:string)=>fakeTarget(id)),s=await setup({role:'openclaw',targetResolver:resolver,targetSelection:fakeSelection(fakeTarget)}),f=s.flows[0];
  const p=await s.receiver.runOne(f.flowId,f.workId,f.caseId,f.evidenceSha256);expect(p.canonicalStatus).toBe('processed');expect(s.calls.filter(c=>c.method==='responses')).toHaveLength(1);
@@ -125,4 +130,47 @@ it('rejects a personally reviewed target for a foreign canonical channel before 
 it('does not treat a trusted resolver or offline receipt as permission to enable multi-OpenClaw admission',async()=>{
  const resolver=vi.fn(async(id:string)=>fakeTarget(id)),s=await setup({role:'openclaw',targetResolver:resolver,targetSelection:fakeSelection(fakeTarget)});
  await expect(s.receiver.runMany(s.flows)).rejects.toMatchObject({code:'SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED'});expect(resolver).not.toHaveBeenCalled();expect(s.claims()).toBe(0);
+});
+it('refuses a forged owned-native object before controller/native dispatch despite resolver and reviewed metadata',async()=>{
+ const s=await setup({role:'openclaw',targetResolver:async id=>fakeTarget(id),targetSelection:fakeSelection(fakeTarget),ownedNative:{factoryPolicySha256:'f'.repeat(64),authorityForTarget:async()=>({}as any)}});
+ Object.assign(s.controller.ledger,{reviewedPlan:{reviewOnly:true},flows:[{role:'openclaw'},{role:'openclaw'}]});const f=s.flows[0];
+ await expect(s.receiver.runOne(f.flowId,f.workId,f.caseId,f.evidenceSha256)).rejects.toMatchObject({code:'OWNED_NATIVE_AUTHORITY_REQUIRED'});
+ expect(s.calls.filter(c=>c.method==='responses')).toHaveLength(0);expect(s.native).not.toHaveBeenCalled();
+});
+it('cancels a never-resolving owned authority lookup before native admission or Gateway dispatch',async()=>{
+ const entered=deferred(),s=await setup({role:'openclaw',targetResolver:async id=>fakeTarget(id),targetSelection:fakeSelection(fakeTarget),ownedNative:{factoryPolicySha256:'f'.repeat(64),authorityForTarget:async()=>{entered.resolve();return new Promise(()=>{});}}}),f=s.flows[0];
+ const running=s.receiver.runOne(f.flowId,f.workId,f.caseId,f.evidenceSha256);await entered.promise;s.controller.control.abort(new Error('OWNER_ABORTED_LOOKUP'));
+ await expect(running).rejects.toMatchObject({code:'REQUEST_CANCELLED'});expect(s.controller.control.signal.reason.message).toBe('OWNER_ABORTED_LOOKUP');expect(s.native).not.toHaveBeenCalled();expect(s.calls.filter(c=>c.method==='responses')).toHaveLength(0);
+});
+it('rejects fabricated prepared-factory metadata before skipping the saved gateway startup checks',async()=>{
+ const before=state.discoverCount;
+ await expect(setup({role:'openclaw',targetResolver:async id=>fakeTarget(id),targetSelection:fakeSelection(fakeTarget),ownedNative:{factoryPolicySha256:'f'.repeat(64),factory:{}as any,authorityForTarget:async()=>({}as any)}})).rejects.toThrow('PREPARED_OWNED_NATIVE_FACTORY_REQUIRED');
+ expect(state.discoverCount).toBe(before);
+});
+it('opens the existing connector against an actual prepared-code factory without probing the obsolete base gateway or inventing scope',async()=>{
+ // Actual source-copy/factory code with fake vendor fixture files in fresh temp;
+ // this is an offline startup-routing test, not a native capability attestation.
+ const root=await fs.mkdtemp(path.join(tmpdir(),'envoi-rx-batch-'));cleanups.push(async()=>{const p=path.resolve(root);if(!p.startsWith(path.resolve(tmpdir())+path.sep)||!path.basename(p).startsWith('envoi-rx-batch-'))throw Error('CLEANUP_REFUSED');await fs.rm(p,{recursive:true,force:true});});
+ const native=path.join(root,'native'),profile=path.join(root,'profile'),entry=path.join(root,'child.mjs');
+ for(const[role,name]of Object.entries(CLOSED_NATIVE_BOOTSTRAP_FILES)){if(role==='observer')continue;const file=path.join(native,name);await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,(nativeFixture.files as any)[path.basename(file)]??'INERT_CODE_'+role);}
+ for(const name of['package.json','node_modules/@openclaw/ai/package.json']){const file=path.join(native,name);await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,'{"version":"2026.10.5"}');}
+ await fs.mkdir(profile);await fs.writeFile(entry,'INERT_CHILD');const authorize=vi.fn(async()=>{}),prepared=await prepareOwnedOpenClawFactory({sourceNativeRoot:native,destinationNativeRoot:path.join(root,'copy'),workRoot:path.join(root,'works'),originalProfile:profile,nodeExecutable:'INERT_NODE',childEntry:entry,childEntrySha256:createHash('sha256').update('INERT_CHILD').digest('hex'),clientSource:'d'.repeat(40),factoryPolicySha256:'f'.repeat(64),authorize});
+ const before={discover:state.discoverCount,startup:state.startupCount},s=await setup({role:'openclaw',targetResolver:async id=>fakeTarget(id),targetSelection:fakeSelection(fakeTarget,prepared.pins.nativeSourceSha256),ownedNative:{factoryPolicySha256:prepared.pins.factoryPolicySha256,factory:prepared.factory,authorityForTarget:async()=>{throw Error('NO_WORK_AT_STARTUP');}}});
+ expect(state.discoverCount).toBe(before.discover);expect(state.startupCount).toBe(before.startup);expect(s.claims()).toBe(0);expect(s.native).not.toHaveBeenCalled();expect(authorize.mock.calls.length).toBeGreaterThan(1);
+ expect(s.record).toHaveBeenCalledWith(expect.objectContaining({kind:'owned_native_factory_ready',nativeGatewayStarted:false,modelPromptsSubmitted:0}));
+});
+// This composes the actual opaque allocator and SDK against a FAKE child IPC
+// dependency. It proves plumbing only and is not an actual native capability.
+class InertOwnedChild extends EventEmitter{pid=123;exitCode:number|null=null;connected=true;send(message:any){if(message.kind==='start')queueMicrotask(()=>this.emit('message',{kind:'ready',nonce:message.nonce,observation:{...message.bootstrap.binding,kind:'actual_native_gateway_bootstrap_observation',runtimeObservation:'pending_first_harness'}}));if(message.kind==='stop')queueMicrotask(()=>{this.emit('message',{kind:'closed',nonce:message.nonce});this.exitCode=0;this.connected=false;this.emit('exit',0);});return true;}kill(){this.exitCode=1;this.connected=false;this.emit('exit',1);return true;}}
+it('composes exact opaque owned-child bootstrap admission with actual SDK per-work target binding',async()=>{
+ const nativeSourceSha256=closedNativeManifestDigest({}),handles:Array<Awaited<ReturnType<typeof startOwnedClosedNativeProcess>>>=[],seen:string[]=[];
+ const s=await setup({role:'openclaw',targetResolver:async id=>fakeTarget(id),targetSelection:fakeSelection(fakeTarget,nativeSourceSha256),ownedNative:{factoryPolicySha256:'f'.repeat(64),authorityForTarget:async(t,signal)=>{
+  const b={...t.binding,toolChannelSha256:t.toolChannelSha256,processIdentity:t.processIdentity,hardStopUnixMs:t.deadlineUnixMs,proxyOrigin:t.proxyOrigin,nativeSources:{}}as any;
+  const handle=await startOwnedClosedNativeProcess({nodeExecutable:'inert',childEntry:'inert',childEntrySha256:createHash('sha256').update('entry').digest('hex'),environment:{},bootstrap:{nativeRoot:'inert',binding:b,port:1,paths:{}as any,sourceSha256:{}as any},pins:{window:t.binding.window,workId:t.binding.workId,caseId:t.binding.caseId,caseSessionId:t.binding.caseSessionId,toolChannelSha256:t.toolChannelSha256,processIdentity:t.processIdentity,clientSource:'d'.repeat(40),nativeSourceSha256,capabilitySha256:(t.binding.workId==='msg_a'?'f':'c').repeat(64),ownerSelectionSha256:t.ownerSelectionSha256,targetSha256:openClawTargetDigest(t)},authorize:async()=>{},meterBinding:{nativeToken:'inert',deadlineUnixMs:t.deadlineUnixMs},ports:{assertLive:()=>{},authorizePhysical:async()=>{throw Error('NO_PHYSICAL_REQUEST_ALLOWED');},recordObservation:async()=>{},recordPhysicalOutcome:async()=>{}},signal},{readBytes:async()=>Buffer.from('entry'),spawnChild:()=>new InertOwnedChild()as any,nonce:()=> 'a'.repeat(64)});
+  handles.push(handle);seen.push(t.binding.workId);return handle.authority;
+ }}});
+ Object.assign(s.controller.ledger,{reviewedPlan:{reviewOnly:true},flows:[{role:'openclaw'},{role:'openclaw'}]});
+ const results=await s.receiver.runMany(s.flows);expect(results).toHaveLength(2);expect(seen.sort()).toEqual(['msg_a','msg_b']);
+ expect(s.native).toHaveBeenCalledTimes(2);expect(s.record).toHaveBeenCalledWith(expect.objectContaining({kind:'owned_native_bootstrap_admitted',runtimeObservation:'pending_first_harness'}));
+ for(const handle of handles)await handle.close();
 });

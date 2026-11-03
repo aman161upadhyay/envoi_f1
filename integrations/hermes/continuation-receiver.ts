@@ -13,7 +13,9 @@ import type { NativeRequestGateExpectation } from './request-gate-attestation';
 import { ContinuationController,type PreNativeControl } from './continuation-controller';
 import type {ContinuationFlowPolicy} from './continuation-plan';
 import {guardNativeSubmission,type NativeSubmissionGuard} from './native-binding';
-import {OpenClawTargetRegistry,type OpenClawTargetResolver,type OpenClawTargetSelectionAuthority} from '../openclaw/scoped-target';
+import {OpenClawTargetRegistry,openClawTargetDigest,type OpenClawWorkTarget,type OpenClawTargetResolver,type OpenClawTargetSelectionAuthority} from '../openclaw/scoped-target';
+import {assertOwnedClosedNativeAuthority,ownedClosedNativeAuthorityPins,type OwnedClosedNativeAuthority} from '../openclaw/owned-native-process';
+import {assertOwnedOpenClawFactory,type OwnedOpenClawFactory} from '../openclaw/per-work-native';
 
 type Role='je1'|'je2'|'testowner'|'openclaw';
 export type ContinuationWork=Readonly<{flowId:string;workId:string;caseId:string;evidenceSha256:string}>;
@@ -34,6 +36,7 @@ type FlowPolicy=ContinuationFlowPolicy;
 const hash=(x:string|Buffer)=>createHash('sha256').update(x).digest('hex');
 function refuse(code:string):never{throw Object.assign(new Error(code),{code});}
 const readEnvelope=async(response:Response)=>{const p=await response.clone().json();return p.result?.content?.[0]?.text?JSON.parse(p.result.content[0].text):null;};
+async function boundedPreparation(operation:()=>Promise<unknown>,signal:AbortSignal){let abort=()=>{};signal.throwIfAborted();try{await Promise.race([Promise.resolve().then(operation),new Promise<never>((_,reject)=>{abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();})]);signal.throwIfAborted();}finally{signal.removeEventListener('abort',abort);}}
 const redactControl=(value:unknown):any=>Array.isArray(value)?value.map(redactControl):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).map(([key,v])=>[key,/token|secret|authorization|credential/i.test(key)?'[REDACTED]':redactControl(v)])):value;
 
 /** One enrollment/control listener; bounded explicit work, never automatic parallelism. */
@@ -52,6 +55,10 @@ export async function createContinuationReceiver(options:{
   /** Trusted local plumbing only; never relaxes the native attribution admission guard. */
   openClawTargetResolver?:OpenClawTargetResolver;
   openClawTargetSelection?:OpenClawTargetSelectionAuthority;
+  /** Actual allocator handle only. JSON/resolver metadata cannot mint authority.
+   * Bootstrap readiness is pending first harness; the owned child's physical
+   * gate still requires its real harness/registry acknowledgement per request. */
+  openClawOwnedNative?:Readonly<{factoryPolicySha256:string;factory?:OwnedOpenClawFactory;authorityForTarget(target:Readonly<OpenClawWorkTarget>,signal:AbortSignal):Promise<OwnedClosedNativeAuthority>}>;
 }) {
   const {controller,role}=options,origin=controller.receipt.serverSource&&'https://sinaloa-staging.rachelgonsalves821.workers.dev';
   if(!controller.active())refuse('CONTINUATION_WINDOW_CLOSED');
@@ -63,6 +70,8 @@ export async function createContinuationReceiver(options:{
     ||options.nativeGate.window!==controller.ledger.window||options.env.ENVOI_HERMES_GATE_REQUIRED!=='1'))refuse('REQUIRED_NATIVE_GATE_EXPECTATION_MISSING');
   if(options.openClawTargetResolver&&role!=='openclaw')refuse('FOREIGN_OPENCLAW_TARGET_REFUSED');
   if(options.openClawTargetResolver&&(!options.openClawTargetSelection||options.openClawTargetSelection.clientSource!==controller.receipt.clientSource||options.openClawTargetSelection.window!==controller.ledger.window))refuse('PERSONAL_OPENCLAW_TARGET_REVIEW_REQUIRED');
+  if(options.openClawOwnedNative&&(role!=='openclaw'||!options.openClawTargetResolver||!options.openClawTargetSelection||!/^[a-f0-9]{64}$/.test(options.openClawOwnedNative.factoryPolicySha256)||typeof options.openClawOwnedNative.authorityForTarget!=='function'))refuse('OWNED_NATIVE_AUTHORITY_REQUIRED');
+  const ownedNative=options.openClawOwnedNative?Object.freeze({factoryPolicySha256:options.openClawOwnedNative.factoryPolicySha256,factory:options.openClawOwnedNative.factory,authorityForTarget:options.openClawOwnedNative.authorityForTarget.bind(options.openClawOwnedNative),nativeSourceSha256:options.openClawTargetSelection!.nativeSourceSha256}):undefined;
   const unlock=await acquireConnectorLock(options.stateDir),local=new AbortController();
   const signal=AbortSignal.any([local.signal,controller.control.signal]);let bridge:RuntimeBridge|undefined,control:Awaited<ReturnType<typeof startControl>>|undefined;
   const runs=new FileScopedRunStore(options.stateDir),upstream=options.fetch??fetch;
@@ -98,7 +107,17 @@ export async function createContinuationReceiver(options:{
     const journalRawBytes=bytes.toString('utf8'),journal=JSON.parse(journalRawBytes);if(journal.workId!==workId)refuse('EXACT_NATIVE_COMPLETION_PROOF_REQUIRED');
     return Object.freeze({window:controller.ledger.window,clientSource:controller.receipt.clientSource,serverSource:controller.receipt.serverSource,role,workId,caseId:state.caseId,frame:state.nativeFrame,session:state.sessionSafe,journalRawBytes});
   };
-  const beforeNativeSubmit:NativeSubmissionGuard=async(frame,bounded)=>{const state=active.get(frame.workId);if(!state||state.held||preNativeControl)refuse('PRE_NATIVE_CONTROL_FORBIDS_NATIVE');await controller.nativeGuard(role,options.meterToken)(frame,bounded);bounded.throwIfAborted();state.nativeFrame=Object.freeze({...frame});};
+  const beforeNativeSubmit:NativeSubmissionGuard=async(frame,bounded)=>{const state=active.get(frame.workId);if(!state||state.held||preNativeControl)refuse('PRE_NATIVE_CONTROL_FORBIDS_NATIVE');
+    if(ownedNative){const target=targets?.get(frame.workId);if(!target||!state.caseSession)refuse('EXACT_OPENCLAW_TARGET_REQUIRED');
+      const authoritySignal=AbortSignal.any([bounded,signal,AbortSignal.timeout(Math.max(1,frame.deadlineUnixMs-Date.now()))]);
+      let capabilitySha256:string|undefined;
+      await guardNativeSubmission(async(_frame,guardSignal)=>{const authority=await ownedNative.authorityForTarget(target,guardSignal);guardSignal.throwIfAborted();
+        const pins=ownedClosedNativeAuthorityPins(authority,guardSignal);
+        assertOwnedClosedNativeAuthority(authority,{window:controller.ledger.window,workId:state.workId,caseId:state.caseId,caseSessionId:state.caseSession!.id,toolChannelSha256:target.toolChannelSha256,processIdentity:target.processIdentity,clientSource:controller.receipt.clientSource,nativeSourceSha256:ownedNative.nativeSourceSha256,capabilitySha256:pins.capabilitySha256,ownerSelectionSha256:target.ownerSelectionSha256,targetSha256:openClawTargetDigest(target)},guardSignal);capabilitySha256=pins.capabilitySha256;
+      },frame,authoritySignal);authoritySignal.throwIfAborted();ensure();if(Date.now()>=frame.deadlineUnixMs)refuse('NATIVE_DEADLINE_EXPIRED');
+      await options.record({kind:'owned_native_bootstrap_admitted',runtimeObservation:'pending_first_harness',role,workId:state.workId,processIdentity:target.processIdentity,capabilitySha256});
+    }
+    await controller.nativeGuard(role,options.meterToken)(frame,bounded);bounded.throwIfAborted();state.nativeFrame=Object.freeze({...frame});};
   const direct:typeof fetch=async(input,init={})=>{
     ensure();const url=new URL(input instanceof Request?input.url:String(input));
     if(url.origin!==origin){
@@ -220,7 +239,15 @@ export async function createContinuationReceiver(options:{
         }),scopedSignal);
         refuse('CONTROL_CHECKPOINT_MUST_NOT_START_NATIVE');
       }if(state.held){if(!options.beforeScopedControl)refuse('DECLARED_CONTROL_CHECKPOINT_REQUIRED');await options.beforeScopedControl(workId,scopedSignal);refuse('CONTROL_CHECKPOINT_MUST_NOT_START_NATIVE');}}};
-    const config=await adapter.discover(context,saved.configuration);if(!adapter.startupCheck)refuse('READONLY_STARTUP_CHECK_REQUIRED');await adapter.startupCheck(config,context);
+    let config;
+    if(ownedNative?.factory){
+      const factorySignal=AbortSignal.any([signal,AbortSignal.timeout(Math.max(1,Math.min(30000,Date.parse(controller.receipt.hardStopUtc)-Date.now())))]);
+      await boundedPreparation(()=>assertOwnedOpenClawFactory(ownedNative.factory!,{clientSource:controller.receipt.clientSource,nativeSourceSha256:ownedNative.nativeSourceSha256,factoryPolicySha256:ownedNative.factoryPolicySha256},factorySignal),factorySignal);factorySignal.throwIfAborted();ensure();
+      // Exact source-prepared factory is the startup authority here. The stopped
+      // historical gateway is not this per-work runtime. createBridge still
+      // validates the saved configuration/scoped mode and uses ONE enrollment.
+      config=saved.configuration;await options.record({kind:'owned_native_factory_ready',nativeGatewayStarted:false,modelPromptsSubmitted:0,factoryPolicySha256:ownedNative.factoryPolicySha256});
+    }else{config=await adapter.discover(context,saved.configuration);if(!adapter.startupCheck)refuse('READONLY_STARTUP_CHECK_REQUIRED');await adapter.startupCheck(config,context);}
     bridge=await adapter.createBridge(config,context);await bridge.connector.start();await bridge.connector.checkStatus();
     const send=createHostTaskSender(options.stateDir,saved,()=>{ensure();return bridge!.connector;});
     control=await startControl(options.stateDir,saved,()=>local.abort(),()=>({status:'running',runtimeChecks:'passed',receiving:'explicit-reviewed-step'}),async value=>{ensure();if(!options.allowedNewSends.some(v=>JSON.stringify(v)===JSON.stringify(value)))throw new HostTaskError('TASK_INVALID');return send(value);});
@@ -229,7 +256,7 @@ export async function createContinuationReceiver(options:{
       ensure();if(active.size||recovery)refuse('ONE_EXPLICIT_NATIVE_FLOW_REQUIRED');
       if(!Array.isArray(flows)||!flows.length||flows.length>2||new Set(flows.map(f=>f.workId)).size!==flows.length||new Set(flows.map(f=>f.caseId)).size!==flows.length||new Set(flows.map(f=>f.flowId)).size!==flows.length)refuse('EXACT_DISTINCT_NATIVE_WORK_REQUIRED');
       const ledger=controller.ledger as unknown as {reviewedPlan?:unknown;flows?:readonly {role:string}[]};
-      if(role==='openclaw'&&(flows.length>1||ledger.reviewedPlan&&(ledger.flows?.filter(f=>f.role==='openclaw').length??0)>1))refuse('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
+      if(role==='openclaw'&&!ownedNative&&(flows.length>1||ledger.reviewedPlan&&(ledger.flows?.filter(f=>f.role==='openclaw').length??0)>1))refuse('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
       for(const f of flows)if(!/^msg_[A-Za-z0-9_-]+$/.test(f.workId)||!/^case_[A-Za-z0-9_-]+$/.test(f.caseId)||!/^[a-f0-9]{64}$/.test(f.evidenceSha256))refuse('EXACT_DISTINCT_NATIVE_WORK_REQUIRED');
       for(const f of flows)controller.expectWork(f.flowId,f.workId,f.evidenceSha256);
       for(const f of flows)active.set(f.workId,{...f,humanEnd:false,settled:false,failed:false});claims=flows.map(f=>f.workId);claimIndex=0;

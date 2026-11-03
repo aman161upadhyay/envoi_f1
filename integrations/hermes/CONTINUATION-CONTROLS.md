@@ -45,7 +45,20 @@ same promise is retained on failure; retrying the snapshot cannot skip it. The
 callback must not recursively request a scoped snapshot or wait for a later
 human action, native completion, or database evidence.
 
-OpenClaw's existing multi-flow refusal remains closed until a separately
-reviewed owned-child authority proves the actual installed native enforcement
-and target/source/window/receipt binding. Resolver objects and capability JSON
-alone do not satisfy it.
+OpenClaw defaults to refusing a multi-flow graph. The explicit owned-native
+path requires a real opaque allocator authority before native admission, bound
+to the actual canonical session/channel, target digest, process, personal
+selection, source and window. The per-work capability hash comes from that
+authority's immutable private pins. It is distinct from the generic
+`factoryPolicySha256`; two children can have different capability receipts.
+Resolver objects, callbacks returning JSON and capability metadata cannot mint
+this authority. Bootstrap evidence remains `pending_first_harness`: the actual
+child must obtain independent real harness/registry acknowledgement before any
+physical request can be authorized by the meter.
+
+An opaque `OwnedOpenClawFactory` may replace the obsolete saved-gateway startup
+probe only after its actual source tree, child bytes and policy authorization
+are revalidated. This starts no gateway, submits no prompt and invents no work
+or case session. The bridge still validates the saved scoped configuration and
+opens the same enrollment store. Without a genuine prepared factory, normal
+gateway discovery/startup checks continue to run.
