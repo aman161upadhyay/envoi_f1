@@ -19,6 +19,10 @@ it('prepares and revalidates an actual separate code copy without starting a gat
  await expect(assertOwnedOpenClawFactory({}as any,pins,new AbortController().signal)).rejects.toThrow('PREPARED_OWNED_NATIVE_FACTORY_REQUIRED');
  await fs.writeFile(path.join(s.options.destinationNativeRoot,'unreviewed-transitive-module.js'),'DRIFT');await expect(assertOwnedOpenClawFactory(factory,pins,new AbortController().signal)).rejects.toThrow('OWNED_NATIVE_FACTORY_SOURCE_DRIFT');
 });
+it('rejects canonical same/nested copy paths and original-profile nesting before creating destinations',async()=>{
+ const s=await setup();for(const destination of[path.join(s.native,'.'),path.join(s.native,'child-copy'),s.root])await expect(prepareOwnedOpenClawFactory({...s.options,destinationNativeRoot:destination})).rejects.toThrow(/SEPARATE_NATIVE_PACKAGE_COPY_REQUIRED|DISJOINT_NATIVE_COPY_PATHS_REQUIRED/);
+ await expect(prepareOwnedOpenClawFactory({...s.options,workRoot:s.root})).rejects.toThrow('DISJOINT_NATIVE_COPY_PATHS_REQUIRED');expect(await fs.readFile(path.join(s.native,'package.json'),'utf8')).toBe('{"version":"2026.10.5"}');
+});
 it('copies private native config only, preserves provider auth/model and original enrollment, and invokes actual allocator with exact per-work pins',async()=>{
  const s=await setup(),original=await fs.readFile(path.join(s.profile,'openclaw.json')),{factory,pins}=await prepareOwnedOpenClawFactory(s.options),signal=new AbortController().signal;
  const binding={window:'c'.repeat(64),workId:'msg_actual',caseId:'case_actual',caseSessionId:'case_session_actual',toolChannelSha256:'d'.repeat(64),processIdentity:'process_actual',stateDirectorySha256:'e'.repeat(64),configurationPathSha256:'e'.repeat(64),workspaceSha256:'e'.repeat(64),agentStateSha256:'e'.repeat(64),nativeAgentId:'main',modelId:'claude-haiku-4-5-20251001',proxyOrigin:'http://127.0.0.1:42001',hardStopUnixMs:Date.now()+120000,nativeSources:{}};

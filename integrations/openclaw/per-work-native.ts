@@ -11,12 +11,15 @@ export interface NativeFactoryPreparation{sourceNativeRoot:string;destinationNat
 type Factory={options:NativeFactoryPreparation;pins:Readonly<OwnedOpenClawFactoryPins>;sources:Record<string,string>;prepared:Set<string>};
 const factories=new WeakMap<object,Factory>();
 const inside=(root:string,target:string)=>{const r=path.resolve(root),p=path.resolve(target);if(p===r||!p.startsWith(r+path.sep))throw Error('NEW_PRIVATE_NATIVE_PATH_REQUIRED');return p;};
+async function canonicalPath(value:string){let current=path.resolve(value),tail:string[]=[];while(true){try{const resolved=path.join(await fs.realpath(current),...tail);return process.platform==='win32'?resolved.toLowerCase():resolved;}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;const parent=path.dirname(current);if(parent===current)throw e;tail.unshift(path.basename(current));current=parent;}}}
+async function disjoint(a:string,b:string){const[x,y]=await Promise.all([canonicalPath(a),canonicalPath(b)]);if(x===y||x.startsWith(y+path.sep)||y.startsWith(x+path.sep))throw Error('DISJOINT_NATIVE_COPY_PATHS_REQUIRED');}
 async function fileHash(file:string){return hash(await fs.readFile(file));}
 async function sourceHashes(root:string){return{...Object.fromEntries(await Promise.all(Object.entries(CLOSED_NATIVE_BOOTSTRAP_FILES).map(async([k,p])=>[k,await fileHash(path.join(root,p))]))),packageTree:await nativeCodeTreeDigest(root)};}
 /** Copy code only. Original installed package/profile/enrollment are never written. */
 export async function prepareOwnedOpenClawFactory(options:NativeFactoryPreparation){
  await options.authorize();if(!path.isAbsolute(options.sourceNativeRoot)||!path.isAbsolute(options.destinationNativeRoot)||options.sourceNativeRoot===options.destinationNativeRoot)throw Error('SEPARATE_NATIVE_PACKAGE_COPY_REQUIRED');
  if(!path.isAbsolute(options.workRoot)||!path.isAbsolute(options.originalProfile)||path.resolve(options.workRoot).startsWith(path.resolve(options.originalProfile)+path.sep)||path.resolve(options.workRoot)===path.resolve(options.originalProfile))throw Error('SEPARATE_NATIVE_PROFILE_COPIES_REQUIRED');
+ await disjoint(options.sourceNativeRoot,options.destinationNativeRoot);await disjoint(options.workRoot,options.originalProfile);await disjoint(options.destinationNativeRoot,options.originalProfile);await disjoint(options.destinationNativeRoot,options.workRoot);
  if(!/^[a-f0-9]{40}$/.test(options.clientSource)||!/^[a-f0-9]{64}$/.test(options.factoryPolicySha256)||await fileHash(options.childEntry)!==options.childEntrySha256)throw Error('REVIEWED_NATIVE_FACTORY_SOURCE_REQUIRED');
  for(const p of['package.json','node_modules/@openclaw/ai/package.json'])if(JSON.parse(await fs.readFile(path.join(options.sourceNativeRoot,p),'utf8')).version!=='2026.10.5')throw Error('PINNED_NATIVE_PACKAGE_VERSION_REQUIRED');
  const manifest=path.join(options.destinationNativeRoot,'envoi-native-source-copy.json');
