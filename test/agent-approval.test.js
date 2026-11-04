@@ -227,3 +227,18 @@ test('assertActiveAgentSlot throws ACTIVE_AGENT_LIMIT at two used slots', async 
   await slots.assertActiveAgentSlot(HUMAN, { excludingRegistrationId: 'registration_new' });
   await slots.assertActiveAgentSlot(OTHER);
 });
+
+test('staging exception allows only the two configured existing principals past two slots', async t => {
+  const { store, seed } = await slotStore(t);
+  await seed.agent('first');
+  await seed.agent('second');
+  await seed.agent('other_first', { principalHumanId: OTHER });
+  await seed.agent('other_second', { principalHumanId: OTHER });
+  const configured = createAgentSlots({ store, uncappedHumanIds: new Set([HUMAN]) });
+  assert.equal(configured.isUncappedHuman(HUMAN), true);
+  assert.equal(configured.isUncappedHuman(OTHER), false);
+  await configured.assertActiveAgentSlot(HUMAN);
+  await assert.rejects(configured.assertActiveAgentSlot(OTHER), error => error.code === 'ACTIVE_AGENT_LIMIT');
+  const defaultSlots = createAgentSlots({ store });
+  await assert.rejects(defaultSlots.assertActiveAgentSlot(HUMAN), error => error.code === 'ACTIVE_AGENT_LIMIT');
+});
