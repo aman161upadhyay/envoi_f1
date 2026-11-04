@@ -392,7 +392,7 @@ export function createAgentRegistrations({
         await assertSlot(human.id);
         agentFields = { workspaceInboxId: resolved.inbox.id, organizationId: resolved.inbox.organizationId, agentName: displayName(target.name, localPartOf(address)), name: target.name, localPart: localPartOf(address), address };
       }
-      if (await liveApprovalsBy(human.id) >= approvalsAwaitingActivationPerHuman) throw coded(409, 'PENDING_ACTIVATION_LIMIT', 'Too many approvals are still waiting for their agents.');
+      if (!agentSlots.isUncappedHuman?.(human.id) && await liveApprovalsBy(human.id) >= approvalsAwaitingActivationPerHuman) throw coded(409, 'PENDING_ACTIVATION_LIMIT', 'Too many approvals are still waiting for their agents.');
       const activationExpiresAt = plus(at, activationWindowSeconds * 1000);
       const effective = effectivePermissions(registration.requested.permissions, input.grantedPermissions);
       const approved = {
@@ -725,7 +725,7 @@ export function createAgentRegistrations({
         await assertSlot(human.id);
         agentFields = { workspaceInboxId: resolved.inbox.id, organizationId: resolved.inbox.organizationId, agentName: displayName(target.name, localPartOf(address)), name: target.name, localPart: localPartOf(address), address };
       }
-      if (await liveApprovalsBy(human.id) >= approvalsAwaitingActivationPerHuman) throw coded(409, 'PENDING_ACTIVATION_LIMIT', 'Too many approvals are still waiting for their agents.');
+      if (!agentSlots.isUncappedHuman?.(human.id) && await liveApprovalsBy(human.id) >= approvalsAwaitingActivationPerHuman) throw coded(409, 'PENDING_ACTIVATION_LIMIT', 'Too many approvals are still waiting for their agents.');
       const at = nowIso();
       const activationExpiresAt = plus(at, (consent ? consentCodeTtlSeconds : bootstrapCodeTtlSeconds) * 1000);
       // A bootstrap body may name any registration permission (its request enum), but an OAuth grant holds only the four with a
