@@ -41,7 +41,8 @@ export const liveApproval = (registration, now = new Date()) => registration?.st
 
 const liveFamily = (family, now) => !family.revokedAt && new Date(family.refreshExpiresAt) > now;
 
-export function createAgentSlots({ store }) {
+export function createAgentSlots({ store, uncappedHumanIds = new Set() }) {
+  const isUncappedHuman = humanId => uncappedHumanIds.has(humanId);
   const familiesOf = (inboxId, agentId) => store.listJson(path.join('auth', 'agent-credential-families', inboxId, agentId));
   const agentHasLiveFamily = async (inboxId, agentId, now) => (await familiesOf(inboxId, agentId)).some(family => liveFamily(family, now));
 
@@ -73,10 +74,11 @@ export function createAgentSlots({ store }) {
   }
 
   async function assertActiveAgentSlot(humanId, options = {}) {
+    if (isUncappedHuman(humanId)) return;
     if (await usedSlots(humanId, options) >= activeAgentsPerHuman) {
       throw Object.assign(new Error('Beta limit of two active agents per human reached'), { statusCode: 409, code: 'ACTIVE_AGENT_LIMIT' });
     }
   }
 
-  return { usedSlots, assertActiveAgentSlot, agentHasLiveFamily };
+  return { usedSlots, assertActiveAgentSlot, agentHasLiveFamily, isUncappedHuman };
 }

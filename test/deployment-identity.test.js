@@ -14,11 +14,26 @@ import { evaluateReadiness } from '../src/readiness.js';
 import { dependencyReadinessChecks } from '../src/dependency-readiness.js';
 import {
   DEPLOYMENT_IDENTITY_MISMATCH, DEPLOYMENT_IDENTITY_PATH, assertDeploymentIdentity, configuredDeploymentIdentity,
-  ensureDeploymentIdentity, verifyDeploymentIdentityBeforeInit
+  ensureDeploymentIdentity, stagingUncappedAgentHumanIds, verifyDeploymentIdentityBeforeInit
 } from '../src/deployment-identity.js';
 import { launch } from './a3-harness.js';
 
 const quiet = { info() {}, warn() {} };
+const humanId = seed => `human_${seed.repeat(8)}-${seed.repeat(4)}-${seed.repeat(4)}-${seed.repeat(4)}-${seed.repeat(12)}`;
+
+test('staging uncapped agent IDs require one or two distinct exact existing-ID shapes', () => {
+  const first = humanId('a');
+  const second = humanId('b');
+  assert.deepEqual([...stagingUncappedAgentHumanIds(`${first}, ${second}`, 'staging')], [first, second]);
+  assert.equal(stagingUncappedAgentHumanIds(undefined, 'staging').size, 0);
+  for (const value of [first, 'not-a-human', `${first},${first}`, `${first},${second},${humanId('c')}`, '*', '']) {
+    if (value === '') continue;
+    assert.throws(() => stagingUncappedAgentHumanIds(value, 'beta'), /only valid in staging/);
+  }
+  for (const value of ['not-a-human', `${first},${first}`, `${first},${second},${humanId('c')}`, '*', ' ']) {
+    assert.throws(() => stagingUncappedAgentHumanIds(value, 'staging'), /one or two distinct exact human IDs/);
+  }
+});
 const temporaryStore = async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'envoi-identity-'));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));

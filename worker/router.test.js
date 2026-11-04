@@ -181,3 +181,12 @@ test('human signup mode and quota reach the container and participate in setting
   assert.equal(defaults.ENVOI_HUMAN_SIGNUP_MODE, undefined);
   assert.equal(defaults.ENVOI_PUBLIC_SIGNUP_LIMIT, undefined);
 });
+
+test('the staging agent-limit exception reaches the container and changes its settings fingerprint', async () => {
+  const key = 'ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS';
+  assert.ok(CONTAINER_ENV_KEYS.includes(key));
+  const baseline = { ENVOI_DEPLOYMENT_ENVIRONMENT: 'staging' };
+  const configured = { ...baseline, [key]: 'human_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' };
+  assert.deepEqual(selectEnvironment(configured, CONTAINER_ENV_KEYS, {}), configured);
+  assert.notEqual(await environmentFingerprint(baseline), await environmentFingerprint(configured));
+});
