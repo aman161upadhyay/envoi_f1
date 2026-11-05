@@ -8,47 +8,11 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { betaBuildDeployArgs, DOTS_MESSAGING_VARS } from '../scripts/deploy-beta-build.mjs';
+import { betaBuildDeployArgs } from '../scripts/deploy-beta-build.mjs';
 import { deployStaging, stagingDeployArgs } from '../scripts/deploy-staging.mjs';
 const main = 'a'.repeat(40);
 const candidate = 'b'.repeat(40);
 const defaults = { target: 'staging', sha: main, headSha: main, mainSha: main, clean: true, descendedFromMain: true };
-
-test('explicit Dots beta profile retains exactly its seven live values without changing defaults', async () => {
-  const expected = {
-    ENVOI_INSTALLATIONS_V2: 'true', ENVOI_AGENT_REGISTRATION_V2: 'true',
-    ENVOI_CASE_SESSIONS_V1: 'true', ENVOI_HTTP_WAKE_V1: 'true',
-    ENVOI_REMOTE_MCP_OAUTH: 'true', ENVOI_MCP_EVENTS_V1: 'true',
-    ENVOI_MCP_EVENTS_CALLBACK_ORIGINS: 'https://connectors.api.openai.com'
-  };
-  assert.deepEqual(DOTS_MESSAGING_VARS, expected);
-  assert.equal(Object.isFrozen(DOTS_MESSAGING_VARS), true);
-  const args = betaBuildDeployArgs(main, { profile: 'dots-messaging' });
-  assert.deepEqual(args, ['deploy', '--env', 'beta', '--var', `ENVOI_RELEASE_SHA:${main}`,
-    ...Object.entries(expected).flatMap(([name, value]) => ['--var', `${name}:${value}`])]);
-  assert.deepEqual(betaBuildDeployArgs(main), ['deploy', '--env', 'beta', '--var', `ENVOI_RELEASE_SHA:${main}`]);
-  let deployed = false;
-  await deployBetaBuild({ profile: 'dots-messaging',
-    source: () => ({ headSha: main, mainSha: main, clean: true, descendedFromMain: true }),
-    inventory: betaInventory({ app: betaApp, scanner: ['ENVOI_SCANNER_TOKEN'] }),
-    run: (_bin, actualArgs, options) => {
-      deployed = true;
-      assert.deepEqual(actualArgs.slice(1), args);
-      assert.equal(options.env.CLOUDFLARE_ACCOUNT_ID, RELEASE_ACCOUNT_ID);
-      return { status: 0 };
-    }
-  });
-  assert.equal(deployed, true);
-  for (const profile of ['', null, 'staging', 'dots-messaging --var OTHER:true']) {
-    assert.throws(() => betaBuildDeployArgs(main, { profile }), /Unsupported beta build profile/);
-  }
-  let accessed = false;
-  await assert.rejects(deployBetaBuild({ profile: 'unknown',
-    source: () => ({ headSha: main, mainSha: main, clean: true, descendedFromMain: true }),
-    inventory: () => { accessed = true; return []; }, run: () => { accessed = true; }
-  }), /Unsupported beta build profile/);
-  assert.equal(accessed, false);
-});
 
 test('promotion defaults to a dry-run on the explicit target and records the runtime SHA', () => {
   const plan = promotionPlan(defaults);
@@ -95,7 +59,7 @@ test('secret-name gate allows a policy keyring and requires a separate scanner c
 const secretList = names => names.map(name => ({ name, type: 'secret_text' }));
 const betaInventory = ({ app, scanner }) => (...argv) => argv.includes('scanner/wrangler.beta.jsonc') ? secretList(scanner) : secretList(app);
 const migratedApp = APP_SECRET_NAMES.map(name => name === 'ENVOI_DATA_ENCRYPTION_KEY' ? 'SINALOA_DATA_ENCRYPTION_KEY' : name);
-const betaApp = [...migratedApp, 'ENVOI_MONAD_ISSUER_PRIVATE_KEY'];
+const betaApp = [...migratedApp, 'ENVOI_MONAD_ISSUER_PRIVATE_KEY', 'ENVOI_WAKE_SIGNING_KEYS'];
 test('beta deploys refuse until the ENVOI_* twins exist (H-5)', () => {
   const legacyApp = APP_SECRET_NAMES.map(name => name.replace('ENVOI_', 'SINALOA_'));
   assert.throws(() => requireBetaSecretNames(betaInventory({ app: legacyApp, scanner: ['ENVOI_SCANNER_TOKEN'] })), /ENVOI_BETA_INVITED_EMAILS/);
@@ -332,4 +296,8 @@ test('preserve-Monad cannot enable staging or choose conflicting CLI profiles be
     ['--profile=hermes-openclaw-preserve-monad','--profile=hermes-openclaw-preserve-monad'] ]) {
     await assert.rejects(promoteRelease(['beta', main, ...profiles], options), /Usage:/);
   }
+});
+
+test('configured beta native wake requires its existing signing-key secret before deployment',()=>{
+  assert.throws(()=>requireBetaSecretNames(betaInventory({app:betaApp.filter(name=>name!=='ENVOI_WAKE_SIGNING_KEYS'),scanner:['ENVOI_SCANNER_TOKEN']})),/ENVOI_WAKE_SIGNING_KEYS/);
 });

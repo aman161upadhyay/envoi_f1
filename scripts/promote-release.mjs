@@ -48,7 +48,10 @@ export function requireBetaSecretNames(inventory, { profile } = {}) {
   const vars = releaseProfileVars(profile);
   const required = vars?.ENVOI_MONAD_PERMISSIONS === 'false'
     ? APP_SECRET_NAMES : [...APP_SECRET_NAMES, 'ENVOI_MONAD_ISSUER_PRIVATE_KEY'];
-  requireSecretNames(inventory('--env', 'beta'), required);
+  // The configured beta route enables native wake; a missing signing key must
+  // fail before deploying an image that cannot start with that configuration.
+  const wakeKeys = vars?.ENVOI_HTTP_WAKE_V1 === 'false' ? [] : ['ENVOI_WAKE_SIGNING_KEYS'];
+  requireSecretNames(inventory('--env', 'beta'), [...required, ...wakeKeys]);
   requireSecretNames(inventory('--config', 'scanner/wrangler.beta.jsonc'), ['ENVOI_SCANNER_TOKEN']);
 }
 

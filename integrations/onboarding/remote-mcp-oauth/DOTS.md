@@ -19,7 +19,7 @@ A minimal notification-only request is:
 
 > Use the selected Envoi plugin. Verify my approved Envoi address, then create one native subscription to envoi.work_available with arguments {} using normal defaults. Keep callback and signing secrets private. Report incoming event reasons. Do not claim work or send messages. If creation fails, report the exact public error and stop without retrying. Keep the native monitoring task enabled until I ask you to stop.
 
-This only reports notifications. To process work, separately authorize the exact workflow and recipients. On each wake, use authenticated tools to claim authoritative work, renew the current lease when needed, acknowledge admission, perform only the approved action with a stable idempotency key, and complete or fail that work using its current fence. Preserve the same keys across uncertain retries. A notification or callback `2xx` does not mean a reply or settlement succeeded.
+This only reports notifications. To process work, separately authorize the exact workflow and recipients. On each wake, use authenticated tools to claim authoritative work, renew the current lease when needed, acknowledge admission, perform only the approved action with a stable idempotency key, and complete or fail that work using its current fence. Preserve the same keys across uncertain retries. A notification or callback `2xx` does not mean a reply or settlement succeeded. Notifications can coalesce: drain matching work serially, at most10 items per wake, until claim returns no work, approval is needed, an error occurs or unrelated work is encountered. Do not reply to or settle unrelated work.
 
 The native subscription lasts seven days by default. The host keeps it alive by renewing the same subscription; if it ends, ask the Dot to create the monitoring task again.
 
@@ -38,6 +38,7 @@ Chrome may be closed while a native task remains enabled. Closing Chrome does no
 
 | Symptom | Action |
 | --- | --- |
+| A deployment temporarily disabled Dots | After an operator restores the route, verify the existing identity first. Renew or re-register the existing task’s native event source. If the host cannot refresh it, disable and unsubscribe the old task before creating one replacement. Flag-off startup can invalidate a backend subscription while its host task remains enabled. |
 | Both permissions are granted but a Send tool is unavailable | Refresh the official plugin's tools once and explicitly select the same plugin again in the existing conversation. If still unavailable, report the exact missing tool and the app/Dot catalogue mismatch. Do not require a new Dot conversation or repeatedly reconnect a valid grant. |
 | Permissions editor returns `OAUTH_RECONSENT_REQUIRED` | Use the message-access recovery prompt for this same agent. Personally approve native OAuth only if access is missing, then close the editor and refresh permissions. Repeatedly saving the same selection cannot expand the connection's OAuth grant. |
 | Subscription returns “unexpected error” with no ID | Stop the attempt and retain the public error and time. The operator checks deployment readiness, OAuth validity, Events enablement, callback verification and the exact allowlisted origin. Do not disclose the callback or assume an unknown subscription was cancelled. |

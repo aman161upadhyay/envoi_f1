@@ -37,6 +37,8 @@ function smokeResponses(overrides = {}) {
     const pathname = url.pathname;
     if (pathname === '/health') return Response.json({ service: 'sinaloa', mode: 'production', configurationValidated: true, releaseSha, ...overrides.health });
     if (pathname === '/ready') return Response.json({ ready: true, mode: 'production', configurationValidated: true, releaseSha, ...overrides.ready });
+    if (pathname === '/api/onboarding/routes') return Response.json({registrationEnabled:true,installationsEnabled:true,
+      routes:[{connectionRoute:'remote_mcp_oauth',available:true}],deliveryModes:[{deliveryMode:'on_demand',available:true}],...overrides.dots});
     if (pathname === '/api/auth/config') return Response.json({ enabled: true });
     if (pathname === '/api/auth/workos/sign-in') {
       const authorization = new URL('https://auth.example.test/authorize');
@@ -54,6 +56,15 @@ function smokeResponses(overrides = {}) {
 
 test('release smoke confirms the recorded SHA on health and readiness', async () => {
   await assert.doesNotReject(() => smokeDeployment('https://www.envoi-agents.com/', releaseSha, { fetchImpl: smokeResponses(), log() {} }));
+});
+
+for (const dots of [
+  {registrationEnabled:false}, {installationsEnabled:false},
+  {routes:[{connectionRoute:'remote_mcp_oauth',available:false}]},
+  {deliveryModes:[{deliveryMode:'on_demand',available:false}]}
+]) test(`production smoke rejects healthy service with disabled Dots ${JSON.stringify(dots)}`,async()=>{
+  await assert.rejects(()=>smokeDeployment('https://www.envoi-agents.com/',releaseSha,{fetchImpl:smokeResponses({dots}),log(){}}),
+    /Production Dots OAuth\/on-demand route is unavailable/);
 });
 
 test('release smoke refuses a backend that still returns 404 for the Product page', async () => {

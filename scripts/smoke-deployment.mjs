@@ -9,7 +9,9 @@ export async function smokeDeployment(origin, expectedSha, { fetchImpl = fetch, 
   if (expectedSha !== undefined && !/^[a-f0-9]{40}$/i.test(expectedSha)) {
     throw new Error('Pass the full 40-hex release SHA as the optional second smoke argument');
   }
-  for (const pathname of ['/health', '/ready', '/api/auth/config', '/', '/product/', '/create-account/', '/app']) {
+  const paths = ['/health', '/ready', ...(target.origin === 'https://www.envoi-agents.com' ? ['/api/onboarding/routes'] : []),
+    '/api/auth/config', '/', '/product/', '/create-account/', '/app'];
+  for (const pathname of paths) {
     const response = await fetchImpl(new URL(pathname, target), { redirect: 'error', signal: AbortSignal.timeout(30_000) });
     if (!response.ok) throw new Error(`${pathname} returned ${response.status}`);
     if (pathname === '/ready' || pathname === '/health') {
@@ -21,6 +23,13 @@ export async function smokeDeployment(origin, expectedSha, { fetchImpl = fetch, 
       }
       if (expectedSha !== undefined && body.releaseSha !== expectedSha) {
         throw new Error(`${pathname} did not confirm the expected release SHA`);
+      }
+    } else if (pathname === '/api/onboarding/routes') {
+      const body = await response.json().catch(() => null);
+      if (body?.registrationEnabled !== true || body?.installationsEnabled !== true
+        || !body.routes?.some(route => route.connectionRoute === 'remote_mcp_oauth' && route.available === true)
+        || !body.deliveryModes?.some(mode => mode.deliveryMode === 'on_demand' && mode.available === true)) {
+        throw new Error('Production Dots OAuth/on-demand route is unavailable despite service health');
       }
     } else if (pathname === '/' || pathname === '/product/' || pathname === '/create-account/' || pathname === '/app') {
       const html = await response.text();

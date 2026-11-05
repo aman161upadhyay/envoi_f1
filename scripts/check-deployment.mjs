@@ -5,6 +5,21 @@ import { fileURLToPath } from 'node:url';
 import { CONTAINER_ENV_KEYS, CONTAINER_DEFAULTS } from '../worker/runtime-config.js';
 import { onboardingFlagNames } from '../src/onboarding-flags.js';
 
+// Explicit beta configuration mirrors the owner's approved live Dots settings.
+// Server defaults and other deployment environments remain unchanged.
+const betaDotsFlags = new Set(['ENVOI_INSTALLATIONS_V2', 'ENVOI_AGENT_REGISTRATION_V2', 'ENVOI_CASE_SESSIONS_V1',
+  'ENVOI_HTTP_WAKE_V1', 'ENVOI_REMOTE_MCP_OAUTH', 'ENVOI_MCP_EVENTS_V1']);
+export function validateOnboardingDeploymentProfile(config) {
+  const beta = config.env?.beta?.vars;
+  for (const name of onboardingFlagNames) {
+    assert.ok(CONTAINER_ENV_KEYS.includes(name), `Runtime allowlist must forward ${name}`);
+    assert.equal(beta?.[name], betaDotsFlags.has(name) ? 'true' : 'false', `Beta must retain its reviewed ${name} value`);
+  }
+  assert.ok(CONTAINER_ENV_KEYS.includes('ENVOI_MCP_EVENTS_CALLBACK_ORIGINS'));
+  assert.equal(beta?.ENVOI_MCP_EVENTS_CALLBACK_ORIGINS, 'https://connectors.api.openai.com',
+    'Beta must retain its reviewed MCP Events callback origin');
+}
+
 // A declarative SQLite class keeps the existing namespace without replaying a
 // bootstrap migration when Cloudflare reports no migration_tag. Lifecycle
 // tombstones, transfers, storage changes and external bindings need a separate
@@ -99,11 +114,7 @@ export async function checkDeploymentConfiguration() {
     validateContainerLifecycle(scanner, 'ClamAVContainer', 'CLAMAV_CONTAINER');
   }
   assert.equal(new Set(CONTAINER_ENV_KEYS).size, CONTAINER_ENV_KEYS.length, 'Runtime allowlist contains duplicates');
-  // agent-registration v1 §12: the Phase B flags reach the container and default off on beta.
-  for (const name of onboardingFlagNames) {
-    assert.ok(CONTAINER_ENV_KEYS.includes(name), `Runtime allowlist must forward ${name}`);
-    assert.equal(beta.vars?.[name], 'false', `Beta must default ${name} off`);
-  }
+  validateOnboardingDeploymentProfile(config);
   assert.equal(CONTAINER_DEFAULTS.ENVOI_PORT, '8787');
   const docker = await readFile(new URL('Dockerfile.cloudflare', root), 'utf8');
   assert.match(docker, /FROM node:22-alpine/);
