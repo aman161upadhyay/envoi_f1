@@ -78,13 +78,47 @@ export function dotsSetupPrompt(origin: string, name: string, requestedAddress: 
   }
   const identity = reconnect
     ? `When Envoi asks me to approve the connection, I will choose Reconnect an existing agent, select ${name} (${requestedAddress}), review the current installations and requested permissions, and confirm the replacement. Keep its existing address, cases and history; do not create a new agent.`
-    : `When Envoi asks me to approve the connection, I will select this workspace, request ${requestedAddress} as the agent address, and review the requested permissions. That address is assigned only after approval and OAuth exchange.`;
-  return `Connect my ChatGPT Dot ${name} to Envoi for on-demand work. Ask me to install the Envoi custom MCP plugin at ${origin}/mcp in my ChatGPT Work account and complete its OAuth authorization. Do not ask for an Envoi enrollment token or paste credentials into chat. ${identity} Once connected, use the Envoi tools in an active chat to check for work and send a test reply. Do not claim closed-app delivery; that route is still being verified.`;
+    : `When Envoi asks me to approve the connection, I will select this workspace, ${requestedAddress.includes('@') ? `request ${requestedAddress} as the agent address` : 'choose the agent name and address'}, and review the requested permissions. That address is assigned only after approval and OAuth exchange.`;
+  return `Connect my ChatGPT Dot ${name} to Envoi for on-demand work. Use the official Envoi plugin already installed in my account. If it is missing, open ChatGPT Plugins and install the official Envoi plugin made available by Envoi. If that plugin is unavailable to my account, stop and report an official-plugin availability problem to the publisher. Do not create a separate personal plugin or custom MCP connection. Each owner uses the same official plugin with their own OAuth connection. Its expected server is ${origin}/mcp; this is a diagnostic endpoint, not an installation webpage. Do not ask me to download a local connector, invent a client secret or paste credentials into chat. ${identity}
+
+For exchanging native Envoi messages, the OAuth request must include envoi.agent envoi.send. If my existing connection is receive-only, call envoi_request_message_access through this same plugin to open native OAuth recovery. If the action is missing after a release, refresh the plugin tools once and start a new chat; do not create another plugin. Before I approve, check that Envoi lists both Receive agent messages and Send agent messages. If only receiving is requested, stop and report the missing send scope to the official plugin publisher. Reconnect after the publisher corrects the official connection; repeated reconnects cannot repair its configuration. Do not try to add unrequested scopes through Envoi's permissions editor. When reconnecting a receive-only agent, I must explicitly select Send agent messages during consent; keep receiving required and leave unrelated permissions off. Activation replaces the agent's active installations and ends their monitoring subscriptions. The Envoi approval page is the owner-consent step; my Dot continues running in ChatGPT.
+
+Once connected, call envoi_agent_info and verify the actual address and both receive_agent_messages and send_agent_messages. Check that envoi_start_case and envoi_send_message are available. If identity, permissions or tools do not match, report the missing item and stop before sending. Ask me to designate the exact recipient and test case before sending a test reply. Envoi agent messages do not grant external email access.
+
+If I ask for background receiving, create a native monitoring task subscribed to envoi.work_available with arguments {} using normal defaults. Keep callback and signing secrets private; do not require a TTL field the native interface does not expose. A connected plugin alone does not start monitoring. A notification is only a hint: claim authoritative work, acknowledge it with the current lease, perform only the authorized workflow, send replies with stable idempotency keys, and complete or fail the claimed work. Renew the lease when needed. Report success only after the canonical reply and settlement succeed; delivered notifications can still leave work pending. If subscription creation fails, report the exact public error and stop rather than retrying indefinitely.
+
+After reauthentication, choose this same identity under Reconnect an existing agent, verify its address and permissions, then recreate intended monitoring. Preserve cases, history and idempotency keys across recovery. When I stop monitoring, disable the native task and unsubscribe. Revoke installation disconnects one Dot; Revoke agent access freezes the agent and every connection.`;
 }
 
 export function dotsSetupSkillFile(origin: string, name: string, requestedAddress: string, reconnect = false) {
-  return `---\nname: envoi-dots-setup\ndescription: Connect a ChatGPT Dot to Envoi for on-demand work.\n---\n\n# Connect Dots to Envoi\n\n${dotsSetupPrompt(origin, name, requestedAddress, reconnect)}\n`;
+  return `---\nname: envoi-dots-setup\ndescription: Connect a ChatGPT Dot to Envoi with OAuth and optional native monitoring.\n---\n\n# Connect Dots to Envoi\n\n${dotsSetupPrompt(origin, name, requestedAddress, reconnect)}\n`;
 }
+
+export function dotsVerificationPrompt(address: string) {
+  return `Use my selected Envoi plugin. Call envoi_agent_info and verify ${address ? `the address is ${address}` : 'the address matches the identity I approved'}. Report whether receive_agent_messages and send_agent_messages are both granted and whether envoi_start_case and envoi_send_message are available. If anything is missing, explain the exact missing permission or tool. Do not claim work, send a message, create an agent or switch connections during this check.`;
+}
+
+export function dotsMessageAccessPrompt(address: string) {
+  return `Use my selected official Envoi plugin. Call envoi_agent_info and verify ${address ? `my address is ${address}` : 'the identity I approved'}. If Send is missing, call envoi_request_message_access to request owner-approved Receive and Send access through this same connection. I will personally approve OAuth, choose Reconnect an existing agent, review installation replacement and explicitly select Send. After approval, verify the same address, both message permissions and envoi_start_case/envoi_send_message. If the recovery action is missing after the release, refresh tools once and start a new chat; report any remaining missing scope or policy refusal. Do not send messages, claim work, create an agent or switch identities during this setup.`;
+}
+
+export const dotsMonitoringPrompt = 'Use my selected Envoi plugin. Verify my approved identity and message permissions, then create one native monitoring task for envoi.work_available with arguments {} using normal defaults. Keep callback and signing secrets private. Process only the workflow and exact recipients I authorize: claim authoritative work, renew its lease when needed, acknowledge admission, reply with a stable idempotency key, and complete or fail it with the current lease. A notification alone is not completed work. If creation fails, report the exact public error and stop. Disable the task and unsubscribe when I ask you to stop.';
+
+/** Shared by /connect and the in-app guide. No credential or authorization URL is constructed here. */
+export function dotsSetupSteps(origin: string) {
+  // Reuse the same origin validation as the downloadable prompt.
+  dotsSetupPrompt(origin, 'my Dot', 'the address I approve');
+  return [
+    'Open the official Envoi plugin in ChatGPT Plugins and install it if needed. Each owner connects their own account using that same plugin. If it is unavailable to your account, ask the Envoi publisher to provide access; do not create a separate custom plugin.',
+    'When ChatGPT opens Envoi, review the workspace and agent identity. For a reconnect, choose Reconnect an existing agent and confirm the installations being replaced.',
+    'For two-way messages, the request must list Receive agent messages and Send agent messages. Select Send explicitly when reconnecting a receive-only agent. If Send is absent, stop and ask the Envoi publisher to correct the official connection before reconnecting.',
+    'Verify the actual Envoi address, both message permissions and the send tools in your Dot before sending to an exact recipient you approve.',
+    'For background receiving, explicitly start a native envoi.work_available monitoring task. Work stays pending until the Dot claims it, sends the authorized reply and settles it.',
+    'After reconnecting, recreate intended monitoring. To disconnect one Dot, use Revoke installation; Revoke agent access freezes every connection.'
+  ] as const;
+}
+
+export const dotsRouteUnavailableNotice = 'The Dots OAuth route is unavailable on this deployment. You can read the instructions, but connecting requires the route to be enabled. Native background notifications also need event support.';
 
 // Serial, bounded polling: one in-flight request, cancelled when the dialog closes.
 export function watchEnrollmentStatus(options: {

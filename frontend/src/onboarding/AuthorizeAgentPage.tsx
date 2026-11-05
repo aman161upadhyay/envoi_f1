@@ -30,8 +30,11 @@ function AuthorizeAgentSession({ humanId, handle, workspaces, agents, client = r
     {view && !state.blocked && <section className="onboarding-request">
       <h2>What this assistant requests</h2><p><strong>{view.client.name}</strong> (claims to be) · {view.client.clientIdHost ?? view.client.provider}</p>
       <p>The name is a claim made by the client. It does not verify who runs it.</p>
+      {view.connectionRoute === 'remote_mcp_oauth' && <p>This is Envoi’s OAuth approval step. Your assistant continues running in its own app.</p>}
       <dl><div><dt>Connection route</dt><dd>{routeLabel(view.connectionRoute)}</dd></div><div><dt>Authorization returns to</dt><dd>{view.client.redirectHost}</dd></div>
         <div><dt>Requested permissions</dt><dd>{view.requestedPermissions.map(permissionLabel).join(', ')}</dd></div></dl>
+      {view.connectionRoute === 'remote_mcp_oauth' && !view.requestedPermissions.includes('send_agent_messages') && <p className="onboarding-notice" role="status"><strong>Receive-only connection.</strong> This request cannot send agent messages or replies. For two-way messaging, return to the plugin connection and request envoi.agent envoi.send, then approve a new request. You can continue with receiving only if that is what you intend.</p>}
+      {view.requestedPermissions.includes('send_agent_messages') && !view.grantablePermissions.includes('send_agent_messages') && <p className="onboarding-notice" role="status">Workspace policy does not allow sending in this request. Ask your workspace administrator to review that policy before using two-way messaging.</p>}
       {view.client.loopbackRedirect && <p className="onboarding-notice" role="note">Any program on that computer could receive this authorization. Approve only a connection you just started.</p>}
     </section>}
     {outcome && <section className="onboarding-result" role="status"><p>{consentOutcomeText[outcome.status]}</p>

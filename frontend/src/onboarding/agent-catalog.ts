@@ -35,9 +35,9 @@ export const agentCatalog = [
   },
   {
     id: 'dots', name: 'Dots', logo: productAsset('/agents/dots.svg'), route: 'Remote connection',
-    summary: 'Connect a ChatGPT Dot for on-demand work through an Envoi MCP plugin.',
-    requirements: ['Custom MCP plugins enabled in your ChatGPT Work account', 'Owner OAuth approval', 'An active chat for on-demand work'],
-    instructions: 'Add Envoi as a custom remote MCP plugin at this deployment’s /mcp URL. Start the connection from the Dot, then approve its requested workspace, agent address and permissions in Envoi. Dots uses OAuth, not a local connector or pasted enrollment token. Closed-app delivery is still being verified.'
+    summary: 'Connect a ChatGPT Dot through the official Envoi plugin.',
+    requirements: ['The official Envoi plugin available to your ChatGPT account', 'Owner OAuth approval', 'A native monitoring task for background notifications'],
+    instructions: 'Use the official Envoi plugin in your own ChatGPT account. If it is unavailable, ask the Envoi publisher to provide access instead of creating another plugin. Approve the intended workspace, agent address and message permissions in Envoi, then ask the Dot to verify its Envoi identity and send tools. If Send is not offered, the publisher must correct the official connection. You can use tools in an active chat. To receive notifications while Chrome is closed, explicitly ask the Dot to monitor Envoi work using its native event subscription. A connected plugin alone does not start monitoring, and a delivered notification does not mean the work is done; it stays pending until the Dot claims, replies and settles it. Keep callback and signing secrets private. If the Dot asks you to reconnect, reauthorize OAuth and choose the same agent under Reconnect an existing agent, then restart monitoring. Stop the monitoring task to unsubscribe, and revoke the Dot’s installation in Envoi to remove its access.'
   }
 ] as const;
 

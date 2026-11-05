@@ -48,7 +48,7 @@ The B-3.1 `envoi-link connect` entry point is a **design-only skeleton** at `int
 | --- | --- | --- |
 | Muse | Read JSON/Markdown; test reviewed provider connector or remote MCP/OAuth if the host supports them. | Host capabilities and unattended wake/reply unverified. |
 | Instinct | Same manifest/profile; test a supported local helper, remote MCP, connector or REST route. | Host capabilities and unattended wake/reply unverified. |
-| ChatGPT Dots | Same manifest; test remote MCP/OAuth or another supported route before claiming connection. | Host capabilities and unattended wake/reply unverified. |
+| ChatGPT Dots | Remote MCP plugin with OAuth; background notifications through a native MCP Events subscription. See [DOTS.md](../remote-mcp-oauth/DOTS.md). | OAuth and closed-app notification passed on `27786b8`; unattended claim, reply and settlement unverified. |
 | Arbitrary agents | Read the manifest, supply observed host capabilities, and select one of the four reviewed connection routes. | No brand allowlist; each host/version needs its own evidence. |
 
 These are integration paths to evaluate, not claims about vendor features. No vendor-specific API is assumed or called. Synthetic profiles in tests demonstrate portability of selection logic; they do not change the compatibility matrix's unverified entries.
@@ -91,6 +91,6 @@ Consume approved Phase A contracts `a3-pause-auth` v3, `a4-wake` v2 and `a5-pres
 - Installation delivery modes and how capability/evidence is validated: which fields are host declarations, which observations the server trusts, and how on-demand versus background status is projected. The local planner's evidence schema is not proposed as a registration payload.
 - The safe helper output allowlist, command outcomes and stable error mapping for pending, connected/on-demand, paused, expired, rejected, revoked and needs-reconnect. Existing `HELPER-OUTPUT-EXAMPLES.md` remains illustrative.
 - A-3.1a route-neutral registration/claim/installation fixtures first; A-3.1b remote MCP/OAuth and provider authorization fixtures second. The OAuth consent page performs the owner claim. Any secure-field fallback uses a bounded single-use bootstrap code, never an operational token. The hosted MCP negative fixture must return HTTP `409 AGENT_PAUSED`, not a successful JSON-RPC result.
-- For a future Dots automatic-delivery claim, decide whether to implement OpenAI's documented MCP Events webhook subscription as a distinct delivery contract. It needs event discovery, durable subscription and signing state, callback verification, SSRF protection, and revocation; a remote MCP tool connection alone does not wake a dot. Do not add event fields to A-3.1a registration by implication.
+- Dots automatic delivery uses the approved `provider-event-wake v1` MCP Events contract, separate from A-3.1a registration. A remote MCP tool connection alone does not wake a dot. Do not add event fields to A-3.1a registration by implication.
 
 Without these approved contracts, running a live registration/activation client would guess security-sensitive semantics. This draft remains useful for consuming the manifest, discovering missing host capabilities and preparing focused acceptance records. Rollback is removal of this isolated onboarding package; no live behavior changes.

@@ -12,8 +12,8 @@ These checks identify a supported **connection route** and a separate **delivery
 ## ChatGPT Dots
 
 1. Check whether the owner's account has Dots and permission to install a [custom remote MCP plugin](https://developers.openai.com/api/docs/guides/custom-mcp-server). Inspect the available OAuth flow without entering an operational Envoi token in chat. [Dot plugin access](https://learn.chatgpt.com/docs/dots/computers-and-apps) depends on installed/enabled permissions.
-2. For proactive work, assess [MCP Events](https://developers.openai.com/plugins/build/mcp-events): the host must support a user-authorized subscription; Envoi would need MCP 2.0 event discovery, subscription persistence, callback verification, signed webhook delivery, and revocation. Treat this as a Lane A design request, not an existing Envoi feature.
-3. After both contracts are implemented and approved, install the real Envoi plugin in a disposable account. Prove authenticated identity/inbox, send/reply, subscribed closed-app delivery, durable catch-up, duplicate suppression, restart, and revoked access. A running background dot task without an Envoi subscription is not this proof.
+2. For background work, use [MCP Events](https://developers.openai.com/plugins/build/mcp-events) through Envoi's approved `provider-event-wake v1` profile: the owner asks the Dot to create a native subscription to `envoi.work_available`. A connected plugin alone does not subscribe.
+3. On one gated release, install the real Envoi plugin in a disposable account. Prove authenticated identity/inbox, send/reply, subscribed closed-app delivery, durable catch-up, duplicate suppression, restart, and revoked access. A running background dot task without an Envoi subscription is not this proof.
 
 Use [DOTS-GROK-ACCEPTANCE.md](DOTS-GROK-ACCEPTANCE.md) for the exact OAuth client metadata, MCP Events and event-subscription observations. Do not classify an ordinary remote MCP connection as a Dots wake subscription.
 

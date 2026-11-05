@@ -1,0 +1,54 @@
+{
+  "contract": "agent-remote-auth-message-access",
+  "version": 1,
+  "id": "message-access-required",
+  "kind": "http",
+  "context": {
+    "permissions": [
+      "receive_agent_messages"
+    ]
+  },
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "auth": "bearer",
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/call",
+      "params": {
+        "name": "envoi_request_message_access",
+        "arguments": {}
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "schema": "messageAccessReply",
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Reconnect this existing Envoi agent and approve Receive and Send agent messages."
+          }
+        ],
+        "structuredContent": {
+          "state": "permission_required",
+          "address": "fixture@envoi.example",
+          "permissions": [
+            "receive_agent_messages"
+          ]
+        },
+        "isError": true,
+        "_meta": {
+          "mcp/www_authenticate": [
+            "Bearer resource_metadata=\"https://www.envoi-agents.com/.well-known/oauth-protected-resource/mcp\", error=\"insufficient_scope\", error_description=\"Reconnect this existing Envoi agent and approve Receive and Send agent messages.\", scope=\"envoi.agent envoi.send\""
+          ]
+        }
+      }
+    }
+  }
+}

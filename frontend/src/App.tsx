@@ -20,6 +20,7 @@ import { AuthorizeAgentPage } from './onboarding/AuthorizeAgentPage';
 import { authorizationHandle, authorizationSignInPath } from './onboarding/consent-state';
 import { OwnerClaims } from './onboarding/OwnerClaims';
 import { AgentInstallations } from './onboarding/AgentInstallations';
+import { DotsPermissionRecovery, DotsSetupGuide } from './onboarding/DotsSetupGuide';
 import { PhaseDTrustControls } from './PhaseDTrustControls';
 import { MonadPermissionPanel } from './MonadPermissionPanel';
 import { claimSignInPath } from './onboarding/connect-state';
@@ -36,7 +37,7 @@ import { mergeHistory, olderCursors } from './history';
 import { createEventCursorStore, PROGRESS_ONLY_EVENTS, subscribeReplayRecovery, WORKSPACE_EVENT_TYPES } from './event-replay';
 import { applyOrderedViewResponse, applyOrderedViewResponses, createRefreshCoordinator, createViewResponseOrder } from './workspace-refresh';
 import { QUIET_VALIDATION_TIMEOUT_MS, SESSION_VALIDATION_TIMEOUT_MS, validateWorkspaceReturn, withReadDeadline, workspaceRequester } from './session-validation';
-import { RUNTIME_OPTIONS, connectorDownloads, dotsSetupPrompt, dotsSetupSkillFile, isLoopbackOrigin, runtimeLabel, setupPrompt, setupSkillFile, suggestedAgentAddress, watchEnrollmentStatus, type EnrollmentResult, type EnrollmentStatus } from './quick-connect';
+import { RUNTIME_OPTIONS, connectorDownloads, dotsRouteUnavailableNotice, dotsSetupSkillFile, isLoopbackOrigin, runtimeLabel, setupPrompt, setupSkillFile, suggestedAgentAddress, watchEnrollmentStatus, type EnrollmentResult, type EnrollmentStatus } from './quick-connect';
 import type { ConnectorRuntime } from '../../sdk/typescript/src/quick-connect';
 import { SESSION_ENDED_NOTICE, SessionRequestCancelled, hasRememberedSession, invalidateSessionRequests, isCurrentSession, publishSessionEnd, publishSessionIdentity, rememberSessionStatus, ridesOutTabSwitch, sessionEndedNotice, sessionGeneration, watchSessionLifecycle } from './session-lifecycle';
 import {
@@ -1503,10 +1504,11 @@ export function PoliciesPage({ entries, onConnect, onRefresh, notify }: { entrie
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [reconsentRequired, setReconsentRequired] = useState(false);
   function openEditor(entry: AgentEntry) {
     setEditing(entry);
     setSelected(entry.agent.permissions);
-    setError('');
+    setError(''); setReconsentRequired(false);
   }
   async function save() {
     if (!editing) return;
@@ -1519,10 +1521,11 @@ export function PoliciesPage({ entries, onConnect, onRefresh, notify }: { entrie
       notify(`${editing.agent.name}’s permissions updated.`);
       try { await onRefresh(inboxId); }
       catch { notify('Permissions saved. Refresh to see the latest access.'); }
-    } catch (caught) { setError(errorMessage(caught)); }
+    } catch (caught) { setError(errorMessage(caught)); setReconsentRequired(caught instanceof ApiError && caught.code === 'OAUTH_RECONSENT_REQUIRED'); }
     finally { setBusy(false); }
   }
   return <PageFrame eyebrow="" title="Permissions" description="Review and update what each agent can do.">
+    <DotsPermissionRecovery agents={entries.filter(entry => entry.view.canManageInbox).map(entry => entry.agent)} />
     {entries.length === 0 ? <PageEmpty icon={<ShieldCheck />} title="No agents yet" body="Connect an agent to see its permissions." action={<button className="button secondary" onClick={onConnect}>Connect an agent</button>} /> : <><div className="permission-editor-actions">{entries.filter(entry => entry.view.canManageInbox && entry.agent.onboardingStatus === 'approved' && ['active', 'paused'].includes(entry.agent.status)).map(entry => <button key={entry.agent.id} type="button" className="button secondary compact" onClick={() => openEditor(entry)}>Edit {entry.agent.name}’s permissions</button>)}</div><div className="permission-table" role="table" aria-label="Agent permissions" style={{ '--agent-columns': Math.max(1, entries.length) } as React.CSSProperties}>
       <div className="permission-table-head" role="row"><span role="columnheader">Action</span>{entries.map(({ agent }) => <span role="columnheader" key={agent.id}>{agent.name}</span>)}</div>
       {AGENT_PERMISSION_OPTIONS.map(option => <div className="permission-table-row" role="row" key={option.id}><div role="cell"><strong>{option.label}</strong><small>{option.description}</small></div>{entries.map(entry => {
@@ -1537,6 +1540,7 @@ export function PoliciesPage({ entries, onConnect, onRefresh, notify }: { entrie
       <p>Changes apply to future agent actions. Earlier activity stays in the record.</p>
       <AgentPermissionPicker selected={selected} onChange={setSelected} />
       <FormError message={error} />
+      {reconsentRequired && <DotsSetupGuide origin={window.location.origin} name={editing.agent.name} address={editing.agent.address} reconnect />}
       <div className="dialog-actions"><button type="button" className="button secondary" disabled={busy} onClick={() => setEditing(null)}>Cancel</button><button type="button" className="button primary" disabled={busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Save permissions'}</button></div>
     </Modal>}
   </PageFrame>;
@@ -1774,7 +1778,6 @@ export function EnrollmentDialog({ workspace, agentDomain = 'envoi-agents.com', 
   const dotsOrigin = envoiOrigin && isLoopbackOrigin(envoiOrigin) ? 'https://www.envoi-agents.com' : envoiOrigin;
   const dotsName = reconnectAgent?.name || name.trim();
   const requestedAddress = reconnectAgent?.address || `${localPart}@${agentDomain}`;
-  const dotsPrompt = dotsGuideOpen && dotsOrigin ? dotsSetupPrompt(dotsOrigin, dotsName, requestedAddress, Boolean(reconnectAgent)) : '';
   const dotsReconnectAllowed = !reconnectAgent || canReconnectAgent(reconnectAgent);
   useEffect(() => {
     if (!dotsSelected) return;
@@ -1828,11 +1831,10 @@ export function EnrollmentDialog({ workspace, agentDomain = 'envoi-agents.com', 
     <div className="enroll-steps" aria-label="Enrollment steps">{['Agent type', 'Email address', 'Setup instructions'].map((stepName, index) => { const current = result || dotsGuideOpen ? 2 : step; return <span key={stepName} className={current === index ? 'current' : current > index ? 'complete' : ''}>{index + 1}<b>{stepName}</b></span>; })}</div>
     {dotsGuideOpen ? <section className="quick-connect dots-setup-guide">
       <p className="dialog-copy">{reconnectAgent ? 'Your Dots reconnect instructions are ready. Select this existing agent and review its installations when you approve the OAuth request.' : 'Your Dots setup is ready. Envoi confirms the address and permissions when you approve the OAuth request.'}</p>
-      {dotsRoute === 'unavailable' && <InlineNotice title="Dots connection is off here" body="You can prepare the prompt now. OAuth approval will work after this deployment enables the Dots on-demand route." tone="attention" />}
+      {dotsRoute === 'unavailable' && <InlineNotice title="Dots connection is off here" body={dotsRouteUnavailableNotice} tone="attention" />}
       <label className="field"><span>{reconnectAgent ? 'Existing agent email address' : 'Requested agent email address'}</span><input readOnly value={requestedAddress} /><small>{reconnectAgent ? 'Keep this identity when you choose Reconnect an existing agent during Envoi approval.' : 'This address is not reserved yet. Confirm it during Envoi approval.'}</small></label>
-      <div className="setup-handoff-actions"><button className="button primary" type="button" onClick={() => void navigator.clipboard.writeText(dotsPrompt).then(() => setCopied(true)).catch(() => setError('Clipboard access was unavailable. Select the prompt below to copy it.'))}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? 'Prompt copied' : 'Copy agent prompt'}</button><button className="button secondary" type="button" onClick={() => { try { const file = dotsSetupSkillFile(dotsOrigin, dotsName, requestedAddress, Boolean(reconnectAgent)); const url = URL.createObjectURL(new Blob([file], { type: 'text/markdown' })); const link = document.createElement('a'); link.href = url; link.download = 'SKILL.md'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1_000); } catch { setError('The skill file could not be downloaded. Copy the prompt instead.'); } }}><Download size={16} />Download agent skill file</button></div>
-      <details className="setup-details"><summary>View setup prompt</summary><textarea readOnly value={dotsPrompt} rows={7} onFocus={event => event.currentTarget.select()} /></details>
-      <ol className="dots-setup-steps"><li>Add Envoi as a custom MCP plugin at <code>{dotsOrigin}/mcp</code> in your ChatGPT Work account.</li><li>{reconnectAgent ? 'Complete OAuth, choose Reconnect an existing agent, review its installations, and confirm the replacement and permissions in Envoi.' : 'Complete OAuth and approve the workspace, address and permissions in Envoi.'}</li><li>Open your Dot and send a test message through Envoi. This is an on-demand connection; closed-app delivery is still being verified.</li></ol>
+      <DotsSetupGuide origin={dotsOrigin} name={dotsName} address={requestedAddress} reconnect={Boolean(reconnectAgent)} />
+      <button className="button secondary" type="button" onClick={() => { try { const file = dotsSetupSkillFile(dotsOrigin, dotsName, requestedAddress, Boolean(reconnectAgent)); const url = URL.createObjectURL(new Blob([file], { type: 'text/markdown' })); const link = document.createElement('a'); link.href = url; link.download = 'SKILL.md'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1_000); } catch { setError('The skill file could not be downloaded. Copy the prompt instead.'); } }}><Download size={16} />Download agent skill file</button>
       <FormError message={error} /><div className="dialog-actions"><button className="button secondary" type="button" onClick={onClose}>Close</button></div>
     </section> : result ? <>
       {handoff ? <>

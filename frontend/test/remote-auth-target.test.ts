@@ -35,6 +35,27 @@ const view = (loadContractFixture(remote, 'consent-view.json') as any).response.
 const render = (props: ConsentTargetFormProps) => { hooks.cursor = 0; return ConsentTargetForm(props); };
 beforeEach(() => { hooks.values = []; hooks.cursor = 0; });
 
+it('keeps a receive-only existing grant narrow until the owner explicitly selects requested sending', async () => {
+  const agent = { ...revoked, permissions: ['receive_agent_messages'] };
+  const client = { installations: vi.fn().mockResolvedValue({ agentId: agent.id, installations: [] }) } as unknown as OnboardingApi;
+  const controller = new ClaimController(client); const onApprove = vi.fn().mockResolvedValue(true);
+  const props: ConsentTargetFormProps = { workspaces: [], agents: [agent], requested: ['receive_agent_messages', 'send_agent_messages'], grantable: ['receive_agent_messages', 'send_agent_messages'], disabled: false, onApprove, client, controller };
+  let tree = render(props);
+  controls(tree, 'input').filter(input => input.props.name === 'oauth-target')[1].props.onChange!({ target: {} });
+  tree = render(props); controls(tree, 'select')[0].props.onChange!({ target: { value: agent.id } });
+  await Promise.resolve(); await Promise.resolve();
+  tree = render(props);
+  const sendLabel = controls(tree, 'label').find(label => Children.toArray(label.props.children).includes('send agent messages'))!;
+  const send = controls(sendLabel, 'input')[0];
+  expect(send.props.checked).toBe(false); expect(send.props.disabled).toBe(false);
+  expect(onApprove).not.toHaveBeenCalled();
+  send.props.onChange!({ target: { checked: true } });
+  tree = render(props);
+  controls(tree, 'input').find(input => input.props.type === 'checkbox' && !input.props.disabled && input.props.checked === false)!.props.onChange!({ target: { checked: true } });
+  tree = render(props); controls(tree, 'form')[0].props.onSubmit!({ preventDefault() {} });
+  expect(onApprove).toHaveBeenCalledExactlyOnceWith({ target: { kind: 'existing_agent', agentId: agent.id, replacesInstallationId: null }, grantedPermissions: ['receive_agent_messages', 'send_agent_messages'], policyProfile: 'default' });
+});
+
 it('submits the revoked existing identity only after reviewing installations and confirming replacement', async () => {
   const client = { installations: vi.fn().mockResolvedValue({ agentId: revoked.id, installations: [] }) } as unknown as OnboardingApi;
   const controller = new ClaimController(client); const onApprove = vi.fn().mockResolvedValue(true);

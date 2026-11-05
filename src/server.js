@@ -30,7 +30,7 @@ import { marketingRoute, nonceStaticHtml } from './marketing-routes.js';
 import { claimIdempotency, completeIdempotency, replayResponse, scopedIdempotencyPath, semanticDigest, validateIdempotencyKey } from './idempotency.js';
 import { humanConversationMessagingEnabled } from './human-messaging.js';
 import { createHumanInstructions, isHumanInstruction, assertHumanInstructionWork, humanInstructionCaseDocuments, humanInstructionReplyDocuments, validateHumanInstructionInput } from './human-instructions.js';
-import { handleAgentMcp } from './agent-mcp.js';
+import { handleAgentMcp, messageAccessResult } from './agent-mcp.js';
 import { enrollmentConnectionStatus, validateConnectionReport, validateConnectorRuntime } from './agent-connection.js';
 import {
   assertExactBinding,
@@ -4113,7 +4113,14 @@ async function route(req, res) {
     const events = { ...providerEventWake };
     for (const name of ['discover', 'list', 'unsubscribe']) events[name] = (_caller, ...args) => withInboxMutation(identity.inboxId, async () => providerEventWake[name](await freshMcpIdentity(), ...args));
     events.subscribe = async (_caller, ...args) => providerEventWake.subscribe(await freshMcpIdentity(), ...args);
-    return handleAgentMcp(req, res, { identity, callRest, denyUnavailable, onPermissionDenied: () => { req[monadPermissionDenied] = true; },
+    // agent-remote-auth-message-access v1: explicit, read-only recovery; existing forbidden calls retain their HTTP403 contract.
+    const requestMessageAccess = identity.oauth ? async () => {
+      const fresh = await getMcpIdentity(req);
+      if (!fresh || fresh.agent.id !== identity.agent.id || fresh.familyId !== identity.familyId) throw credentialError('CREDENTIAL_REVOKED');
+      if (fresh.paused) throw agentPausedError();
+      return messageAccessResult(fresh, remoteAuth.origin, organizationMaximumPermissions());
+    } : null;
+    return handleAgentMcp(req, res, { identity, callRest, denyUnavailable, requestMessageAccess, onPermissionDenied: () => { req[monadPermissionDenied] = true; },
       eventsEnabled: Boolean(onboardingFlags.mcpEvents), providerEvents: events,
       wakeTools: { ...mcpWakeTools, call: (name, args) => withInboxMutation(identity.inboxId, async () => mcpWakeTools.call(name, args, await freshMcpIdentity())) } });
   }

@@ -1,0 +1,70 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import Ajv from 'ajv';
+import {messageAccessResult} from '../src/agent-mcp.js';
+import {api, connect, documents, exchange, freshOwner, remoteServer, stored} from './agent-remote-auth-token-harness.js';
+
+const fixtureRoot = new URL('./contract-fixtures/agent-remote-auth-message-access/', import.meta.url);
+const fixture = async name => JSON.parse(await readFile(new URL(name+'.json', fixtureRoot),'utf8'));
+const schemas=JSON.parse(await readFile(new URL('schemas.json',fixtureRoot),'utf8'));
+const validate=new Ajv({strict:true}).compile(schemas.messageAccessReply);
+const rpc=(server,token,method,params={})=>api(server.baseUrl,'/mcp',{token,headers:{accept:'application/json, text/event-stream'},body:{jsonrpc:'2.0',id:1,method,params}});
+const call=(server,token,name,args={})=>rpc(server,token,'tools/call',{name,arguments:args});
+
+test('message-access contract: challenge and policy refusal are read-only and preserve identity',async()=>{
+  const identity={agent:{address:'fixture@envoi.example',permissions:['receive_agent_messages']}};
+  const before=structuredClone(identity);
+  const expected=await fixture('message-access-required');
+  assert.deepEqual(messageAccessResult(identity,'https://www.envoi-agents.com',['receive_agent_messages','send_agent_messages']),expected.response.body.result);
+  const policy=messageAccessResult(identity,'https://www.envoi-agents.com',['receive_agent_messages']);
+  assert.equal(policy.structuredContent.state,'policy_blocked');
+  assert.equal(policy._meta,undefined);
+  assert.deepEqual(identity,before);
+  identity.agent.permissions.push('send_agent_messages');
+  assert.deepEqual(messageAccessResult(identity,'https://www.envoi-agents.com',identity.agent.permissions),(await fixture('message-access-ready')).response.body.result);
+});
+
+test('real OAuth MCP offers explicit recovery without exposing send or changing the grant; same-identity approval unlocks sending',{timeout:30000},async t=>{
+  const server=await remoteServer(t,{name:'FileStore',env:{}});
+  const docs=documents(t,server);
+  const owner=await freshOwner(server);
+  const grant=await connect(server,owner,{scope:'envoi.agent',grantedPermissions:['receive_agent_messages']});
+  const tokens=(await exchange(server,grant)).payload;
+  const original=(await stored(docs,grant.registrationId)).registration;
+  const list=(await rpc(server,tokens.access_token,'tools/list')).payload.result.tools;
+  const recovery=list.find(tool=>tool.name==='envoi_request_message_access');
+  assert.ok(recovery);
+  assert.deepEqual(recovery.securitySchemes,[{type:'oauth2',scopes:['envoi.agent','envoi.send']}]);
+  assert.deepEqual(recovery._meta.securitySchemes,recovery.securitySchemes);
+  assert.deepEqual(recovery.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
+  assert.equal(list.some(tool=>tool.name==='envoi_start_case'),false);
+  assert.equal(list.find(tool=>tool.name==='envoi_agent_info').annotations.readOnlyHint,true);
+  const response=await call(server,tokens.access_token,'envoi_request_message_access');
+  assert.equal(response.status,200,response.text);
+  assert.ok(validate(response.payload),JSON.stringify(validate.errors));
+  const expected=structuredClone((await fixture('message-access-required')).response.body);
+  const actual=response.payload.result;
+  expected.result.structuredContent.address=original.target.address;
+  expected.result._meta['mcp/www_authenticate'][0]=expected.result._meta['mcp/www_authenticate'][0].replaceAll('https://www.envoi-agents.com',server.origin);
+  assert.deepEqual(response.payload,expected);
+  const info=await call(server,tokens.access_token,'envoi_agent_info');
+  assert.deepEqual(JSON.parse(info.payload.result.content[0].text).permissions,['receive_agent_messages']);
+  assert.equal((await call(server,tokens.access_token,'envoi_start_case')).status,403,'legacy refusal unchanged');
+  assert.equal((await call(server,tokens.access_token,'envoi_request_message_access',{recipientAddress:'invalid@envoi.example'})).payload.error.code,-32602);
+  assert.equal((await call(server,tokens.access_token,'envoi_request_message_access',null)).payload.error.code,-32602);
+  const legacy=await rpc(server,owner.agentApiToken,'tools/list');
+  assert.equal(legacy.payload.result.tools.some(tool=>tool.name==='envoi_request_message_access'),false);
+  const replacement=await connect(server,owner,{target:{kind:'existing_agent',agentId:original.agentId,replacesInstallationId:original.installationId}});
+  const broad=(await exchange(server,replacement)).payload;
+  const ready=await call(server,broad.access_token,'envoi_request_message_access');
+  assert.equal(ready.status,200,ready.text);
+  assert.equal(ready.payload.result.structuredContent.state,'ready');
+  assert.equal(ready.payload.result.structuredContent.address,original.target.address);
+  assert.equal(ready.payload.result._meta,undefined);
+  const broadList=(await rpc(server,broad.access_token,'tools/list')).payload.result.tools;
+  assert.equal(broadList.find(tool=>tool.name==='envoi_start_case').annotations.destructiveHint,true);
+  assert.equal(broadList.find(tool=>tool.name==='envoi_start_case').annotations.openWorldHint,true);
+  assert.equal((await call(server,tokens.access_token,'envoi_request_message_access')).status,401,'replaced installation cannot recover around revocation');
+  // Scoped/paused lifecycle and all existing403 vectors remain covered by the unchanged MCP suites.
+});

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import Ajv2020 from 'ajv/dist/2020.js';
+import { remoteAuthScopes } from './agent-remote-auth.js';
 
 // The handshake-era Streamable HTTP protocol permits stateless JSON responses.
 // No MCP session is issued; the active agent credential is checked on every call.
@@ -43,7 +44,41 @@ export const agentMcpTools = Object.freeze([
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 const validators = new Map(agentMcpTools.map(tool => [tool.name, ajv.compile(tool.inputSchema)]));
-const publicTool = ({ name, description, inputSchema }) => ({ name, description, inputSchema });
+export const messageAccessTool = Object.freeze({
+  name: 'envoi_request_message_access',
+  title: 'Enable Envoi messaging',
+  description: 'Use when the owner asks to enable two-way native Envoi messages or recover missing Send permission. Checks this existing connection and requests owner-approved OAuth reauthorization if needed. Does not send messages, create an agent or grant access itself.',
+  inputSchema: empty,
+  permission: null
+});
+export function messageAccessResult(identity, origin, maximumPermissions) {
+  const info = { address: identity.agent.address, permissions: identity.agent.permissions || [] };
+  const result = (state, text, isError) => ({ content: [{ type: 'text', text }], structuredContent: { state, ...info }, isError });
+  if (info.permissions.includes('send_agent_messages')) return result('ready', JSON.stringify({ state: 'ready', ...info }), false);
+  if (!maximumPermissions.includes('send_agent_messages')) return result('policy_blocked', 'Organization policy does not allow Send agent messages. Ask the workspace owner to review the policy.', true);
+  const description = 'Reconnect this existing Envoi agent and approve Receive and Send agent messages.';
+  const challenge = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", error="insufficient_scope", error_description="${description}", scope="envoi.agent envoi.send"`;
+  return { ...result('permission_required', description, true), _meta: { 'mcp/www_authenticate': [challenge] } };
+}
+const agentToolNames = new Set([...agentMcpTools, messageAccessTool].map(tool => tool.name));
+const irreversibleTools = new Set(['envoi_complete_work', 'envoi_fail_work', 'envoi_complete_asset_upload', 'envoi_grant_asset']);
+const externalTools = new Set(['envoi_grant_asset']);
+const publicTool = (tool, identity) => {
+  const { name, description, inputSchema } = tool;
+  const result = { name, description, inputSchema };
+  for (const key of ['title', 'outputSchema', 'annotations', 'securitySchemes', '_meta']) if (tool[key] !== undefined) result[key] = tool[key];
+  if (!agentToolNames.has(name)) return result;
+  const readOnly = tool.permission === null || tool.permission === 'read';
+  const sending = tool.permission === 'send_agent_messages';
+  result.annotations = { readOnlyHint: readOnly, destructiveHint: !readOnly && (sending || irreversibleTools.has(name)), openWorldHint: sending || externalTools.has(name) };
+  if (identity.oauth) {
+    const needed = name === messageAccessTool.name ? 'envoi.send' : remoteAuthScopes.find(entry => entry.permission === tool.permission)?.scope;
+    const scopes = [...new Set(['envoi.agent', ...(needed ? [needed] : [])])];
+    result.securitySchemes = [{ type: 'oauth2', scopes }];
+    result._meta = { ...(result._meta || {}), securitySchemes: result.securitySchemes };
+  }
+  return result;
+};
 const hasPermission = (identity, permission) => permission === null || (permission === 'read'
   ? identity.agent.permissions?.some(value => value === 'send_agent_messages' || value === 'receive_agent_messages')
   : identity.agent.permissions?.includes(permission));
@@ -188,7 +223,7 @@ function wakeHttpError(error, res) {
   return error;
 }
 
-export async function handleAgentMcp(req, res, { identity, callRest, maxRequestBytes = 64 * 1024, denyUnavailable = null, onPermissionDenied = null, wakeTools = null, providerEvents = null, eventsEnabled = false }) {
+export async function handleAgentMcp(req, res, { identity, callRest, maxRequestBytes = 64 * 1024, denyUnavailable = null, onPermissionDenied = null, wakeTools = null, providerEvents = null, eventsEnabled = false, requestMessageAccess = null }) {
   const eventAvailable = Boolean(providerEvents && await providerEvents.available(identity, '2026-07-28'));
   const read = await readMcpRequest(req, res, { maxRequestBytes, allowEventsVersion: eventsEnabled, eventsAvailable: eventAvailable, recognizeEventMethods: true });
   if (!read?.request) return;
@@ -208,11 +243,12 @@ export async function handleAgentMcp(req, res, { identity, callRest, maxRequestB
     }
   }
   const wakeAvailable = Boolean(wakeTools && await wakeTools.available(identity));
-  const offeredTools = [...agentMcpTools, ...(wakeAvailable ? wakeTools.tools : [])];
+  const messageAccessAvailable = Boolean(identity.oauth && !identity.mcpScope && requestMessageAccess);
+  const offeredTools = [...agentMcpTools, ...(messageAccessAvailable ? [messageAccessTool] : []), ...(wakeAvailable ? wakeTools.tools : [])];
   if (request.method === 'ping') return sendJson(res, 200, rpcResult(id, {}));
   if (request.method === 'tools/list') {
     if (request.params?.cursor) return sendJson(res, 200, rpcError(id, -32602, 'Tool cursor is invalid'));
-    return sendJson(res, 200, rpcResult(id, { tools: offeredTools.filter(tool => toolAvailable(identity, tool)).map(publicTool) }));
+    return sendJson(res, 200, rpcResult(id, { tools: offeredTools.filter(tool => toolAvailable(identity, tool)).map(tool => publicTool(tool, identity)) }));
   }
   if (request.method !== 'tools/call') return sendJson(res, 200, rpcError(id, -32601, 'Method not found'));
   const name = request.params?.name;
@@ -222,7 +258,7 @@ export async function handleAgentMcp(req, res, { identity, callRest, maxRequestB
   if (tool && !toolAvailable(identity, tool) && denyUnavailable) denyUnavailable(tool);
   if (!tool || !toolAvailable(identity, tool)) return sendJson(res, 200, rpcError(id, -32602, 'Tool not available to this agent'));
   const wakeTool = wakeAvailable && wakeTools.tools.some(candidate => candidate.name === name);
-  const args = wakeTool && request.params?.arguments !== undefined ? request.params.arguments : request.params?.arguments ?? {};
+  const args = (wakeTool || name === messageAccessTool.name) && request.params?.arguments !== undefined ? request.params.arguments : request.params?.arguments ?? {};
   // Wake's approved contract reports argument refusal in the case-tools envelope.
   // The service validates its closed schema before reading any argument or doing work.
   if (!wakeTool && !(validators.get(name) || (tool && ajv.compile(tool.inputSchema)))(args)) return sendJson(res, 200, rpcError(id, -32602, 'Invalid tool arguments'));
@@ -231,12 +267,13 @@ export async function handleAgentMcp(req, res, { identity, callRest, maxRequestB
     return sendJson(res, 200, rpcError(id, -32602, 'Case is outside this MCP token scope'));
   }
   try {
+    if (name === messageAccessTool.name) return sendJson(res, 200, rpcResult(id, await requestMessageAccess()));
     if (wakeTool) return sendJson(res, 200, rpcResult(id, await wakeTools.call(name, args, identity)));
     const response = await invokeTool(name, args, identity, callRest);
     if (response?.status && response.status >= 400) return sendJson(res, 200, rpcResult(id, toolResult({ status: response.status, ...response.payload }, true)));
     return sendJson(res, 200, rpcResult(id, toolResult(response)));
   } catch (error) {
-    if (wakeTool && error.statusCode) throw wakeHttpError(error, res);
+    if ((wakeTool || name === messageAccessTool.name) && error.statusCode) throw wakeHttpError(error, res);
     return sendJson(res, 200, rpcResult(id, toolResult({ error: 'Tool temporarily unavailable' }, true)));
   }
 }

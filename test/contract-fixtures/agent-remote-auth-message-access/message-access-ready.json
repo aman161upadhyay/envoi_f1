@@ -1,0 +1,51 @@
+{
+  "contract": "agent-remote-auth-message-access",
+  "version": 1,
+  "id": "message-access-ready",
+  "kind": "http",
+  "context": {
+    "permissions": [
+      "receive_agent_messages",
+      "send_agent_messages"
+    ]
+  },
+  "request": {
+    "method": "POST",
+    "path": "/mcp",
+    "auth": "bearer",
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/call",
+      "params": {
+        "name": "envoi_request_message_access",
+        "arguments": {}
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "schema": "messageAccessReply",
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"state\":\"ready\",\"address\":\"fixture@envoi.example\",\"permissions\":[\"receive_agent_messages\",\"send_agent_messages\"]}"
+          }
+        ],
+        "structuredContent": {
+          "state": "ready",
+          "address": "fixture@envoi.example",
+          "permissions": [
+            "receive_agent_messages",
+            "send_agent_messages"
+          ]
+        },
+        "isError": false
+      }
+    }
+  }
+}

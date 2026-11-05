@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "envoi": {
+      "type": "streamable-http",
+      "url": "https://www.envoi-agents.com/mcp",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": { "mode": "cimd" },
+            "baseScopes": ["envoi.agent", "envoi.send"]
+          }
+        }
+      }
+    }
+  }
+}

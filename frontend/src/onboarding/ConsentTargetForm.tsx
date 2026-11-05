@@ -58,10 +58,12 @@ export function ConsentTargetForm({ workspaces, agents, requested, grantable, di
       </>}
     </fieldset>
     <fieldset disabled={locked}><legend>Permissions</legend><p>Only requested permissions allowed by workspace policy can be granted. Receiving messages is required.</p>
+      {kind === 'existing_agent' && <p>Existing permissions are selected initially. To add a requested permission, select it explicitly before approving.</p>}
       <div className="onboarding-permissions">{requested.map(value => <label key={value}>
         <input type="checkbox" checked={permissions.includes(value)} disabled={value === 'receive_agent_messages' || !grantable.includes(value)} onChange={event => setPermissions(previous => event.target.checked ? [...new Set([...previous, value])] : previous.filter(item => item !== value))} />
         {permissionLabel(value)}{value === 'receive_agent_messages' ? ' (required)' : !grantable.includes(value) ? ' (not grantable)' : ''}
       </label>)}</div>
+      {!permissions.includes('send_agent_messages') && <p className="onboarding-notice" role="status">This approval allows receiving only; the assistant cannot send messages or replies.{requested.includes('send_agent_messages') && grantable.includes('send_agent_messages') ? ' Select send agent messages above if you want two-way messaging.' : ' Sending must first be requested by the plugin and allowed by workspace policy.'}</p>}
     </fieldset>
     <div className="onboarding-actions">{onDeny && <button className="button secondary" type="button" disabled={locked} onClick={onDeny}>Decline connection</button>}
       <button className="button primary" disabled={locked || (kind === 'existing_agent' ? !ready : !workspaceId || !name.trim() || !localPart.trim())}>Approve access</button>

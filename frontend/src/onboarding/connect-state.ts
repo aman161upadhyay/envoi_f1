@@ -10,7 +10,7 @@ export interface RouteAvailability {
 }
 
 /** One canonical schema source; no client flags or optimistic route fallback. */
-export function connectionOffer(value: unknown): { localHelper: boolean; availability: RouteAvailability } {
+export function connectionOffer(value: unknown): { localHelper: boolean; remoteMcp: boolean; availability: RouteAvailability } {
   if (!validate(value)) throw new Error('Connection options are unavailable. Try again later.');
   const availability = value as RouteAvailability;
   const enabled = availability.registrationEnabled && availability.installationsEnabled;
@@ -18,13 +18,16 @@ export function connectionOffer(value: unknown): { localHelper: boolean; availab
   const modes = availability.deliveryModes;
   if (JSON.stringify(routes.map(route => route.connectionRoute)) !== JSON.stringify(connectionRoutes)
     || JSON.stringify(modes.map(mode => mode.deliveryMode)) !== JSON.stringify(deliveryModes)) throw new Error('Connection options are unavailable. Try again later.');
-  if (routes.some(route => route.available && (!enabled || !['local_helper', 'authenticated_rest'].includes(route.connectionRoute)))
-    || modes.some(mode => mode.available && (!enabled || mode.deliveryMode !== 'envoi_link'))
+  const remoteMcp = routes.some(route => route.connectionRoute === 'remote_mcp_oauth' && route.available);
+  const provider = routes.some(route => route.connectionRoute === 'provider_connector' && route.available);
+  if (routes.some(route => route.available && !enabled)
+    || modes.some(mode => mode.available && (!enabled || !['envoi_link', 'on_demand'].includes(mode.deliveryMode)))
+    || modes.find(mode => mode.deliveryMode === 'on_demand')?.available !== (remoteMcp || provider)
     || modes.find(mode => mode.deliveryMode === 'envoi_link')?.available !== enabled
     || routes.find(route => route.connectionRoute === 'local_helper')?.available !== enabled) {
     throw new Error('Connection options are unavailable. Try again later.');
   }
-  return { localHelper: enabled && routes.some(route => route.connectionRoute === 'local_helper' && route.available), availability };
+  return { localHelper: enabled && routes.some(route => route.connectionRoute === 'local_helper' && route.available), remoteMcp, availability };
 }
 export async function readConnectionOffer(signal?: AbortSignal, fetcher: typeof fetch = fetch) {
   const response = await fetcher('/api/onboarding/routes', { credentials: 'omit', redirect: 'error', signal });
