@@ -12,19 +12,34 @@ const DEVELOPMENT_ENVIRONMENT = 'development';
 export const isDeploymentName = value => typeof value === 'string' && DEPLOYMENT_NAME.test(value);
 
 export const STAGING_UNCAPPED_AGENT_HUMAN_IDS = 'ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS';
+export const UNCAPPED_AGENT_HUMAN_IDS = 'ENVOI_UNCAPPED_AGENT_HUMAN_IDS';
 const HUMAN_ID = /^human_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-// An exact, staging-only exception for at most two existing humans.
-export function stagingUncappedAgentHumanIds(value, environment) {
+function parseUncappedHumanIds(value, setting) {
   if (value === undefined || value === null || value === '') return new Set();
-  if (environment !== 'staging' || typeof value !== 'string') {
-    throw new Error(`${STAGING_UNCAPPED_AGENT_HUMAN_IDS} is only valid in staging`);
-  }
+  if (typeof value !== 'string') throw new Error(`${setting} must contain one or two distinct exact human IDs`);
   const ids = value.split(',').map(id => id.trim());
   if (ids.length < 1 || ids.length > 2 || ids.some(id => !HUMAN_ID.test(id)) || new Set(ids).size !== ids.length) {
-    throw new Error(`${STAGING_UNCAPPED_AGENT_HUMAN_IDS} must contain one or two distinct exact human IDs`);
+    throw new Error(`${setting} must contain one or two distinct exact human IDs`);
   }
   return new Set(ids);
+}
+
+// Retain the existing staging setting during migration of the deployed Worker and Container.
+export function stagingUncappedAgentHumanIds(value, environment) {
+  if (value !== undefined && value !== null && value !== '' && environment !== 'staging') {
+    throw new Error(`${STAGING_UNCAPPED_AGENT_HUMAN_IDS} is only valid in staging`);
+  }
+  return parseUncappedHumanIds(value, STAGING_UNCAPPED_AGENT_HUMAN_IDS);
+}
+
+// Each deployment configures the exact IDs of up to two owners independently. Neither an
+// email address nor an agent-supplied identifier can grant this exception.
+export function uncappedAgentHumanIds(env, environment) {
+  const ids = parseUncappedHumanIds(env[UNCAPPED_AGENT_HUMAN_IDS], UNCAPPED_AGENT_HUMAN_IDS);
+  for (const id of stagingUncappedAgentHumanIds(env[STAGING_UNCAPPED_AGENT_HUMAN_IDS], environment)) ids.add(id);
+  if (ids.size > 2) throw new Error(`${UNCAPPED_AGENT_HUMAN_IDS} and ${STAGING_UNCAPPED_AGENT_HUMAN_IDS} must name at most two distinct human IDs together`);
+  return ids;
 }
 
 // Production must name its deployment (production-config.js). Anything else defaults to
