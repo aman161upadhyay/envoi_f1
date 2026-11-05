@@ -31,6 +31,17 @@ async function setup(){
  const recovery={purpose:'phase-c-retained-followups-before-native' as const,priorWindow:state.window,priorProgramSha256:state.planSha256,originalExecutionPath,originalExecutionSha256:hash(originalRaw),statePath,stateSha256:hash(stateRaw),approvedAmendmentSha256:receipt.approvalReceiptSha256,time:{mode:'same-fixed' as const}};
  return{options:{releaseRoot,receipt,expected,flowCases,actorIds:roles,reviewedPlan,preflight:{...preflight,conservativeMessages:24 as const,canonicalEffects:11 as const},recovery},state,initial};
 }
+async function historicalFixture(){
+ const s=await setup(),ledger=s.initial.ledger;
+ await ledger.bindWork('green',{canonicalWorkHash:h('8'),nativeToken:h('9'),evidenceHash:h('a')});await ledger.selectPhase('hermes',['green'],Date.now()+30000);
+ const filename=path.join(s.options.releaseRoot,'phase-c-cumulative-requests.jsonl'),oldPrefix=await fs.readFile(filename),receipt={...s.options.receipt,approvalReceiptSha256:h('b')},priorWindow=hash(JSON.stringify(receipt));
+ await ledger.bindApprovedWindow(priorWindow,{approvalReceiptHash:h('b'),allHostsStopped:true,canonicalLeasesZero:true,previousNativeTerminal:true,chargedAttempts:30});
+ const graphApprovalRaw=JSON.stringify({purpose:'phase-c-reviewed-graph-source-approval',version:1,ownerApproved:true,approvalId:'inert-recovery-boundary',planSha256:s.options.reviewedPlan.planSha256,window:priorWindow,clientSource:receipt.clientSource,serverSource:receipt.serverSource,packetSha256:receipt.packetSha256}),reviewedPlan={...s.options.reviewedPlan,ownerApprovalHash:hash(graphApprovalRaw)};
+ await ledger.amendReviewedPlan(reviewedPlan,{expectedWindow:priorWindow,allHostsStopped:true,canonicalLeasesZero:true,previousNativeTerminal:true,chargedAttempts:30,graphApprovalRaw,clientSource:receipt.clientSource,serverSource:receipt.serverSource,packetSha256:receipt.packetSha256});
+ s.state.window=priorWindow;const raw=JSON.stringify(s.state),executionRaw=JSON.stringify({window:priorWindow,packetSha256:receipt.packetSha256,receipt});await fs.writeFile(s.options.recovery.statePath,raw);await fs.writeFile(s.options.recovery.originalExecutionPath,executionRaw);
+ const options={...s.options,receipt,reviewedPlan,recovery:{...s.options.recovery,priorWindow,stateSha256:hash(raw),originalExecutionSha256:hash(executionRaw),approvedAmendmentSha256:receipt.approvalReceiptSha256}};
+ return{...s,options,ledger,filename,oldPrefix};
+}
 it('opens the explicit retained path with current counts without writing old state, seed or ledger',async()=>{
  const {options}=await setup(),before=await fs.readFile(path.join(options.releaseRoot,'phase-c-cumulative-requests.jsonl')),state=await fs.readFile(options.recovery.statePath);
  const c=await ContinuationController.recoverRetainedFollowups(options);expect(c.active()).toBe(true);expect(c.ledger.hasNativeHistory).toBe(false);expect(c.ledger.snapshot().chargedAttempts).toBe(30);c.stop();
@@ -64,4 +75,19 @@ it('binds the original execution, exact program and absolute deadline independen
  await expect(ContinuationController.recoverRetainedFollowups({...options,recovery:{...options.recovery,priorProgramSha256:h('e')}})).rejects.toThrow('ZERO_NATIVE_RETAINED_STATE_REQUIRED');
  await expect(ContinuationController.recoverRetainedFollowups({...options,receipt:{...options.receipt,hardStopUtc:new Date(Date.parse(options.receipt.hardStopUtc)+60000).toISOString()}})).rejects.toThrow('ORIGINAL_RECOVERY_INTERVAL_REQUIRED');
  await fs.appendFile(options.recovery.originalExecutionPath,' ');await expect(ContinuationController.recoverRetainedFollowups(options)).rejects.toThrow('ORIGINAL_RECOVERY_EXECUTION_CHANGED');
+});
+it('preserves prior bindings and a phase without a window, while recovering only after the proven stopped boundary',async()=>{
+ const s=await historicalFixture();expect(s.ledger.hasNativeHistory).toBe(true);expect(s.ledger.hasNativeHistorySinceWindow(s.options.recovery.priorWindow)).toBe(false);
+ const c=await ContinuationController.recoverRetainedFollowups(s.options);c.stop();expect(c.ledger.snapshot().chargedAttempts).toBe(30);expect((await fs.readFile(s.filename)).subarray(0,s.oldPrefix.length)).toEqual(s.oldPrefix);
+ const rows=(await fs.readFile(s.filename,'utf8')).trim().split('\n').map(x=>JSON.parse(x));expect(rows.find(r=>r.kind==='phase')).not.toHaveProperty('window');
+});
+it('refuses every native row after the boundary, including a phase without window and a later-window admission',async()=>{
+ for(const later of[false,true]){const s=await historicalFixture();if(later)await s.ledger.bindApprovedWindow(h('c'),{approvalReceiptHash:h('d'),allHostsStopped:true,canonicalLeasesZero:true,previousNativeTerminal:true,chargedAttempts:30});
+  await s.ledger.bindWork('private-followup',{canonicalWorkHash:h('c'),nativeToken:h('d'),evidenceHash:h('e')});await s.ledger.selectPhase('hermes',['private-followup'],Date.now()+30000);
+  expect(s.ledger.hasNativeHistorySinceWindow(s.options.recovery.priorWindow)).toBe(true);await expect(ContinuationController.recoverRetainedFollowups(s.options)).rejects.toThrow('ZERO_NATIVE_LEDGER_REQUIRED');
+ }
+});
+it('refuses missing and ambiguous stopped boundaries rather than guessing the latest window',async()=>{
+ const s=await historicalFixture(),window=s.options.recovery.priorWindow;expect(()=>s.ledger.hasNativeHistorySinceWindow(h('e'))).toThrow('EXACT_RECOVERY_START_WINDOW_REQUIRED');
+ await s.ledger.bindApprovedWindow(h('c'),{approvalReceiptHash:h('d'),allHostsStopped:true,canonicalLeasesZero:true,previousNativeTerminal:true,chargedAttempts:30});await s.ledger.bindApprovedWindow(window,{approvalReceiptHash:h('e'),allHostsStopped:true,canonicalLeasesZero:true,previousNativeTerminal:true,chargedAttempts:30});expect(()=>s.ledger.hasNativeHistorySinceWindow(window)).toThrow('EXACT_RECOVERY_START_WINDOW_REQUIRED');
 });

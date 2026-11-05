@@ -92,11 +92,11 @@ export class ContinuationController {
         ||f.caseId!==options.flowCases[name==='private'?'private-followup':'amber-followup']||!digest(f.ownerReceiptSha256);})
       ||state.followups.private.messageId===state.followups.amber.messageId)refuse('BOTH_ACCEPTED_FOLLOWUPS_REQUIRED');
     const ledger=await RequestBudgetLedger.open(path.join(options.releaseRoot,'phase-c-cumulative-requests.jsonl'));
-    if(ledger.hasNativeHistory||ledger.snapshot().chargedAttempts!==30||ledger.snapshot().pending||ledger.snapshot().unresolvedDispatches)refuse('ZERO_NATIVE_LEDGER_REQUIRED');
+    if(ledger.hasNativeHistorySinceWindow(r.priorWindow)||ledger.snapshot().chargedAttempts!==30||ledger.snapshot().pending||ledger.snapshot().unresolvedDispatches)refuse('ZERO_NATIVE_LEDGER_REQUIRED');
     const result=await this.openChecked(options,true);
     if(hash(await fs.readFile(r.statePath))!==r.stateSha256)refuse('RETAINED_RECOVERY_STATE_CHANGED');
     if(hash(await fs.readFile(r.originalExecutionPath))!==r.originalExecutionSha256)refuse('ORIGINAL_RECOVERY_EXECUTION_CHANGED');
-    if(result.ledger.hasNativeHistory||result.ledger.snapshot().chargedAttempts!==30)refuse('ZERO_NATIVE_LEDGER_REQUIRED');
+    if(result.ledger.hasNativeHistorySinceWindow(r.priorWindow)||result.ledger.snapshot().chargedAttempts!==30)refuse('ZERO_NATIVE_LEDGER_REQUIRED');
     await time?.consume();
     return result;
   }

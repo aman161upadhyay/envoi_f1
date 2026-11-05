@@ -93,6 +93,14 @@ export class RequestBudgetLedger {
   get modelCap() { return approvedCaps(this.lines[0].modelBudgetAmendment).models; }
   /** Includes admissions which failed before the first physical provider request. */
   get hasNativeHistory() { return this.lines.some(line=>nativeHistoryKinds.has(line.kind)); }
+  /** Retain older admissions. Recovery refuses every native record at or after
+   * the proven stopped execution's window boundary, including later windows. */
+  hasNativeHistorySinceWindow(window:string) {
+    if(!exactHash(window))refuse('EXACT_RECOVERY_START_WINDOW_REQUIRED');
+    const boundaries=this.lines.flatMap((line,index)=>(line.kind==='seed'||line.kind==='window')&&line.window===window?[index]:[]);
+    if(boundaries.length!==1)refuse('EXACT_RECOVERY_START_WINDOW_REQUIRED');
+    return this.lines.slice(boundaries[0]).some(line=>nativeHistoryKinds.has(line.kind));
+  }
   snapshot() {
     const requests = this.lines.filter(l => l.kind === 'attempt');
     const finished = new Set(this.lines.filter(l => l.kind === 'finished').map(l => l.attempt));
