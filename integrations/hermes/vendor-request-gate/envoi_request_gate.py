@@ -228,6 +228,13 @@ class ForwardedResponse:
         self.conn.cancel();self.response.close();self.unregister(self.conn)
 
 def native_work_token(p,session_id=None):
+    # A main client exists before Hermes initializes its session state. Its
+    # trusted factory supplies a deferred identity, never an invented ID. An
+    # uninitialized resolver must not fall back to some other active turn.
+    if callable(session_id):
+        try:session_id=session_id()
+        except Exception:raise RequestGateRefused('PROVIDER_GATE_NATIVE_WORK_REQUIRED') from None
+        if session_id is None:raise RequestGateRefused('PROVIDER_GATE_NATIVE_WORK_REQUIRED')
     if session_id is None:
         try:
             from agent.relay_runtime import active_turn

@@ -62,7 +62,7 @@
      from agent.anthropic_credentials import anthropic_route_is_oauth
      agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
 -    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
-+    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout, gate_session_id=agent.session_id)
++    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout, gate_session_id=lambda: agent.session_id)
      if not agent.quiet_mode:
          print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
          _print_key_banner(effective_key, "token")
@@ -352,7 +352,7 @@
              raise PermissionError("authenticated runtime bootstrap unavailable")
 --- /dev/null
 +++ b/agent/envoi_request_gate.py
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,331 @@
 +"""Opt-in, mandatory provider transport for an isolated, single-profile Hermes host.
 +
 +Installed only by an explicit reviewed native-source adoption, never by importing
@@ -583,6 +583,13 @@
 +        self.conn.cancel();self.response.close();self.unregister(self.conn)
 +
 +def native_work_token(p,session_id=None):
++    # A main client exists before Hermes initializes its session state. Its
++    # trusted factory supplies a deferred identity, never an invented ID. An
++    # uninitialized resolver must not fall back to some other active turn.
++    if callable(session_id):
++        try:session_id=session_id()
++        except Exception:raise RequestGateRefused('PROVIDER_GATE_NATIVE_WORK_REQUIRED') from None
++        if session_id is None:raise RequestGateRefused('PROVIDER_GATE_NATIVE_WORK_REQUIRED')
 +    if session_id is None:
 +        try:
 +            from agent.relay_runtime import active_turn

@@ -1,5 +1,7 @@
 # Isolated Hermes physical-request gate (review only)
 
+Hermes constructs its main client before initializing the session ID. The patched factory defers reading the real agent identity until each physical dispatch, including SDK copies/rebuilds. A missing, invalid or unavailable deferred identity refuses before opening the loopback connection; it cannot fall back to another active turn. The meter still requires that exact native session's authenticated work binding. Pinned constructor-order tests execute the upstream initializer, client factory and session initializer with inert setup phases; real SDK tests then verify the resulting identity and rejection of mismatched work against the loopback meter.
+
 This optional patch targets native Hermes `ccc695635094d7615373db267b77f894d978b1a0` exactly. It is not an automatic Hermes update or an installed runtime change. The Envoi helper behaves normally unless the private operator requires a gate; when required, missing proof refuses before a native session is created. It changes no Envoi server contract, enrollment, saved journal, provider, model, credential or upstream TLS.
 
 `prepare_patch.py --source <clean pinned native checkout> --output <NEW isolated folder> --write-fixtures` checks the native HEAD and every touched file against its Git blob. It prepares seven review files, a unified patch and a hash manifest. It never writes the source input or a profile. Re-run it only with a new output directory. A source adoption/restart is a separate human decision.

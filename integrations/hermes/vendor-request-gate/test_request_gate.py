@@ -62,6 +62,59 @@ class Base(unittest.TestCase):
         fixtures=json.loads((HERE/'pinned-factory-fixtures.json').read_text())
         text='from __future__ import annotations\n'+fixtures['functions'][file][name]
         ns={};ns.update(extra or {});exec(compile(text,file,'exec'),ns);return ns[name]
+    def construct_native_agent(self,builder,session_id='native_inert_session'):
+        """Execute the pinned constructor, client phases and real session initializer.
+
+        Unrelated tool/memory/display setup is inert; constructor ordering and
+        session creation are the upstream code, not a pre-populated mock agent.
+        """
+        from contextlib import suppress
+        from datetime import datetime
+        snippets=json.loads((HERE/'pinned-factory-fixtures.json').read_text())['functions']['agent/agent_init.py']
+        agent=types.SimpleNamespace(_read_reasoning_echo_from_config=lambda:False)
+        events=[]
+        ns={name:lambda *a,**k:None for name in (
+            '_install_safe_stdio','_finalize_routing','_set_defaults','_init_prompt_cache_config',
+            '_init_turn_state','_setup_logging','_init_fallback_chain','_load_tools',
+            '_apply_display_config','_init_memory','_apply_agent_section','_build_context_engine',
+            '_configure_ollama_num_ctx','_enforce_minimum_context','_warn_nonagentic_hermes_model',
+            '_inject_context_engine_tools','_init_usage_state','_clamp_compressor_to_ollama_num_ctx',
+            '_emit_compression_summary','_snapshot_primary_runtime')}
+        ns.update({'_PASSTHROUGH_PARAMS':['model','quiet_mode','max_iterations'],
+            '_GATEWAY_IDENTITY_PARAMS':[],'_CALLBACK_PARAMS':[],
+            '_CONTROL_STATE':{},'_STREAM_STATE':{},'_SESSION_STATE':{},
+            'IterationBudget':lambda *a:object(),
+            '_resolve_api_mode':lambda a,*args:setattr(a,'api_mode','anthropic_messages'),
+            'get_provider_request_timeout':lambda *a:2,
+            '_parse_compression_config':lambda *a:None,
+            '_resolve_context_length':lambda *a:(None,None,None,{}),
+            'datetime':datetime,'sys':sys,'new_session_id':lambda *a:'native_inert_session',
+            '_publish_session_id':lambda sid:events.append(('session-initialized',sid)),
+            'get_hermes_home':lambda:self.profile,'suppress':suppress})
+        text='from __future__ import annotations\n'+'\n\n'.join(snippets[n] for n in
+            ('init_agent','_build_client','_init_anthropic_client','_init_session_state'))
+        exec(compile(text,'pinned-agent-init','exec'),ns)
+        def module(name,**values):
+            m=types.ModuleType(name);m.__dict__.update(values);return m
+        def build(*a,**kw):
+            events.append(('client-constructed',hasattr(agent,'session_id')))
+            return builder(*a,**kw)
+        modules={
+            'agent.safe_worker_policy':module('agent.safe_worker_policy',safe_worker_enabled=lambda:False),
+            'hermes_cli.providers':module('hermes_cli.providers',is_actual_route=lambda *a:False),
+            'hermes_cli.config':module('hermes_cli.config',load_config_readonly=lambda:{}),
+            'agent.anthropic_adapter':module('agent.anthropic_adapter',build_anthropic_client=build),
+            'agent.anthropic_credentials':module('agent.anthropic_credentials',
+                resolve_anthropic_token=lambda:'inert-sentinel-not-real-key',anthropic_route_is_oauth=lambda *a,**k:False),
+            'tools.checkpoint_manager':module('tools.checkpoint_manager',CheckpointManager=lambda **kw:object()),
+            'tools.todo_tool':module('tools.todo_tool',TodoStore=lambda:object()),
+        }
+        with self.native_module(modules):
+            ns['init_agent'](agent,model='inert-model',provider='anthropic',
+                api_key='inert-sentinel-not-real-key',base_url='https://api.anthropic.com',
+                quiet_mode=True,session_id=session_id)
+        self.assertEqual(events,[('client-constructed',False),('session-initialized','native_inert_session')])
+        return agent
     @contextmanager
     def native_module(self,extra=None):
         values={'agent.envoi_request_gate':self.gate};values.update(extra or {});before={k:sys.modules.get(k) for k in values};sys.modules.update(values)
@@ -72,6 +125,23 @@ class Base(unittest.TestCase):
                 else:sys.modules[k]=v
 
 class CoreTests(Base):
+    def test_actual_constructor_binds_the_later_session_without_preexisting_identity(self):
+        for sid in ('native_inert_session',None):
+            with self.subTest(explicit_session=sid):
+                agent=self.construct_native_agent(lambda *a,**kw:types.SimpleNamespace(source=kw['gate_session_id']),sid)
+                self.assertEqual(agent.session_id,'native_inert_session')
+                self.assertTrue(callable(agent._anthropic_client.source))
+                self.assertEqual(agent._anthropic_client.source(),agent.session_id)
+        self.assertEqual(self.server.requests,[])
+    def test_deferred_missing_identity_cannot_fall_back_to_another_active_turn(self):
+        relay=types.ModuleType('agent.relay_runtime')
+        relay.active_turn=lambda:types.SimpleNamespace(lease=types.SimpleNamespace(session_id='native_inert_session'))
+        with self.native_module({'agent.relay_runtime':relay}):
+            for source in (lambda:None,lambda:'',lambda:123,lambda:(_ for _ in ()).throw(AttributeError('uninitialized'))):
+                with self.subTest(source=source),self.assertRaises(self.gate.RequestGateRefused) as error:
+                    self.gate.native_work_token(self.gate.policy(),source)
+                self.assertEqual(error.exception.code,'PROVIDER_GATE_NATIVE_WORK_REQUIRED')
+        self.assertEqual(self.server.requests,[])
     def test_loaded_instance_attestation_requires_patched_files_policy_and_fresh_nonce(self):
         native=self.root/'isolated-native';agent=native/'agent';agent.mkdir(parents=True)
         for name in self.gate._factory_names:
@@ -158,6 +228,31 @@ if RUN_SDK:
             block.start();self.addCleanup(block.stop)
         def client(self):return self.gate.construct_client(anthropic,{'api_key':'inert-sentinel-not-real-key','max_retries':0},session_id='native_inert_session')
         def request(self,client,**kwargs):return client.messages.create(model='inert-model',max_tokens=10,messages=[{'role':'user','content':'inert'}],**kwargs)
+        def test_actual_constructor_and_sdk_rebuild_dispatch_with_the_initialized_identity(self):
+            def build(key,url,**kw):
+                return self.gate.construct_client(anthropic,{'api_key':key,'base_url':url,'max_retries':0},kw['gate_session_id'])
+            for sid in ('native_inert_session',None):
+                with self.subTest(explicit_session=sid):
+                    agent=self.construct_native_agent(build,sid)
+                    with agent._anthropic_client as client:
+                        self.assertEqual(self.request(client).content[0].text,'ok')
+                        with client.with_options(timeout=2) as rebuilt:
+                            self.assertEqual(self.request(rebuilt).content[0].text,'ok')
+            self.assertEqual(len(self.server.requests),4)
+            self.assertEqual(self.server.charge_file.read_bytes(),b'charged\n'*4)
+        def test_actual_constructor_missing_or_mismatched_later_identity_never_charges(self):
+            def build(key,url,**kw):
+                return self.gate.construct_client(anthropic,{'api_key':key,'base_url':url,'max_retries':0},kw['gate_session_id'])
+            agent=self.construct_native_agent(build)
+            with agent._anthropic_client as client:
+                del agent.session_id
+                with self.assertRaises(anthropic.APIConnectionError) as error:self.request(client)
+                self.assertIsInstance(error.exception.__cause__,self.gate.RequestGateRefused)
+                self.assertEqual(error.exception.__cause__.code,'PROVIDER_GATE_NATIVE_WORK_REQUIRED')
+                agent.session_id='different-native-session'
+                with self.assertRaises(anthropic.PermissionDeniedError):self.request(client)
+            self.assertEqual(self.server.requests,[])
+            self.assertFalse(self.server.charge_file.exists())
         def test_real_sdk_normal_and_rebuilt_client_use_meter(self):
             with self.client() as client:
                 self.assertEqual(self.request(client).content[0].text,'ok')
