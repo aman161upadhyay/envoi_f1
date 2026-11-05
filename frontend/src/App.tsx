@@ -810,6 +810,23 @@ export function AppShell(props: ShellProps) {
   if (workspace.id === rootWorkspace.id) {
     for (const agent of view.agents) if (!agentEntries.some(entry => entry.agent.id === agent.id)) agentEntries.push({ agent, inbox: workspace, view });
   }
+  // Directory membership already authorizes the inbox metadata. Keep its
+  // navigation entry visible while that inbox's heavier human-view is pending
+  // or a transient refresh fails; selecting it still requires a fresh view.
+  const agentNavEntries = [
+    ...agentInboxes.filter(inbox => inbox.status !== 'removed').map(inbox => {
+      const entry = agentEntries.find(item => item.inbox.id === inbox.id);
+      return {
+        id: inbox.ownerAgentId || inbox.id,
+        name: entry?.agent.name || inbox.removedAgent?.name || inbox.name.replace(/ inbox$/i, ''),
+        inbox,
+        onboardingStatus: entry?.agent.onboardingStatus || (inbox.status === 'pending_approval' ? 'pending_approval' : 'approved')
+      };
+    }),
+    ...agentEntries.filter(entry => entry.inbox.id === rootWorkspace.id && !agentInboxes.some(inbox => inbox.ownerAgentId === entry.agent.id)).map(({ agent, inbox }) => ({
+      id: agent.id, name: agent.name, inbox, onboardingStatus: agent.onboardingStatus
+    }))
+  ];
   const aggregateViews = [view, ...[rootWorkspace, ...agentInboxes].filter(inbox => inbox.id !== workspace.id).map(inbox => childViews[inbox.id]).filter((item): item is HumanView => Boolean(item))];
   const queueView: HumanView = workspace.id === rootWorkspace.id ? {
     ...view,
@@ -981,11 +998,10 @@ export function AppShell(props: ShellProps) {
           <NavItem section="needsMe" label="Needs you" icon={<Hand />} count={counts.needsMe} active={workspace.id === rootWorkspace.id && section === 'needsMe'} onClick={() => chooseInbox(rootWorkspace, 'needsMe')} attention />
           <NavItem section="completed" label="Done" icon={<Check />} active={workspace.id === rootWorkspace.id && section === 'completed'} onClick={() => chooseInbox(rootWorkspace, 'completed')} />
           <div className="nav-section-heading"><span>Agents</span><button aria-label="Add agent" disabled={!canManageInbox} onClick={openConnect}><Plus size={15} /></button></div>
-          {agentEntries.map(({ agent, inbox }, index) => {
-            const name = agent.name;
-            const expanded = expandedAgents.includes(agent.id);
+          {agentNavEntries.map(({ id, name, inbox, onboardingStatus }, index) => {
+            const expanded = expandedAgents.includes(id);
             const color = AGENT_COLORS[index % AGENT_COLORS.length];
-            return <div key={agent.id}><div className="agent-nav-row"><button className="nav-item" aria-current={inbox && workspace.id === inbox.id ? 'page' : undefined} onClick={() => inbox ? chooseInbox(inbox) : chooseSection('integrations')}><span className="agent-dot" style={{ '--agent-color': color } as React.CSSProperties}>{initials(name)}</span><span>{name}</span>{agent.onboardingStatus !== 'approved' && <span className="nav-count">Setup</span>}</button>{inbox && <button className="icon-button" aria-label={`${expanded ? 'Collapse' : 'Expand'} ${name}`} aria-expanded={expanded} onClick={() => toggleAgent(agent.id)}><ChevronDown size={14} /></button>}</div>{expanded && inbox && <div className="agent-subnav"><NavItem section="inbox" label="Inbox" icon={<Inbox />} active={workspace.id === inbox.id && section === 'inbox'} onClick={() => chooseInbox(inbox)} /><NavItem section="needsMe" label="Needs you" icon={<Hand />} active={workspace.id === inbox.id && section === 'needsMe'} onClick={() => chooseInbox(inbox, 'needsMe')} /><NavItem section="completed" label="Done" icon={<Check />} active={workspace.id === inbox.id && section === 'completed'} onClick={() => chooseInbox(inbox, 'completed')} /></div>}</div>;
+            return <div key={id}><div className="agent-nav-row"><button className="nav-item" aria-current={workspace.id === inbox.id ? 'page' : undefined} onClick={() => chooseInbox(inbox)}><span className="agent-dot" style={{ '--agent-color': color } as React.CSSProperties}>{initials(name)}</span><span>{name}</span>{onboardingStatus !== 'approved' && <span className="nav-count">Setup</span>}</button><button className="icon-button" aria-label={`${expanded ? 'Collapse' : 'Expand'} ${name}`} aria-expanded={expanded} onClick={() => toggleAgent(id)}><ChevronDown size={14} /></button></div>{expanded && <div className="agent-subnav"><NavItem section="inbox" label="Inbox" icon={<Inbox />} active={workspace.id === inbox.id && section === 'inbox'} onClick={() => chooseInbox(inbox)} /><NavItem section="needsMe" label="Needs you" icon={<Hand />} active={workspace.id === inbox.id && section === 'needsMe'} onClick={() => chooseInbox(inbox, 'needsMe')} /><NavItem section="completed" label="Done" icon={<Check />} active={workspace.id === inbox.id && section === 'completed'} onClick={() => chooseInbox(inbox, 'completed')} /></div>}</div>;
           })}
           {agentInboxes.some(inbox => inbox.status === 'removed') && <div className="nav-section-heading"><span>Archived agents</span></div>}
           {agentInboxes.filter(inbox => inbox.status === 'removed').map(inbox => <button key={inbox.id} className="nav-item" onClick={() => chooseInbox(inbox)}><Archive size={16} /><span>{inbox.removedAgent?.name || inbox.name}</span></button>)}

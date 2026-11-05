@@ -28,6 +28,23 @@ it('starts in a full-width inbox without selecting a conversation and uses actua
   expect(markup).toContain('Sign out');
 });
 
+it('keeps both agent inboxes in navigation before their views load', () => {
+  const root = { id: 'root_inbox', organizationId: 'org_layout', name: 'My inbox', ownerHumanId: 'human_layout', ownerAgentId: null, status: 'active', createdAt: '2026-10-06T12:00:00Z' } as Inbox;
+  const first = { ...root, id: 'first_inbox', name: 'Atlas inbox', kind: 'agent', parentInboxId: root.id, ownerAgentId: 'agent_atlas', ownerHumanId: null } as Inbox;
+  const second = { ...root, id: 'second_inbox', name: 'Beacon inbox', kind: 'agent', parentInboxId: root.id, ownerAgentId: 'agent_beacon', ownerHumanId: null } as Inbox;
+  const view = { inbox: root, canManageInbox: true, mode: 'human-observer', agents: [], caseQueue: [], cases: [], messages: [], assets: [], folders: [], participantDirectory: {}, invitations: [], recentEvents: [], deliveryReceipts: [], calendarConnectors: [], calendarProviders: {}, summary: { agents: 0, cases: 0, messages: 0, assets: 0, needsMe: 0 }, navigation: { needsMe: 0, activeWork: 0, waiting: 0, completed: 0 }, capabilities: [] } as HumanView;
+  const markup = renderToStaticMarkup(createElement(AppShell, {
+    config: { provider: 'local', hosted: false }, human: { id: 'human_layout', displayName: 'Human' }, organizations: [], workspaces: [root, first, second], workspace: root, view,
+    onSelectWorkspace: vi.fn(), onRefresh: vi.fn(), onLogout: vi.fn(), syncNotice: ''
+  }));
+  expect(markup).toContain('Atlas');
+  expect(markup).toContain('Beacon');
+  expect(markup).toContain('Expand Atlas');
+  expect(markup).toContain('Expand Beacon');
+  expect(markup.match(/Expand Atlas/g)).toHaveLength(1);
+  expect(markup.match(/Expand Beacon/g)).toHaveLength(1);
+});
+
 it('does not label another human’s instruction as You', () => {
   const event = { id: 'evt_instruction', type: 'message', actor: 'human_sender', createdAt: '2026-10-06T12:00:00Z', payload: { senderHumanId: 'human_sender', messageType: 'instruction', text: 'Check the latest draft', deliveryState: 'delivered' }, linkedPolicyEvaluation: null, precedingEventRef: null } as CaseEvent;
   const workCase = { id: 'case_instruction', principal: 'human_sender', actingAgent: 'agent_owned' } as WorkCase;
