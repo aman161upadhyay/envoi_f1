@@ -159,6 +159,23 @@ export async function getPrefsForCases(store, scope) {
     return { caseId: workCase.id, annotation, revision: validatedCaseMarker(caseScope, workCase) };
   });
   if (new Set(entries.map(entry => entry.caseId)).size !== entries.length) throw invalid('Cases must have unique identifiers');
+  if (typeof store.getJsonBatch === 'function') {
+    // PostgreSQL reads all preference documents in one MVCC snapshot. Folder
+    // mutations and annotation mutations are transactional, so a read-only
+    // projection does not need to acquire a lock for every visible case.
+    const paths = [folders, ...entries.map(entry => entry.annotation)];
+    const documents = await store.getJsonBatch(paths);
+    const folderRecords = documents.get(folders)?.folders ?? [];
+    const preferences = entries.map(entry => {
+      const annotation = documents.get(entry.annotation) ?? emptyAnnotation();
+      const { updatedAt, ...projected } = projectAnnotation(annotation, entry.revision, folderRecords);
+      return [entry.caseId, projected];
+    });
+    return {
+      folders: folderRecords.map(({ id, name }) => ({ id, name })),
+      inboxPreferences: Object.fromEntries(preferences)
+    };
+  }
   return store.withTransaction([lockKey(folders), ...entries.map(entry => lockKey(entry.annotation))], async () => {
     const folderRecords = (await store.getJson(folders))?.folders ?? [];
     const preferences = [];
