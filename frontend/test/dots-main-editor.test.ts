@@ -38,4 +38,12 @@ it('turns the released editor OAuth refusal into same-agent reconnect instructio
   expect(recovery.props).toMatchObject({ name: 'Example', address: 'example@envoi.example', reconnect: true });
   expect(update).toHaveBeenCalledExactlyOnceWith('inbox_example', 'agent_example', ['receive_agent_messages', 'send_agent_messages'], ['receive_agent_messages']);
   expect(props.notify).not.toHaveBeenCalled();
+  const retry = elements(tree).find(item => item.type === 'button' && text(item) === 'Save permissions')!;
+  expect(retry.props.disabled).toBe(true);
+  retry.props.onClick(); await Promise.resolve();
+  expect(update).toHaveBeenCalledTimes(1);
+  elements(tree).find(item => item.type === AgentPermissionPicker)!.props.onChange(['receive_agent_messages']);
+  tree = render();
+  expect(elements(tree).find(item => item.type === 'button' && text(item) === 'Save permissions')!.props.disabled).toBe(false);
+  expect(elements(tree).some(item => item.type === DotsSetupGuide)).toBe(false);
 });

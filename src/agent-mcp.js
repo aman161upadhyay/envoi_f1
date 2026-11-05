@@ -72,7 +72,7 @@ const publicTool = (tool, identity) => {
   const sending = tool.permission === 'send_agent_messages';
   result.annotations = { readOnlyHint: readOnly, destructiveHint: !readOnly && (sending || irreversibleTools.has(name)), openWorldHint: sending || externalTools.has(name) };
   if (identity.oauth) {
-    const needed = name === messageAccessTool.name ? 'envoi.send' : remoteAuthScopes.find(entry => entry.permission === tool.permission)?.scope;
+    const needed = remoteAuthScopes.find(entry => entry.permission === tool.permission)?.scope;
     const scopes = [...new Set(['envoi.agent', ...(needed ? [needed] : [])])];
     result.securitySchemes = [{ type: 'oauth2', scopes }];
     result._meta = { ...(result._meta || {}), securitySchemes: result.securitySchemes };

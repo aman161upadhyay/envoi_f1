@@ -1527,7 +1527,7 @@ export function PoliciesPage({ entries, onConnect, onRefresh, notify }: { entrie
     setError(''); setReconsentRequired(false);
   }
   async function save() {
-    if (!editing) return;
+    if (!editing || reconsentRequired) return;
     setBusy(true); setError('');
     try {
       const hidden = editing.agent.permissions.filter(permission => !AGENT_PERMISSION_OPTIONS.some(option => option.id === permission));
@@ -1554,10 +1554,10 @@ export function PoliciesPage({ entries, onConnect, onRefresh, notify }: { entrie
     <MonadPermissionPanel agents={entries.filter(entry => entry.view.canManageInbox).map(({ agent, inbox }) => ({ id: agent.id, name: agent.name, inboxId: inbox.id }))} /></>}
     {editing && <Modal title={`Edit ${editing.agent.name}’s permissions`} onClose={() => setEditing(null)} dismissible={!busy}>
       <p>Changes apply to future agent actions. Earlier activity stays in the record.</p>
-      <AgentPermissionPicker selected={selected} onChange={setSelected} />
+      <AgentPermissionPicker selected={selected} onChange={value => { setSelected(value); setError(''); setReconsentRequired(false); }} />
       <FormError message={error} />
-      {reconsentRequired && <DotsSetupGuide origin={window.location.origin} name={editing.agent.name} address={editing.agent.address} reconnect />}
-      <div className="dialog-actions"><button type="button" className="button secondary" disabled={busy} onClick={() => setEditing(null)}>Cancel</button><button type="button" className="button primary" disabled={busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Save permissions'}</button></div>
+      {reconsentRequired && <><p>Approve the missing access in your Dot using the message access prompt below. Saving these same choices again cannot expand OAuth access. After approval, close this editor and refresh permissions.</p><DotsSetupGuide origin={window.location.origin} name={editing.agent.name} address={editing.agent.address} reconnect /></>}
+      <div className="dialog-actions"><button type="button" className="button secondary" disabled={busy} onClick={() => setEditing(null)}>Cancel</button><button type="button" className="button primary" disabled={busy || reconsentRequired} onClick={() => void save()}>{busy ? 'Saving…' : 'Save permissions'}</button></div>
     </Modal>}
   </PageFrame>;
 }

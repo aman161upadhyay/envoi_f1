@@ -35,7 +35,10 @@ test('real OAuth MCP offers explicit recovery without exposing send or changing 
   const list=(await rpc(server,tokens.access_token,'tools/list')).payload.result.tools;
   const recovery=list.find(tool=>tool.name==='envoi_request_message_access');
   assert.ok(recovery);
-  assert.deepEqual(recovery.securitySchemes,[{type:'oauth2',scopes:['envoi.agent','envoi.send']}]);
+  assert.equal(tokens.scope,'envoi.agent');
+  assert.deepEqual(recovery.securitySchemes,[{type:'oauth2',scopes:['envoi.agent']}]);
+  const grantedScopes=new Set(tokens.scope.split(/\s+/));
+  assert.ok(recovery.securitySchemes[0].scopes.every(scope=>grantedScopes.has(scope)),'read-only recovery must be invokable before Send is granted');
   assert.deepEqual(recovery._meta.securitySchemes,recovery.securitySchemes);
   assert.deepEqual(recovery.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
   assert.equal(list.some(tool=>tool.name==='envoi_start_case'),false);

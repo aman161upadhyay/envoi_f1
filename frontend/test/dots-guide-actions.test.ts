@@ -43,6 +43,11 @@ it('keeps the endpoint and prompt selectable when clipboard permission fails', a
   const tree = elements(render());
   expect(tree.some(item => item.props.role === 'alert')).toBe(true);
   expect(tree.some(item => item.type === 'input' && item.props.readOnly && item.props.value === `${origin}/mcp`)).toBe(true);
+  const recovery = tree.find(item => item.type === 'textarea' && item.props['aria-label'] === 'Dots message access prompt')!;
+  expect(recovery.props.readOnly).toBe(true);
+  expect(recovery.props.value).toContain('my address is example@envoi.example');
+  expect(recovery.props.value).toContain('envoi_request_message_access');
+  expect(tree.some(item => item.type === 'textarea' && item.props['aria-label'] === 'Dots verification prompt')).toBe(true);
 });
 
 it('opens recovery for the selected existing agent and drops it when that identity is no longer offered', () => {

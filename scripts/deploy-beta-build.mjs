@@ -16,20 +16,34 @@ export function readBetaBuildSource({ cwd, execute = execFileSync }) {
   return { headSha, mainSha, clean: git('status', '--porcelain', '--untracked-files=all').length === 0, descendedFromMain };
 }
 
-export function betaBuildDeployArgs(sha) {
+// Explicitly selected production messaging profile. These are the seven existing
+// live values verified for the Dots release, not defaults for another environment.
+export const DOTS_MESSAGING_VARS = Object.freeze({
+  ENVOI_INSTALLATIONS_V2: 'true',
+  ENVOI_AGENT_REGISTRATION_V2: 'true',
+  ENVOI_CASE_SESSIONS_V1: 'true',
+  ENVOI_HTTP_WAKE_V1: 'true',
+  ENVOI_REMOTE_MCP_OAUTH: 'true',
+  ENVOI_MCP_EVENTS_V1: 'true',
+  ENVOI_MCP_EVENTS_CALLBACK_ORIGINS: 'https://connectors.api.openai.com'
+});
+
+export function betaBuildDeployArgs(sha, { profile } = {}) {
   if (!/^[a-f0-9]{40}$/.test(sha || '')) throw new Error('Beta build requires a full Git commit SHA');
-  return ['deploy', '--env', 'beta', '--var', `ENVOI_RELEASE_SHA:${sha}`];
+  if (profile !== undefined && profile !== 'dots-messaging') throw new Error('Unsupported beta build profile');
+  return ['deploy', '--env', 'beta', '--var', `ENVOI_RELEASE_SHA:${sha}`,
+    ...Object.entries(profile === 'dots-messaging' ? DOTS_MESSAGING_VARS : {}).flatMap(([name, value]) => ['--var', `${name}:${value}`])];
 }
 
-export async function deployBetaBuild({ cwd = fileURLToPath(new URL('../', import.meta.url)), env = process.env,
+export async function deployBetaBuild({ cwd = fileURLToPath(new URL('../', import.meta.url)), env = process.env, profile,
   inventory = (...argv) => secretInventory({ cwd, env }, ...argv), run = spawnSync,
   source = () => readBetaBuildSource({ cwd }) } = {}) {
   await checkDeploymentConfiguration();
   const identity = source();
   const plan = promotionPlan({ ...identity, target: 'beta', sha: identity.headSha, deploy: true });
+  const args = betaBuildDeployArgs(plan.sha, { profile });
   requireBetaSecretNames(inventory);
   const sha = plan.sha;
-  const args = betaBuildDeployArgs(sha);
   const wrangler = resolve(cwd, 'node_modules/wrangler/bin/wrangler.js');
   const result = run(process.execPath, [wrangler, ...args], {
     cwd, env: { ...env, CLOUDFLARE_ACCOUNT_ID: RELEASE_ACCOUNT_ID }, stdio: 'inherit'
@@ -39,6 +53,12 @@ export async function deployBetaBuild({ cwd = fileURLToPath(new URL('../', impor
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  try { await deployBetaBuild(); }
+  try {
+    const flags = process.argv.slice(2);
+    if (flags.length > 1 || flags.some(flag => flag !== '--profile=dots-messaging')) {
+      throw new Error('Usage: node scripts/deploy-beta-build.mjs [--profile=dots-messaging]');
+    }
+    await deployBetaBuild({ profile: flags.length ? 'dots-messaging' : undefined });
+  }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }
