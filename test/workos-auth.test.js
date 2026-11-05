@@ -90,6 +90,12 @@ test('WorkOS auth uses one-time PKCE state and maps provider users to stable hum
   const cookie = sessionCookieHeader('sealed_session_1');
   const human = await auth.getHuman({ headers: { cookie } });
   assert.equal(human.id, completed.human.id);
+  const writeTransaction = store.withTransaction.bind(store);
+  let repeatedWrites = 0;
+  store.withTransaction = (...args) => { repeatedWrites += 1; return writeTransaction(...args); };
+  assert.equal((await auth.getHuman({ headers: { cookie } })).id, human.id);
+  assert.equal(repeatedWrites, 0, 'unchanged authenticated reads need no write lock');
+  store.withTransaction = writeTransaction;
   assert.equal(human.providerUserId, 'user_workos_1');
   assert.equal(human.organizationId, 'org_workos_1');
   assert.equal(human.role, 'admin');
@@ -248,6 +254,28 @@ test('parallel first authentication retains one stable provider-user human ident
   const updated = await auth.upsertHuman({ ...admittedUser, name: 'Updated fixture' });
   assert.equal(updated.id, humans[0].id);
   assert.equal(updated.displayName, 'Updated fixture');
+});
+
+test('unchanged WorkOS session avoids write transactions while revocation still denies access', async () => {
+  const { auth, store } = await fixtureAuth({});
+  await auth.upsertHuman(admittedUser);
+  const session = { sessionId: 'session_fast_path', user: admittedUser };
+  assert.ok(await auth.recordSession(session));
+  const transaction = store.withTransaction.bind(store);
+  let writes = 0;
+  store.withTransaction = (...args) => { writes += 1; return transaction(...args); };
+
+  assert.ok(await auth.recordSession(session));
+  assert.equal(writes, 0);
+
+  assert.equal((await auth.upsertHuman({ ...admittedUser, name: 'Changed name' })).displayName, 'Changed name');
+  assert.equal(writes, 1);
+  const relative = auth.sessionPath(session.sessionId);
+  const record = await store.getJson(relative);
+  await store.putJson(relative, { ...record, revokedAt: store.now() });
+  const beforeRejectedSession = writes;
+  assert.equal(await auth.recordSession(session), null);
+  assert.equal(writes, beforeRejectedSession + 1);
 });
 
 test('provider-user human and index writes roll back together on failure', async () => {
