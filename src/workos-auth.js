@@ -366,6 +366,16 @@ export class WorkOSAuthService {
 
   async recordSession(session, issuedAt = null) {
     if (!session?.sessionId) return null;
+    // A verified, unchanged access token needs no session write. The caller
+    // checks the durable revocation record again before granting access.
+    const claims = tokenClaims(session.accessToken || session.session?.accessToken);
+    const current = await this.store.getJson(this.sessionPath(session.sessionId));
+    const now = this.now();
+    const tokenExpiry = Number.isFinite(claims.expiresAt) ? claims.expiresAt : current?.sessionExpiresAt;
+    if (current && !current.revokedAt && current.sessionExpiresAt > now
+      && current.accessExpiresAt > now && tokenExpiry <= current.accessExpiresAt) {
+      return { ...session, expiresAt: new Date(Math.min(tokenExpiry, current.sessionExpiresAt)).toISOString() };
+    }
     return this.store.withTransaction([this.sessionKey(session.sessionId)], async () => {
       const relative = this.sessionPath(session.sessionId);
       const existing = await this.store.getJson(relative);
@@ -477,7 +487,15 @@ export class WorkOSAuthService {
     const pending = (async () => {
       const session = await this.getSession(req);
       if (!session) return null;
-      const human = await this.upsertHuman(session.user);
+      // getSession has already checked current admission. An unchanged profile
+      // needs no provider-user write lock on every inbox request.
+      const index = await this.store.getJson(path.join('auth', 'workos-user-index', `${encodeURIComponent(session.user.id)}.json`));
+      const stored = index?.humanId ? await this.store.getJson(path.join('humans', `${index.humanId}.json`)) : null;
+      const displayName = session.user.name || [session.user.firstName, session.user.lastName].filter(Boolean).join(' ') || session.user.email;
+      const human = index && stored?.id === index.humanId && stored.workosUserId === session.user.id
+        && stored.email === session.user.email && stored.displayName === displayName
+        && stored.authProvider === 'workos' && stored.emailVerified && stored.verifiedAt
+        && session.user.emailVerified ? stored : await this.upsertHuman(session.user);
       if (!await this.isSessionActive(session)) return null;
       return { ...publicHuman(human), providerUserId: session.user.id, organizationId: session.organizationId || null, role: session.role || null, permissions: session.permissions || [] };
     })();

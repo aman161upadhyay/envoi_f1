@@ -855,22 +855,25 @@ export function AppShell(props: ShellProps) {
   useEffect(() => {
     if (rootWorkspace.id === previewWorkspace.id) return;
     let cancelled = false;
-    const inboxes = [rootWorkspace, ...agentInboxes];
+    // The selected root view is already loaded. Only child inboxes contribute
+    // cases to the All inboxes and Done aggregates.
+    const inboxes = agentInboxes.filter(inbox => inbox.status !== 'removed');
     let loading = false;
     async function refreshChildren() {
       if (loading) return;
       loading = true;
       try {
-        const results = await Promise.all(inboxes.map(async inbox => {
+        await Promise.all(inboxes.map(async inbox => {
           const order = childResponseOrder(inbox.id);
           const ticket = order.begin();
           try {
             const refreshed = await api.humanView(inbox.id);
-            return { key: inbox.id, value: refreshed, order, ticket };
+            // Publish each inbox as it arrives. One slow agent must not leave
+            // every completed conversation hidden behind the slowest read.
+            if (!cancelled) setChildViews(current => cancelled ? current : applyOrderedViewResponses(current, [{ key: inbox.id, value: refreshed, order, ticket }]));
           }
-          catch { return null; }
+          catch { /* Retain the last successful child snapshot. */ }
         }));
-        if (!cancelled) setChildViews(current => cancelled ? current : applyOrderedViewResponses(current, results));
       } finally { loading = false; }
     }
     void refreshChildren();

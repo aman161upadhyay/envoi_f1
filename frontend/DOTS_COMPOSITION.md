@@ -1,6 +1,6 @@
 # Dots production composition
 
-Current base: origin/main at9cb88c06a6f9e160e01e16435e715d6a05850a75. Preserve its named-owner quota and inbox-visibility changes. Earlier e66e71a/af0392a release proposals are superseded and have not been promoted by this task.
+Current base: origin/main atf9233dd4e4f4eab7861c03c2778ab20a48ff03bd. Preserve its named-owner quota, inbox-visibility and WorkOS read-performance changes. Earlier e66e71a/af0392a release proposals are superseded and have not been promoted by this task. Candidate71d2342 passed complete hosted CI on the previous9cb base; the combined current-main tree must pass complete exact-candidate CI again.
 
 This composition carries the already human-approved message-access contract v1 revision2: the read-only recovery action requires envoi.agent, while its native consent challenge still requests envoi.agent plus envoi.send. Actual Send enforcement, permission-filtered discovery and forbidden responses remain unchanged.
 
