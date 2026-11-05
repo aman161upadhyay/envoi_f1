@@ -26,7 +26,10 @@ async function canonical(contract,file,ref){
 function wakeTools(httpWake={}){return createMcpWakeTools({httpWake,enabled:true,clientFor:()=>({connectionRoute:'provider_connector',wakeOrigins:['https://hooks.envoi-provider.com']})});}
 
 test('default MCP behavior retains the original tools and version negotiation',async()=>{
-  const list=await invoke('tools/list',{});assert.equal(list.status,200);assert.deepEqual(list.value.result.tools,agentMcpTools.map(publicTool));assert.equal(list.value.result.tools.length,19);
+  const list=await invoke('tools/list',{});assert.equal(list.status,200);assert.deepEqual(list.value.result.tools.map(publicTool),agentMcpTools.map(publicTool));assert.equal(list.value.result.tools.length,19);
+  assert.equal(list.value.result.tools.find(tool=>tool.name==='envoi_agent_info').annotations.readOnlyHint,true);
+  assert.deepEqual(list.value.result.tools.find(tool=>tool.name==='envoi_send_message').annotations,{readOnlyHint:false,destructiveHint:true,openWorldHint:true});
+  assert.ok(list.value.result.tools.every(tool=>tool.securitySchemes===undefined),'legacy credentials do not declare OAuth');
   const initialize=await invoke('initialize',{protocolVersion:protocol,capabilities:{},clientInfo:{name:'test',version:'1'}});assert.equal(initialize.status,200);assert.equal(initialize.value.result.protocolVersion,'2025-11-25');assert.deepEqual(initialize.value.result.capabilities,{tools:{listChanged:false}});
   const invalid=await invoke('tools/call',{name:'envoi_claim_work',arguments:{unexpected:true}});assert.equal(invalid.value.error.code,-32602);
   const unknown=await invoke('tools/list',{}, {}, {'mcp-protocol-version':protocol});assert.equal(unknown.status,400);assert.equal(unknown.value.error.code,-32600);

@@ -8,7 +8,7 @@ import {api, connect, documents, exchange, freshOwner, remoteServer, stored} fro
 const fixtureRoot = new URL('./contract-fixtures/agent-remote-auth-message-access/', import.meta.url);
 const fixture = async name => JSON.parse(await readFile(new URL(name+'.json', fixtureRoot),'utf8'));
 const schemas=JSON.parse(await readFile(new URL('schemas.json',fixtureRoot),'utf8'));
-const validate=new Ajv({strict:true}).compile(schemas.messageAccessReply);
+const validate=new Ajv({strict:true}).compile(schemas.definitions.messageAccessReply);
 const rpc=(server,token,method,params={})=>api(server.baseUrl,'/mcp',{token,headers:{accept:'application/json, text/event-stream'},body:{jsonrpc:'2.0',id:1,method,params}});
 const call=(server,token,name,args={})=>rpc(server,token,'tools/call',{name,arguments:args});
 

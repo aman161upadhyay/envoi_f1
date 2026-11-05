@@ -45,7 +45,8 @@ for(const backend of backends)test(`[${backend.name}] complete remote MCP discov
   const legacy=await rpc('initialize',{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'legacy-test',version:'1'}},'2025-11-25');
   assert.deepEqual(legacy.payload.result,{protocolVersion:'2025-11-25',capabilities:{tools:{listChanged:false}},serverInfo:{name:'envoi',version:'0.1.0'}});
   const oldDiscovery=await rpc('server/discover',{},'2025-11-25');assert.equal(oldDiscovery.payload.error.code,-32601);
-  const oldTools=await rpc('tools/list',{},'2025-11-25'),newTools=await rpc('tools/list');assert.equal(oldTools.payload.result.tools.length,19);assert.deepEqual(newTools.payload.result,oldTools.payload.result);
+  const oldTools=await rpc('tools/list',{},'2025-11-25'),newTools=await rpc('tools/list');assert.equal(oldTools.payload.result.tools.length,20);assert.deepEqual(newTools.payload.result,oldTools.payload.result);
+  assert.equal(oldTools.payload.result.tools.filter(tool=>tool.name==='envoi_request_message_access').length,1);
   const agentRoute=`/api/inboxes/${registration.agentInboxId}/agents/${registration.agentId}`;
   assert.equal((await api(server.baseUrl,`${agentRoute}/pause`,{session:who.session,body:{}})).status,200);
   const paused=await rpc('server/discover');assert.equal(paused.status,409,paused.text);assert.equal(paused.payload.code,'AGENT_PAUSED');
