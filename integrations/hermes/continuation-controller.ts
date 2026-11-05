@@ -5,6 +5,7 @@ import { assertHumanDecisionMessage, type HumanDecisionWorkMessage } from '../..
 import { continuationAllocation,defaultContinuationFlowPolicy,validateReviewedContinuationPlan,validateReviewedGraphApproval,type ReviewedContinuationPlan } from './continuation-plan';
 import { RequestBudgetLedger, nativeWorkToken } from './request-budget';
 import { guardNativeSubmission, type NativeSubmissionGuard } from './native-binding';
+import {authorizeRecoveryTime,type RecoveryTimeLink}from'./recovery-time';
 
 type Role=RequestBudgetLedger['flows'][number]['role'];
 const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
@@ -18,6 +19,16 @@ export type ContinuationPreflight=Readonly<{
   checkedAtMs:number;allSelectedHostsStopped:true;activeLeases:0;protectedCasePaused:true;originalDispositionMatches:true;
   actualHermesCalls:24;actualOpenClawCalls:6;conservativeMessages:22;canonicalEffects:9;cases:4;newInstallations:5;assets:0;
 }>;
+/** Recovery is deliberately limited to the two accepted sends before ANY native admission.
+ * Current counts are not the immutable historical ledger seed counts. */
+export type RetainedFollowupPreflight=Omit<ContinuationPreflight,'conservativeMessages'|'canonicalEffects'> & Readonly<{
+  conservativeMessages:24;canonicalEffects:11;
+}>;
+export type RetainedFollowupRecovery=Readonly<{
+  purpose:'phase-c-retained-followups-before-native';
+  priorWindow:string;priorProgramSha256:string;originalExecutionPath:string;originalExecutionSha256:string;
+  statePath:string;stateSha256:string;approvedAmendmentSha256:string;time:RecoveryTimeLink;
+}>;
 type Work=Readonly<{workId:string;message:{id:string;caseId:string;kind?:string;outcome?:string;recipientAgentId?:string;[key:string]:unknown}}>; 
 type Binding={flowId:string;role:Role;caseId:string;workId:string;evidenceSha256:string;submitted:boolean;finished:boolean;forwardingClosed:boolean;closedJournalSha256?:string;sessionId?:string;nativeToken?:string};
 type Deferred={promise:Promise<void>;resolve:()=>void;reject:(reason:unknown)=>void};
@@ -28,6 +39,9 @@ export type SameRoleNativeAttribution=Readonly<{window:string;role:Role;flowId:s
 export type SameRoleNativeAttributionGuard=(binding:SameRoleNativeAttribution,signal:AbortSignal)=>Promise<SameRoleNativeAttribution>;
 /** A trusted operator checkpoint, not a native flow or an acceptance proof. */
 export type PreNativeControl=Readonly<{controlId:string;mode:'pause'|'expiry'|'revoke'|'authority-expiry';role:Role;caseId:string;workId:string;evidenceSha256:string}>;
+type ControllerOptions={releaseRoot:string;receipt:ContinuationReceipt;preflight:ContinuationPreflight;
+  expected:{clientSource:string;serverSource:string;runnerSha256:string;packetSha256:string;priorLedgerSha256:string};
+  flowCases:Readonly<Record<string,string>>;actorIds:Readonly<Record<Role,string>>;reviewedPlan?:ReviewedContinuationPlan;sameRoleNativeAttribution?:SameRoleNativeAttributionGuard};
 const deferred=():Deferred=>{let resolve!:()=>void,reject!:(reason:unknown)=>void;const promise=new Promise<void>((a,b)=>{resolve=a;reject=b;});void promise.catch(()=>{});return {promise,resolve,reject};};
 
 /** Trusted local execution controller. No model-facing API, startup, enrollment or send operation. */
@@ -42,9 +56,53 @@ export class ContinuationController {
   private constructor(readonly ledger:RequestBudgetLedger,readonly receipt:ContinuationReceipt,
     private flowCases:Readonly<Record<string,string>>,private actorIds:Readonly<Record<Role,string>>,private sameRoleNativeAttribution?:SameRoleNativeAttributionGuard){}
 
-  static async open(options:{releaseRoot:string;receipt:ContinuationReceipt;preflight:ContinuationPreflight;
-    expected:{clientSource:string;serverSource:string;runnerSha256:string;packetSha256:string;priorLedgerSha256:string};
-    flowCases:Readonly<Record<string,string>>;actorIds:Readonly<Record<Role,string>>;reviewedPlan?:ReviewedContinuationPlan;sameRoleNativeAttribution?:SameRoleNativeAttributionGuard}) {
+  static async open(options:ControllerOptions) {
+    return this.openChecked(options);
+  }
+  /** A trusted, separately approved operator must verify the original receipts, canonical
+   * copies, drained sole writer and current action ledger before calling this entry point.
+   * This method also refuses all native history and reads the pinned retained state itself. */
+  static async recoverRetainedFollowups(options:Omit<ControllerOptions,'preflight'> & {
+    preflight:RetainedFollowupPreflight;recovery:RetainedFollowupRecovery;
+  }) {
+    const r=options.recovery;
+    if(r.purpose!=='phase-c-retained-followups-before-native'||!digest(r.priorWindow)||!digest(r.stateSha256)
+      ||!digest(r.priorProgramSha256)||!digest(r.originalExecutionSha256)||!path.isAbsolute(r.originalExecutionPath)
+      ||!digest(r.approvedAmendmentSha256)||r.approvedAmendmentSha256!==options.receipt.approvalReceiptSha256
+      ||!path.isAbsolute(r.statePath)||!options.reviewedPlan) refuse('EXACT_RETAINED_FOLLOWUP_RECOVERY_REQUIRED');
+    const executionStat=await fs.lstat(r.originalExecutionPath);
+    if(!executionStat.isFile()||executionStat.isSymbolicLink()||executionStat.size>1000000)refuse('BOUNDED_ORIGINAL_EXECUTION_REQUIRED');
+    const executionRaw=await fs.readFile(r.originalExecutionPath);
+    if(hash(executionRaw)!==r.originalExecutionSha256)refuse('ORIGINAL_RECOVERY_EXECUTION_CHANGED');
+    const original=JSON.parse(executionRaw.toString('utf8'));
+    if(original.window!==r.priorWindow||hash(JSON.stringify(original.receipt))!==r.priorWindow
+      ||original.receipt?.ownerApproved!==true||original.receipt?.modelCap!==64
+      ||!digest(original.packetSha256)||original.receipt?.packetSha256!==original.packetSha256
+      ||!Number.isFinite(Date.parse(original.receipt?.startUtc))||Date.parse(options.receipt.startUtc)<Date.parse(original.receipt.startUtc))refuse('ORIGINAL_RECOVERY_INTERVAL_REQUIRED');
+    const time=await authorizeRecoveryTime({link:r.time,original:original.receipt,receipt:options.receipt,priorWindow:r.priorWindow,priorPacketSha256:original.packetSha256,stateSha256:r.stateSha256,programSha256:r.priorProgramSha256,amendmentSha256:r.approvedAmendmentSha256,releaseRoot:options.releaseRoot});
+    const stat=await fs.lstat(r.statePath);
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.size>1000000)refuse('BOUNDED_RETAINED_STATE_REQUIRED');
+    const raw=await fs.readFile(r.statePath);
+    if(hash(raw)!==r.stateSha256)refuse('RETAINED_RECOVERY_STATE_CHANGED');
+    const state=JSON.parse(raw.toString('utf8'));
+    if(state.window!==r.priorWindow||state.phase!=='prepared'||state.planSha256!==r.priorProgramSha256
+      ||['started','results','effects','controlProofs','taskReceipts'].some(k=>!state[k]||typeof state[k]!=='object'||Array.isArray(state[k])||Object.keys(state[k]).length))refuse('ZERO_NATIVE_RETAINED_STATE_REQUIRED');
+    if(!state.followups||Object.keys(state.followups).sort().join()!=='amber,private'
+      ||['private','amber'].some(name=>{const f=state.followups[name];return f?.state!=='accepted'||!/^msg_[A-Za-z0-9_-]+$/.test(f.messageId)
+        ||f.caseId!==options.flowCases[name==='private'?'private-followup':'amber-followup']||!digest(f.ownerReceiptSha256);})
+      ||state.followups.private.messageId===state.followups.amber.messageId)refuse('BOTH_ACCEPTED_FOLLOWUPS_REQUIRED');
+    const ledger=await RequestBudgetLedger.open(path.join(options.releaseRoot,'phase-c-cumulative-requests.jsonl'));
+    if(ledger.hasNativeHistory||ledger.snapshot().chargedAttempts!==30||ledger.snapshot().pending||ledger.snapshot().unresolvedDispatches)refuse('ZERO_NATIVE_LEDGER_REQUIRED');
+    const result=await this.openChecked(options,true);
+    if(hash(await fs.readFile(r.statePath))!==r.stateSha256)refuse('RETAINED_RECOVERY_STATE_CHANGED');
+    if(hash(await fs.readFile(r.originalExecutionPath))!==r.originalExecutionSha256)refuse('ORIGINAL_RECOVERY_EXECUTION_CHANGED');
+    if(result.ledger.hasNativeHistory||result.ledger.snapshot().chargedAttempts!==30)refuse('ZERO_NATIVE_LEDGER_REQUIRED');
+    await time?.consume();
+    return result;
+  }
+  private static async openChecked(options:Omit<ControllerOptions,'preflight'> & {
+    preflight:ContinuationPreflight|RetainedFollowupPreflight;
+  },recovering=false) {
     const {receipt:r,preflight:p,expected:e}=options;const start=Date.parse(r.startUtc),stop=Date.parse(r.hardStopUtc),now=Date.now();
     if(r.version!==1||r.ownerApproved!==true||!digest(r.approvalReceiptSha256)||!digest(r.packetSha256)
       ||r.clientSource!==e.clientSource||r.serverSource!==e.serverSource||r.runnerSha256!==e.runnerSha256||r.packetSha256!==e.packetSha256
@@ -52,7 +110,7 @@ export class ContinuationController {
       ||!Number.isFinite(start)||!Number.isFinite(stop)||start>now||stop<=now||stop-start>90*60*1000) refuse('FRESH_EXACT_CONTINUATION_APPROVAL_REQUIRED');
     if(!Number.isFinite(p.checkedAtMs)||p.checkedAtMs>now||now-p.checkedAtMs>300000||!p.allSelectedHostsStopped||p.activeLeases!==0
       ||!p.protectedCasePaused||!p.originalDispositionMatches||p.actualHermesCalls!==24||p.actualOpenClawCalls!==6
-      ||p.conservativeMessages!==22||p.canonicalEffects!==9||p.cases!==4||p.newInstallations!==5||p.assets!==0) refuse('FRESH_PRESERVED_PREFLIGHT_REQUIRED');
+      ||p.conservativeMessages!==(recovering?24:22)||p.canonicalEffects!==(recovering?11:9)||p.cases!==4||p.newInstallations!==5||p.assets!==0) refuse('FRESH_PRESERVED_PREFLIGHT_REQUIRED');
     const reviewed=options.reviewedPlan?validateReviewedContinuationPlan(options.reviewedPlan):undefined;
     if(options.sameRoleNativeAttribution!==undefined&&typeof options.sameRoleNativeAttribution!=='function')refuse('SAME_ROLE_NATIVE_ATTRIBUTION_REQUIRED');
     if(reviewed&&(Object.keys(options.flowCases).length!==reviewed.flows.length||reviewed.flows.some(f=>options.flowCases[f.id]!==reviewed.flowCases[f.id])

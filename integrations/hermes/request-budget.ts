@@ -91,6 +91,8 @@ export class RequestBudgetLedger {
   get flows() { const plan=this.reviewedPlan;return plan?plan.flows.map(({policy:_policy,...flow})=>flow):structuredClone(this.lines[0].flows) as Flow[]; }
   get prior() { return structuredClone(this.lines[0].prior) as Prior; }
   get modelCap() { return approvedCaps(this.lines[0].modelBudgetAmendment).models; }
+  /** Includes admissions which failed before the first physical provider request. */
+  get hasNativeHistory() { return this.lines.some(line=>nativeHistoryKinds.has(line.kind)); }
   snapshot() {
     const requests = this.lines.filter(l => l.kind === 'attempt');
     const finished = new Set(this.lines.filter(l => l.kind === 'finished').map(l => l.attempt));
