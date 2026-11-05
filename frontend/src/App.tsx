@@ -142,6 +142,9 @@ function WorkspaceApp() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [view, setView] = useState<HumanView | null>(null);
+  // Child snapshots stay available across workspace switches within one
+  // authenticated session. AppShell unmounts while the selected view reloads.
+  const childViewCache = useRef<Record<string, HumanView>>({});
   const [requestedSection, setRequestedSection] = useState<NavSection>('inbox');
   const [error, setError] = useState('');
   const [authNotice, setAuthNotice] = useState(() => new URLSearchParams(window.location.search).has('auth_error')
@@ -198,6 +201,7 @@ function WorkspaceApp() {
     setWorkspaces([]);
     setWorkspace(null);
     setView(null);
+    childViewCache.current = {};
     setError('');
     setRequestedSection('inbox');
     setSyncNotice('');
@@ -597,6 +601,12 @@ function WorkspaceApp() {
       historyBusy={historyBusy}
       claimRoute={['/claim', '/authorize-agent'].includes(window.location.pathname)}
       initialSection={requestedSection}
+      initialChildViews={childViewCache.current}
+      onChildViewsChange={next => {
+        if (isCurrentSession(renderedGeneration) && humanRef.current?.id === human.id) {
+          childViewCache.current = { ...childViewCache.current, ...next };
+        }
+      }}
       onSelectWorkspace={async (next, nextSection = 'inbox') => { checkRenderedSession(); setRequestedSection(nextSection); await selectWorkspace(next); }}
       onPreferenceUpdated={(inboxId, caseId, preference) => {
         checkRenderedSession();
@@ -775,6 +785,8 @@ interface ShellProps {
   config: AuthConfig; human: Human; organizations: Organization[]; workspaces: Workspace[];
   workspace: Workspace; view: HumanView; onSelectWorkspace: (workspace: Workspace, section?: NavSection) => Promise<void>;
   initialSection?: NavSection;
+  initialChildViews?: Record<string, HumanView>;
+  onChildViewsChange?: (views: Record<string, HumanView>) => void;
   claimRoute?: boolean;
   onPreferenceUpdated?: (inboxId: string, caseId: string, preference: InboxPreference) => void;
   onRefresh: () => Promise<unknown>; onLogout: () => Promise<void>; syncNotice: string;
@@ -793,7 +805,8 @@ export function AppShell(props: ShellProps) {
   const [navOpen, setNavOpen] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<string[]>([]);
   const [toast, setToast] = useState('');
-  const [childViews, setChildViews] = useState<Record<string, HumanView>>({});
+  const [childViews, setChildViews] = useState<Record<string, HumanView>>(() => props.initialChildViews || {});
+  const [childViewFailures, setChildViewFailures] = useState<string[]>([]);
   const childResponseOrders = useRef(new Map<string, ReturnType<typeof createViewResponseOrder>>());
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
@@ -840,6 +853,9 @@ export function AppShell(props: ShellProps) {
   const counts = caseCounts({ ...queueView, caseQueue: filterInboxCases(queueView.caseQueue) });
   const caseSources = aggregateViews.flatMap(item => item.caseQueue.map(workCase => ({ workCase, sourceView: item, key: `${item.inbox.id}:${workCase.id}` })));
   const inboxCases = filterInboxCases(queueView.caseQueue, { view: section === 'completed' ? 'done' : 'main', ...(selectedFolderId ? { folderId: selectedFolderId } : {}) });
+  const missingAgentViews = agentInboxes.filter(inbox => inbox.status !== 'removed' && !childViews[inbox.id]);
+  const doneLoadStatus = section === 'completed' && workspace.id === rootWorkspace.id && missingAgentViews.length
+    ? missingAgentViews.some(inbox => childViewFailures.includes(inbox.id)) ? 'error' : 'loading' : undefined;
   const sectionCases = section === 'completed' ? inboxCases : casesForSection(inboxCases, section, queueView.assets);
   const visibleCaseEntries = sectionCases.flatMap(item => {
     const source = caseSources.find(entry => entry.workCase === item);
@@ -852,6 +868,7 @@ export function AppShell(props: ShellProps) {
   const currentAgent = workspace.kind === 'agent' ? view.agents.find(item => item.id === workspace.ownerAgentId) || null : null;
 
   useEffect(() => { document.documentElement.dataset.theme = 'light'; localStorage.removeItem('envoi.theme'); }, []);
+  useEffect(() => { props.onChildViewsChange?.(childViews); }, [childViews, props.onChildViewsChange]);
   useEffect(() => {
     if (rootWorkspace.id === previewWorkspace.id) return;
     let cancelled = false;
@@ -870,9 +887,12 @@ export function AppShell(props: ShellProps) {
             const refreshed = await api.humanView(inbox.id);
             // Publish each inbox as it arrives. One slow agent must not leave
             // every completed conversation hidden behind the slowest read.
-            if (!cancelled) setChildViews(current => cancelled ? current : applyOrderedViewResponses(current, [{ key: inbox.id, value: refreshed, order, ticket }]));
+            if (!cancelled) {
+              setChildViews(current => cancelled ? current : applyOrderedViewResponses(current, [{ key: inbox.id, value: refreshed, order, ticket }]));
+              setChildViewFailures(current => current.filter(id => id !== inbox.id));
+            }
           }
-          catch { /* Retain the last successful child snapshot. */ }
+          catch { if (!cancelled) setChildViewFailures(current => current.includes(inbox.id) ? current : [...current, inbox.id]); }
         }));
       } finally { loading = false; }
     }
@@ -924,6 +944,7 @@ export function AppShell(props: ShellProps) {
     const ticket = order.begin();
     const refreshed = await api.humanView(inboxId);
     setChildViews(current => applyOrderedViewResponses(current, [{ key: inboxId, value: refreshed, order, ticket }]));
+    setChildViewFailures(current => current.filter(id => id !== inboxId));
   }
   function childResponseOrder(inboxId: string) {
     let order = childResponseOrders.current.get(inboxId);
@@ -1039,7 +1060,7 @@ export function AppShell(props: ShellProps) {
           </main>
         ) : (
           <div className={`case-layout ${selectedCase ? 'inbox-detail-view show-detail' : 'inbox-list-view'}`}>
-{!selectedCase && <CaseQueue section={section} folderName={view.folders?.find(folder => folder.id === selectedFolderId)?.name} cases={visibleCases} view={queueView} currentAgent={currentAgent} selectedId={selectedCaseEntry?.key || null} caseKey={item => caseSources.find(source => source.workCase === item)?.key || item.id} onOpenNav={() => setNavOpen(true)} onConnect={openConnect} onLoadOlder={props.onLoadOlder} historyBusy={props.historyBusy} onSelect={openCase} />}
+{!selectedCase && <CaseQueue section={section} folderName={view.folders?.find(folder => folder.id === selectedFolderId)?.name} cases={visibleCases} view={queueView} currentAgent={currentAgent} selectedId={selectedCaseEntry?.key || null} caseKey={item => caseSources.find(source => source.workCase === item)?.key || item.id} onOpenNav={() => setNavOpen(true)} onConnect={openConnect} onLoadOlder={props.onLoadOlder} historyBusy={props.historyBusy} onSelect={openCase} conversationsStatus={doneLoadStatus} onRetryConversations={() => { for (const inbox of missingAgentViews) void refreshAgentInbox(inbox.id).catch(() => setChildViewFailures(current => current.includes(inbox.id) ? current : [...current, inbox.id])); }} />}
             {selectedCase && <main id="main-content" className="case-main">
 <CaseWorkspace key={`${selectedCaseView.inbox.id}:${selectedCase.id}`} workCase={selectedCase} view={selectedCaseView} canManageInbox={selectedCaseView.canManageInbox} railOpen={railOpen} onRailToggle={() => setRailOpen(value => !value)} onBack={() => { setSelectedCaseId(null); }} onRefresh={refreshSelectedCase} onPreferencesChanged={async preference => { preferenceUpdated(selectedCaseView.inbox.id, selectedCase.id, preference); setSelectedCaseId(null); await refreshSelectedCase().catch(caught => setToast(errorMessage(caught))); }} notify={setToast} />
             </main>}
@@ -1073,7 +1094,7 @@ function NavItem({ section, label, icon, count, active, attention, onClick }: { 
   return <button className={`nav-item ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined} onClick={() => onClick(section)}><span className="nav-icon">{icon}</span><span>{label}</span>{Boolean(count) && <span className={`nav-count ${attention ? 'attention' : ''}`} aria-label={`${count} items`}>{count! > 9 ? '9+' : count}</span>}</button>;
 }
 
-function CaseQueue({ section, folderName, cases, view, currentAgent, selectedId, caseKey, onOpenNav, onConnect, onLoadOlder, historyBusy, onSelect }: { section: NavSection; folderName?: string; cases: WorkCase[]; view: HumanView; currentAgent: Agent | null; selectedId: string | null; caseKey: (workCase: WorkCase) => string; onOpenNav: () => void; onConnect: () => void; onLoadOlder?: () => Promise<void>; historyBusy?: boolean; onSelect: (workCase: WorkCase) => void }) {
+function CaseQueue({ section, folderName, cases, view, currentAgent, selectedId, caseKey, onOpenNav, onConnect, onLoadOlder, historyBusy, onSelect, conversationsStatus, onRetryConversations }: { section: NavSection; folderName?: string; cases: WorkCase[]; view: HumanView; currentAgent: Agent | null; selectedId: string | null; caseKey: (workCase: WorkCase) => string; onOpenNav: () => void; onConnect: () => void; onLoadOlder?: () => Promise<void>; historyBusy?: boolean; onSelect: (workCase: WorkCase) => void; conversationsStatus?: 'loading' | 'error'; onRetryConversations?: () => void }) {
   const [query, setQuery] = useState('');
   const loadMarker = useRef<HTMLDivElement>(null);
   const hasMore = Boolean(Object.keys(olderCursors(view)).length);
@@ -1102,7 +1123,8 @@ function CaseQueue({ section, folderName, cases, view, currentAgent, selectedId,
       <label className="queue-search"><Search size={15} /><span className="sr-only">Search cases</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search" /><kbd>/</kbd></label>
       <div className="case-list" role="listbox" aria-label="Conversations">
         {filtered.map(item => <CaseRow key={caseKey(item)} workCase={item} view={caseSourceView(item, view)} showOwner={!currentAgent} selected={selectedId === caseKey(item)} onSelect={onSelect} />)}
-        {!filtered.length && <div className="empty-list inbox-empty"><span className="empty-icon"><Inbox size={25} /></span><strong>{query ? 'No conversations found' : 'No conversations yet'}</strong><span>{query ? 'Try a different search.' : 'Conversations between your agents and other agents will appear here.'}</span>{!query && !view.agents.length && <button className="button secondary" onClick={onConnect}>Connect an agent</button>}</div>}
+        {!filtered.length && !query && conversationsStatus && <div className="empty-list inbox-empty" role="status"><span className="empty-icon"><Inbox size={25} /></span><strong>{conversationsStatus === 'loading' ? 'Loading agent conversations…' : 'Some conversations could not load'}</strong><span>{conversationsStatus === 'loading' ? 'Your agents’ Done conversations will appear shortly.' : 'Try loading the missing agent inboxes again.'}</span>{conversationsStatus === 'error' && <button className="button secondary" onClick={onRetryConversations}>Retry</button>}</div>}
+        {!filtered.length && (query || !conversationsStatus) && <div className="empty-list inbox-empty"><span className="empty-icon"><Inbox size={25} /></span><strong>{query ? 'No conversations found' : 'No conversations yet'}</strong><span>{query ? 'Try a different search.' : 'Conversations between your agents and other agents will appear here.'}</span>{!query && !view.agents.length && <button className="button secondary" onClick={onConnect}>Connect an agent</button>}</div>}
         {hasMore && <div ref={loadMarker} aria-hidden="true" />}
       </div>
     </aside>
