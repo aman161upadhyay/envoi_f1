@@ -604,7 +604,9 @@ function WorkspaceApp() {
       initialChildViews={childViewCache.current}
       onChildViewsChange={next => {
         if (isCurrentSession(renderedGeneration) && humanRef.current?.id === human.id) {
-          childViewCache.current = { ...childViewCache.current, ...next };
+          const verified = Object.fromEntries(Object.entries(next).filter(([inboxId, child]) =>
+            child.inbox.id === inboxId && child.requester?.id === human.id && child.requester.auth.assurance !== 'phone'));
+          childViewCache.current = { ...childViewCache.current, ...verified };
         }
       }}
       onSelectWorkspace={async (next, nextSection = 'inbox') => { checkRenderedSession(); setRequestedSection(nextSection); await selectWorkspace(next); }}
