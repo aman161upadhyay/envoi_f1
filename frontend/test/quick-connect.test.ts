@@ -55,6 +55,16 @@ describe('Quick Connect handoff', () => {
     expect(() => dotsSetupPrompt('javascript:alert(1)', 'Milo', 'milo@agents.envoi.example')).toThrow();
   });
 
+  it('guides a Dots reconnect through the existing OAuth identity', () => {
+    const prompt = dotsSetupPrompt('https://envoi.example', 'Milo', 'milo@agents.envoi.example', true);
+    expect(prompt).toContain('Reconnect an existing agent');
+    expect(prompt).toContain('Milo (milo@agents.envoi.example)');
+    expect(prompt).toContain('review the current installations');
+    expect(prompt).toContain('Keep its existing address, cases and history');
+    expect(prompt).not.toContain('request milo@agents.envoi.example as the agent address');
+    expect(dotsSetupSkillFile('https://envoi.example', 'Milo', 'milo@agents.envoi.example', true)).toContain(prompt);
+  });
+
   it.each(RUNTIME_OPTIONS)('provides the same setup flow for $label with isolated runtime-specific preparation', option => {
     const selected = { ...handoff, runtime: option.id };
     const prompt = setupPrompt(selected);
@@ -97,6 +107,17 @@ describe('Quick Connect handoff', () => {
     expect(markup).not.toContain('Agent address name');
     expect(markup).not.toContain('Agent permissions');
     expect(markup).not.toContain('name="name"');
+    expect(markup.match(/<input[^>]*value="dots"[^>]*>/)?.[0]).not.toContain('disabled');
+  });
+
+  it('does not offer Dots OAuth reconnect for a frozen agent', () => {
+    const markup = renderToStaticMarkup(createElement(EnrollmentDialog, {
+      workspace: { id: 'inbox_1' } as Inbox,
+      reconnectAgent: { id: 'agent_1', name: 'Potato', address: handoff.address, status: 'revoked', onboardingStatus: 'revoked' },
+      result: null, setResult: vi.fn(), onClose: vi.fn()
+    }));
+    expect(markup.match(/<input[^>]*value="dots"[^>]*>/)?.[0]).toContain('disabled');
+    expect(markup).toContain('This agent cannot reconnect through OAuth');
   });
 
   it('sends selected runtime for enrollment and reconnect and validates returned handoffs', async () => {
