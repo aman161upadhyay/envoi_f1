@@ -352,7 +352,7 @@
              raise PermissionError("authenticated runtime bootstrap unavailable")
 --- /dev/null
 +++ b/agent/envoi_request_gate.py
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,343 @@
 +"""Opt-in, mandatory provider transport for an isolated, single-profile Hermes host.
 +
 +Installed only by an explicit reviewed native-source adoption, never by importing
@@ -494,7 +494,19 @@
 +
 +def eager_case_tool(name):
 +    p=policy()
-+    return bool(p and p.eager_case_tools and isinstance(name,str) and re.fullmatch(r'mcp__?envoi_turn_[a-f0-9]{16}_[A-Za-z0-9_-]{1,100}',name))
++    if not p or not p.eager_case_tools or not isinstance(name,str):return False
++    if re.fullmatch(r'mcp__?envoi_turn_[a-f0-9]{16}_[A-Za-z0-9_-]{1,100}',name):return True
++    # Pinned Hermes registers per-session editor servers and clamps names to
++    # 64 characters with an eight-hex SHA256 suffix. The tool portion may be
++    # truncated to only "envoi", so a prefix match cannot identify a case tool.
++    match=re.fullmatch(r'mcp__(editor_envoi_turn_[a-f0-9]{16}_[a-f0-9]{8})__.+',name)
++    if not match:return False
++    for tool in ('envoi_case_snapshot','envoi_case_reply','envoi_case_propose','envoi_case_decide',
++                 'envoi_authority_check','envoi_request_human','envoi_case_list_assets','envoi_case_share_asset','envoi_case_complete'):
++        full='mcp__'+match[1]+'__'+tool
++        registered=full if len(full)<=64 else full[:55]+'_'+hashlib.sha256(full.encode('utf-8')).hexdigest()[:8]
++        if name==registered:return True
++    return False
 +
 +def guard_cached_client(client):
 +    p=policy()

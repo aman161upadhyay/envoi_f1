@@ -73,5 +73,18 @@
     "gateway/control_socket.py": {
       "_envoi_request_gate_status": "def _envoi_request_gate_status(self, params: dict, peer_subject: str) -> dict:\n        from agent.envoi_request_gate import runtime_status, RequestGateRefused\n        if not peer_subject or self.ticket_store is None or set(params) != {'instance_id','challenge'} or params['instance_id'] != self.ticket_store.instance_id:\n            raise RequestGateRefused('PROVIDER_GATE_ATTESTATION_REFUSED')\n        return runtime_status(self.ticket_store.instance_id, params['challenge'])"
     }
+  },
+  "toolNaming": {
+    "file": "tools/mcp_tool_schema.py",
+    "sha256": "21ab2ef8b122add133af4ef387b32f6e8c6711f6e1b2f6f4744bcb279fa2135b",
+    "functions": {
+      "sanitize_mcp_name_component": "def sanitize_mcp_name_component(value: str) -> str:\n    \"\"\"Replace every char outside ``[A-Za-z0-9_]`` with ``_`` (hyphens included, the\n    historical behavior) so generated names pass provider validation.\"\"\"\n    return re.sub(r\"[^A-Za-z0-9_]\", \"_\", str(value or \"\"))",
+      "mcp_prefixed_tool_name": "def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:\n    \"\"\"Registry/wire name: ``mcp__<sanitizedServer>__<sanitizedTool>``, clamped to 64 chars with a\n    stable hash suffix when the natural name is longer.\"\"\"\n    full_name = f\"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(server_name)}__{sanitize_mcp_name_component(tool_name)}\"\n    if len(full_name) <= _MCP_TOOL_NAME_MAX_LENGTH:\n        return full_name\n    suffix = \"_\" + hashlib.sha256(full_name.encode(\"utf-8\")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]\n    if full_name not in _clamped_names_warned:  # recomputed on every health refresh; warn once\n        _clamped_names_warned.add(full_name)\n        logger.warning(\"MCP tool name %r (%d chars) exceeds the %d-char provider limit; shortened to a \"\n                       \"deterministic hash-suffixed name\", full_name, len(full_name), _MCP_TOOL_NAME_MAX_LENGTH)\n    return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix"
+    },
+    "constants": {
+      "MCP_TOOL_NAME_PREFIX": "mcp__",
+      "_MCP_TOOL_NAME_MAX_LENGTH": 64,
+      "_MCP_TOOL_NAME_HASH_LENGTH": 8
+    }
   }
 }

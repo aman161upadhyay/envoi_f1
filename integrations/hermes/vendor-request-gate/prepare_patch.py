@@ -100,7 +100,16 @@ def main():
     (out/'native-patch-manifest.json').write_text(json.dumps(bundle,indent=2)+'\n',encoding='utf-8')
     (out/'envoi-request-gate.patch').write_text(''.join(diff),encoding='utf-8',newline='\n')
     if a.write_fixtures:
-        (HERE/'pinned-factory-fixtures.json').write_text(json.dumps({'base':PIN,'files':manifest,'functions':fixtures},indent=2)+'\n',encoding='utf-8')
+        naming_file='tools/mcp_tool_schema.py';naming_bytes=(source/naming_file).read_bytes()
+        if naming_bytes!=subprocess.check_output(['git','-C',str(source),'show',PIN+':'+naming_file]):
+            raise ValueError('NATIVE_DIRTY_BYTES_REFUSED: '+naming_file)
+        naming_text=naming_bytes.decode('utf-8');naming_tree=ast.parse(naming_text)
+        naming_functions={n.name:ast.get_source_segment(naming_text,n) for n in naming_tree.body if isinstance(n,ast.FunctionDef)
+            and n.name in {'sanitize_mcp_name_component','mcp_prefixed_tool_name'}}
+        naming_constants={target.id:ast.literal_eval(n.value) for n in naming_tree.body if isinstance(n,ast.Assign) for target in n.targets
+            if isinstance(target,ast.Name) and target.id in {'MCP_TOOL_NAME_PREFIX','_MCP_TOOL_NAME_MAX_LENGTH','_MCP_TOOL_NAME_HASH_LENGTH'}}
+        naming={'file':naming_file,'sha256':hashlib.sha256(naming_bytes).hexdigest(),'functions':naming_functions,'constants':naming_constants}
+        (HERE/'pinned-factory-fixtures.json').write_text(json.dumps({'base':PIN,'files':manifest,'functions':fixtures,'toolNaming':naming},indent=2)+'\n',encoding='utf-8')
         (HERE/'native-request-gate.patch').write_text(''.join(diff),encoding='utf-8',newline='\n')
     print(json.dumps({'state':'ISOLATED_NATIVE_PATCH_PREPARED','nativeBase':PIN,'files':len(manifest)+1,'sourceInputChanged':False,'profilesChanged':False,'providerRequests':0}))
 if __name__=='__main__':main()

@@ -1,7 +1,7 @@
 """Inert pinned native/transport tests. --sdk additionally requires real httpx/anthropic.
 Only disposable temporary profiles and authenticated loopback HTTP are used.
 """
-import ast, asyncio, hashlib, hmac, importlib.util, json, os, socket, sys, tempfile, threading, time, types, unittest
+import ast, asyncio, hashlib, hmac, importlib.util, json, os, re, socket, sys, tempfile, threading, time, types, unittest
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -62,6 +62,12 @@ class Base(unittest.TestCase):
         fixtures=json.loads((HERE/'pinned-factory-fixtures.json').read_text())
         text='from __future__ import annotations\n'+fixtures['functions'][file][name]
         ns={};ns.update(extra or {});exec(compile(text,file,'exec'),ns);return ns[name]
+    def native_tool_name(self,server,tool):
+        naming=json.loads((HERE/'pinned-factory-fixtures.json').read_text())['toolNaming']
+        ns={'re':re,'hashlib':hashlib,'logger':types.SimpleNamespace(warning=lambda *a,**k:None),
+            '_clamped_names_warned':set(),**naming['constants']}
+        exec(compile('\n\n'.join(naming['functions'].values()),naming['file'],'exec'),ns)
+        return ns['mcp_prefixed_tool_name'](server,tool)
     def construct_native_agent(self,builder,session_id='native_inert_session'):
         """Execute the pinned constructor, client phases and real session initializer.
 
@@ -195,6 +201,31 @@ class CoreTests(Base):
         fn=self.factory('tools/tool_search.py','classify_tools',{'BRIDGE_TOOL_NAMES':set(),'_tool_def_names':lambda defs:[d['function']['name'] for d in defs],'is_deferrable_tool_name':lambda *_:True})
         with self.native_module():visible,deferred=fn(definitions,set())
         self.assertEqual(visible,[definitions[0]]);self.assertIs(visible[0],definitions[0]);self.assertEqual(deferred,[definitions[1]])
+    def test_actual_editor_names_and_native_shortening_keep_only_case_schemas_eager(self):
+        self.policy_data['eagerCaseTools']=True;self.save_policy()
+        os.environ['ENVOI_HERMES_GATE_POLICY_SHA256']=hashlib.sha256(self.file.read_bytes()).hexdigest()
+        server='editor_envoi_turn_0123456789abcdef_89abcdef'
+        tools=('envoi_case_snapshot','envoi_case_reply','envoi_case_propose','envoi_case_decide',
+            'envoi_authority_check','envoi_request_human','envoi_case_list_assets','envoi_case_share_asset','envoi_case_complete')
+        names=[self.native_tool_name(server,t) for t in tools]
+        self.assertTrue(all(len(n)<=64 for n in names));self.assertEqual(len(set(names)),len(tools))
+        changed=names[0][:-1]+('0' if names[0][-1]!='0' else '1')
+        foreign=[self.native_tool_name(server,'shell'),self.native_tool_name(server,'envoi_case_reply_extra'),
+            self.native_tool_name('editor_foreign_0123456789abcdef_89abcdef','envoi_case_reply'),
+            self.native_tool_name('editor_envoi_turn_0123456789abcdef_badnonce','envoi_case_reply'),changed,
+            'mcp__'+server+'__envoi_case_snapshot']
+        definitions=[{'function':{'name':n,'parameters':{'type':'object','properties':{'text':{'type':'string'}}}}} for n in names+foreign]
+        before=json.dumps(definitions,sort_keys=True)
+        classify=self.factory('tools/tool_search.py','classify_tools',{'BRIDGE_TOOL_NAMES':set(),
+            '_tool_def_names':lambda defs:[d['function']['name'] for d in defs],'is_deferrable_tool_name':lambda *_:True})
+        with self.native_module():visible,deferred=classify(definitions,set())
+        self.assertEqual(visible,definitions[:len(names)]);self.assertEqual(deferred,definitions[len(names):])
+        self.assertTrue(all(a is b for a,b in zip(visible,definitions)))
+        self.assertEqual(json.dumps(definitions,sort_keys=True),before)
+        self.assertEqual(self.server.requests,[])
+    def test_actual_editor_case_names_stay_deferred_without_opt_in(self):
+        name=self.native_tool_name('editor_envoi_turn_0123456789abcdef_89abcdef','envoi_case_reply')
+        self.assertFalse(self.gate.eager_case_tool(name));self.assertEqual(self.server.requests,[])
     def test_foreign_direct_constructors_refuse_before_import_or_credential_network(self):
         names=['_try_openrouter','_try_nous','_try_custom_endpoint','_build_xai_oauth_aux_client','_build_codex_client','_try_azure_foundry','_build_bedrock_client','_build_vertex_client','_resolve_external_process_branch']
         import inspect
