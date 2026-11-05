@@ -8,6 +8,22 @@ import { DocumentObjectMetadataStore, ObjectStorageService, PersistentQuotaLedge
 import { PostgresMalwareScanJobStore } from '../src/object-scan-lifecycle.js';
 import { assertDeliveryWritesCommitWithSettlement } from './delivery-commit-harness.js';
 
+test('batch document read uses one PostgreSQL statement for visible preference paths', async () => {
+  const calls = [];
+  const store = {
+    query: async (statement, parameters) => {
+      calls.push({ statement, parameters });
+      return { rows: [{ path: 'prefs/one.json', value: { read: true } }] };
+    }
+  };
+  const result = await PostgresStore.prototype.getJsonBatch.call(store, ['prefs/one.json', 'prefs/two.json']);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].statement, /WHERE path = ANY\(\$1::text\[\]\)/);
+  assert.deepEqual(calls[0].parameters, [['prefs/one.json', 'prefs/two.json']]);
+  assert.deepEqual(result.get('prefs/one.json'), { read: true });
+  assert.equal(result.has('prefs/two.json'), false);
+});
+
 test('PostgreSQL store preserves atomic and paginated document semantics', { skip: !process.env.DATABASE_URL }, async t => {
   const store = new PostgresStore(process.env.DATABASE_URL);
   t.after(() => store.close());
@@ -22,6 +38,13 @@ test('PostgreSQL store preserves atomic and paginated document semantics', { ski
   await store.putJson(`${prefix}/messages/one.json`, { id: 'one', caseId: 'case-a', createdAt: '2026-01-01T00:00:00.000Z' });
   await store.putJson(`${prefix}/messages/two.json`, { id: 'two', caseId: 'case-a', createdAt: '2026-01-02T00:00:00.000Z' });
   assert.equal((await store.getJson(`${prefix}/messages/one.json`)).id, 'one');
+  const batch = await store.getJsonBatch([
+    `${prefix}/messages/one.json`, `${prefix}/messages/missing.json`, `${prefix}/messages/two.json`
+  ]);
+  assert.equal(batch.get(`${prefix}/messages/one.json`).id, 'one');
+  assert.equal(batch.get(`${prefix}/messages/two.json`).id, 'two');
+  assert.equal(batch.has(`${prefix}/messages/missing.json`), false);
+  assert.equal((await store.getJsonBatch([])).size, 0);
   assert.equal(await store.putJsonIfAbsent(`${prefix}/identity.json`, { state: 'reserved' }), true);
   assert.equal(await store.putJsonIfAbsent(`${prefix}/identity.json`, { state: 'overwritten' }), false);
   await store.putJson(`${prefix}/token.json`, { usedAt: null, value: 'secret' });

@@ -215,6 +215,30 @@ test('HumanView exposes observed revisions without marking cases read and includ
   assert.equal(viewed.read, true);
 });
 
+test('PostgreSQL preference projection reads all visible cases in one snapshot', async () => {
+  const cases = Array.from({ length: 50 }, (_, index) => ({ id: `case_${index}`, events: [], messages: [] }));
+  const folderPath = 'human-inbox-preferences/org_one/personal/human_one/folders.json';
+  const annotationPath = `${folderPath.slice(0, -'folders.json'.length)}inboxes/inbox_one/cases/case_0.json`;
+  let reads = 0;
+  const store = {
+    getJsonBatch: async paths => {
+      reads += 1;
+      assert.equal(paths.length, 51);
+      return new Map([
+        [folderPath, { folders: [{ id: 'folder_one', name: 'Travel' }] }],
+        [annotationPath, { folderId: 'folder_one', archived: true, readThrough: caseReadMarker(cases[0]) }]
+      ]);
+    },
+    withTransaction: () => { throw new Error('Read-only projection acquired case locks'); }
+  };
+  const view = await getPrefsForCases(store, { ...caseScope, cases });
+  assert.equal(reads, 1);
+  assert.deepEqual(view.folders, [{ id: 'folder_one', name: 'Travel' }]);
+  assert.equal(view.inboxPreferences.case_0.read, true);
+  assert.equal(view.inboxPreferences.case_0.archived, true);
+  assert.equal(view.inboxPreferences.case_49.read, false);
+});
+
 test('case revision is stable across object key order and changes when latest content changes', () => {
   const createdAt = new Date().toISOString();
   const event = { id: 'evt_one', createdAt, payload: { text: 'First message' } };
