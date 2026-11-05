@@ -61,11 +61,14 @@ test('production names the deployment its database belongs to', () => {
   }
 });
 
-test('uncapped agent exception is valid only for at most two exact staging humans', () => {
+test('uncapped agent exception accepts at most two exact owners in every deployment', () => {
   const first = 'human_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
   const second = 'human_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  assert.equal(validateProductionConfiguration(validProduction({ ENVOI_UNCAPPED_AGENT_HUMAN_IDS: `${first},${second}` })).validated, true);
+  assert.equal(validateProductionConfiguration(validProduction({ ENVOI_DEPLOYMENT_ENVIRONMENT: 'staging', ENVOI_UNCAPPED_AGENT_HUMAN_IDS: first })).validated, true);
   assert.equal(validateProductionConfiguration(validProduction({ ENVOI_DEPLOYMENT_ENVIRONMENT: 'staging', ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS: `${first},${second}` })).validated, true);
   assert.throws(() => validateProductionConfiguration(validProduction({ ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS: first })), /only valid in staging/);
+  assert.throws(() => validateProductionConfiguration(validProduction({ ENVOI_UNCAPPED_AGENT_HUMAN_IDS: '*' })), /one or two distinct exact human IDs/);
   assert.throws(() => validateProductionConfiguration(validProduction({ ENVOI_DEPLOYMENT_ENVIRONMENT: 'staging', ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS: '*' })), /one or two distinct exact human IDs/);
 });
 

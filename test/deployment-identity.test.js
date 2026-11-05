@@ -14,7 +14,7 @@ import { evaluateReadiness } from '../src/readiness.js';
 import { dependencyReadinessChecks } from '../src/dependency-readiness.js';
 import {
   DEPLOYMENT_IDENTITY_MISMATCH, DEPLOYMENT_IDENTITY_PATH, assertDeploymentIdentity, configuredDeploymentIdentity,
-  ensureDeploymentIdentity, stagingUncappedAgentHumanIds, verifyDeploymentIdentityBeforeInit
+  ensureDeploymentIdentity, stagingUncappedAgentHumanIds, uncappedAgentHumanIds, verifyDeploymentIdentityBeforeInit
 } from '../src/deployment-identity.js';
 import { launch } from './a3-harness.js';
 
@@ -33,6 +33,19 @@ test('staging uncapped agent IDs require one or two distinct exact existing-ID s
   for (const value of ['not-a-human', `${first},${first}`, `${first},${second},${humanId('c')}`, '*', ' ']) {
     assert.throws(() => stagingUncappedAgentHumanIds(value, 'staging'), /one or two distinct exact human IDs/);
   }
+});
+test('named owner agent-cap exception accepts two exact IDs in every environment', () => {
+  const first = humanId('a');
+  const second = humanId('b');
+  for (const environment of ['development', 'staging', 'beta', 'production']) {
+    assert.deepEqual([...uncappedAgentHumanIds({ ENVOI_UNCAPPED_AGENT_HUMAN_IDS: `${first}, ${second}` }, environment)], [first, second]);
+  }
+  assert.deepEqual([...uncappedAgentHumanIds({ ENVOI_UNCAPPED_AGENT_HUMAN_IDS: first,
+    ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS: second }, 'staging')], [first, second]);
+  assert.throws(() => uncappedAgentHumanIds({ ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS: first }, 'beta'), /only valid in staging/);
+  assert.throws(() => uncappedAgentHumanIds({ ENVOI_UNCAPPED_AGENT_HUMAN_IDS: '*' }, 'beta'), /one or two distinct exact human IDs/);
+  assert.throws(() => uncappedAgentHumanIds({ ENVOI_UNCAPPED_AGENT_HUMAN_IDS: `${first},${second}`,
+    ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS: humanId('c') }, 'staging'), /at most two distinct human IDs together/);
 });
 const temporaryStore = async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'envoi-identity-'));

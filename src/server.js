@@ -22,7 +22,7 @@ import { PostgresMalwareScanJobStore } from './object-scan-lifecycle.js';
 import { validateProductionConfiguration } from './production-config.js';
 import { evaluateReadiness } from './readiness.js';
 import { dependencyReadinessChecks } from './dependency-readiness.js';
-import { configuredDeploymentIdentity, ensureDeploymentIdentity, stagingUncappedAgentHumanIds, verifyDeploymentIdentityBeforeInit } from './deployment-identity.js';
+import { configuredDeploymentIdentity, ensureDeploymentIdentity, uncappedAgentHumanIds, verifyDeploymentIdentityBeforeInit } from './deployment-identity.js';
 import { clientIp, errorBody, publicHttpError, requestIdFrom } from './http-security.js';
 import { createPkcePair, exchangeCalendarAuthorizationCode } from './calendar-oauth.js';
 import { assertSafeIdentifier, assertSafeRequestTarget, resolvePathWithin } from './path-safety.js';
@@ -1007,7 +1007,7 @@ const humanAgentLimitKey = humanId => `human:${humanId}:active-agents`;
 // One slot rule for every path (agent-registration v1 §5.3): live approvals count too.
 const agentSlots = createAgentSlots({
   store,
-  uncappedHumanIds: stagingUncappedAgentHumanIds(process.env.ENVOI_STAGING_UNCAPPED_AGENT_HUMAN_IDS, deploymentIdentity.environment)
+  uncappedHumanIds: uncappedAgentHumanIds(process.env, deploymentIdentity.environment)
 });
 const assertActiveAgentSlot = (humanId, excludingAgentId = null) => agentSlots.assertActiveAgentSlot(humanId, { excludingAgentId });
 const installations = createInstallationReader({ store, agentCredentialFamilyPath });
