@@ -1,18 +1,32 @@
 import { canonical, hashDetails, hashJson, verify } from '../core/crypto.mjs';
 import { displayPermission, validAccount } from '../core/policy.mjs';
 import { verifyPath } from '../core/tree.mjs';
+import { messageFor, VERDICT_MESSAGES } from './messages.mjs';
+
+// An outage is "not checked", never a failure and never a pass. Only errors explicitly marked
+// as unavailability (see adapters/near/rpc.mjs) qualify; every other error still fails the check.
+const isUnavailable = error => error?.code === 'NEAR_UNAVAILABLE';
+
+const looksLikeProof = proof => Boolean(proof && typeof proof === 'object' && !Array.isArray(proof) &&
+  proof.format === 'envoi.proof/v1' && proof.record && typeof proof.record === 'object' &&
+  typeof proof.recordHash === 'string' && proof.envoi && proof.permission && proof.batch && proof.seal);
 
 export async function checkProof(proof, trust = {}) {
+  if (!looksLikeProof(proof)) {
+    const checks = [{ id: 'format', status: 'FAIL' }];
+    return { checks: checks.map(row => ({ ...row, message: messageFor(row) })), verdict: 'failed', reason: 'bad_file',
+      message: VERDICT_MESSAGES.bad_file };
+  }
   const checks = [];
   const check = async (id, verifyCheck) => {
-    let status;
+    let row;
     try {
       const result = await verifyCheck();
-      status = result === undefined ? 'SKIP' : result ? 'PASS' : 'FAIL';
-    } catch {
-      status = 'FAIL';
+      row = result === undefined ? { id, status: 'SKIP', reason: 'not_configured' } : { id, status: result ? 'PASS' : 'FAIL' };
+    } catch (error) {
+      row = isUnavailable(error) ? { id, status: 'SKIP', reason: 'unavailable' } : { id, status: 'FAIL' };
     }
-    checks.push({ id, status });
+    checks.push({ ...row, message: messageFor(row) });
   };
   const { record, envoi, permission, batch, seal, chainEvent } = proof ?? {};
   await check('envoi_signature', async () => {
@@ -83,6 +97,9 @@ export async function checkProof(proof, trust = {}) {
       return trust.verifyScreen ? trust.verifyScreen(proof.privateCheck) : undefined;
     });
   }
-  return { checks, verdict: checks.some(row => row.status === 'FAIL') ? 'failed' :
-    checks.some(row => row.status === 'SKIP') ? 'partial' : 'verified' };
+  const verdict = checks.some(row => row.status === 'FAIL') ? 'failed' :
+    checks.some(row => row.status === 'SKIP') ? 'partial' : 'verified';
+  const unreachable = verdict === 'partial' && checks.some(row => row.reason === 'unavailable');
+  return { checks, verdict, ...(unreachable ? { reason: 'unavailable' } : {}),
+    message: VERDICT_MESSAGES[unreachable ? 'unavailable' : verdict] };
 }

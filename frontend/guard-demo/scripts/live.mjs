@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { nearAiScreen } from '../adapters/nearai/screen.mjs';
 import { nearReaders } from '../adapters/near/read.mjs';
-import { createRpc } from '../adapters/near/rpc.mjs';
+import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { callWithScopedKey } from '../adapters/near/sign.mjs';
 import { loadScopedKey } from '../adapters/near/key-file.mjs';
 import { buildTree, ZERO_ROOT } from '../packages/core/tree.mjs';
@@ -19,7 +19,7 @@ const spendContract = env.NEAR_SPEND_CONTRACT;
 const recordContract = env.NEAR_RECORD_CONTRACT;
 const publisher = env.NEAR_PUBLISHER_ACCOUNT;
 const network = 'near-testnet';
-const rpcUrl = env.NEAR_RPC_URL || 'https://rpc.testnet.near.org';
+const rpcUrl = env.NEAR_RPC_URL || DEFAULT_RPC['near-testnet'];
 const caseRef = 'invoice-1042';
 const oneNear = 10n ** 24n;
 
