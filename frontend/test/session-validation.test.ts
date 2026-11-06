@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, api } from '../src/api';
 import { invalidateSessionRequests } from '../src/session-lifecycle';
-import { validateWorkspaceReturn, withReadDeadline } from '../src/session-validation';
+import { cachedWorkspaceView, validateWorkspaceReturn, withReadDeadline } from '../src/session-validation';
 import type { Human, HumanView, Inbox } from '../src/types';
 
 const actor = { id: 'human', auth: { provider: 'local', assurance: 'mfa' } };
@@ -17,6 +17,18 @@ function fixture() {
   return { controller, readers, run: () => validateWorkspaceReturn('human', 'workspace', 'local', controller.signal, readers) };
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+describe('same-session workspace view cache', () => {
+  it('reuses only a verified view for the same human and inbox', () => {
+    const valid = snapshot();
+    const views = { workspace: valid };
+    expect(cachedWorkspaceView(views, 'workspace', 'human')).toBe(valid);
+    expect(cachedWorkspaceView(views, 'workspace', 'another-human')).toBeNull();
+    expect(cachedWorkspaceView(views, 'another-workspace', 'human')).toBeNull();
+    expect(cachedWorkspaceView({ workspace: { ...valid, inbox: { id: 'other' } } }, 'workspace', 'human')).toBeNull();
+    expect(cachedWorkspaceView({ workspace: snapshot({ id: 'human', auth: { provider: 'local', assurance: 'phone' } }) }, 'workspace', 'human')).toBeNull();
+  });
+});
 
 describe('authorized return snapshot', () => {
   it('validates a same-account return using only one request', async () => {
