@@ -112,7 +112,8 @@ try {
       ? JSON.parse(await readFile(process.env.NEAR_EVIDENCE_RUN_FILE, 'utf8')) : null;
     const testnetRecords = run?.network === 'near-testnet' && run.status === 'sealed' ? run.records : [];
     const server = await serveChecker({ evidenceKeys: trust.evidenceKeys, genuine: proof, edited, records,
-      agentAccount: await adapters.agentAccounts.describe(agent), testnet, testnetRecords,
+      agentAccount: await adapters.agentAccounts.describe(agent),
+      vaultBalance: await spendGuard.vaultOf(owner), testnet, testnetRecords,
       testnetProofs: testnetRecords.length ? run.proofs : [],
       testnetTrust: testnetRecords.length ? { evidenceKeys: run.evidenceKeys, publisher: process.env.NEAR_PUBLISHER_ACCOUNT,
         recordCodeHash: process.env.NEAR_RECORD_CODE_HASH } : null });

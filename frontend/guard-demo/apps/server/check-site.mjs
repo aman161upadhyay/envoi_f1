@@ -48,8 +48,11 @@ export async function serveChecker(samples, port = 4173) {
     res.setHeader('Content-Security-Policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'");
     res.setHeader('X-Content-Type-Options', 'nosniff');
     if (req.method !== 'GET') return res.writeHead(405, { Allow: 'GET' }).end();
-    if (req.url === '/') return res.writeHead(302, { Location: '/permissions' }).end();
-    const asset = assets.get(req.url.split('?')[0]);
+    if (req.url === '/') return res.writeHead(302, { Location: samples.testnet ? '/permissions' : '/cases/invoice-1042' }).end();
+    const path = req.url.split('?')[0];
+    const route = path === '/cases/invoice-1042' ? '/demo' :
+      /^\/permissions\/evidence\/[a-z0-9-]+$/i.test(path) ? '/permissions/evidence' : path;
+    const asset = assets.get(route);
     if (!asset) return res.writeHead(404).end();
     res.writeHead(200, { 'Content-Type': asset[1] }).end(asset[0]);
   });

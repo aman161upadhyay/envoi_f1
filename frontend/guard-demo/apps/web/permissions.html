@@ -10,7 +10,7 @@
 <body>
   <header><a href="/permissions"><span class="mark" aria-hidden="true">e</span> envoi</a></header>
   <main>
-    <div class="heading"><h1>Permissions</h1><span class="chip" id="seal-status">Sealed locally (demo)</span></div>
+    <div class="heading"><h1>Permissions</h1><span class="chip" id="seal-status">Protected, sealed locally (demo)</span></div>
     <p>Choose what each agent can do alone and what it asks you first.</p>
     <nav aria-label="Permissions"><a href="/permissions">Settings</a><a href="/permissions/evidence">Evidence</a><a href="/demo">Demo replay</a></nav>
     <p id="status" role="status"></p>
@@ -19,20 +19,27 @@
       <tbody>
       <tr><th scope="row">Receive messages</th><td>Always on</td></tr>
       <tr><th scope="row">Check incoming messages <small id="screen-mode">Local screening (demo)</small></th><td>Always on</td></tr>
-      <tr><th scope="row"><label for="send">Send messages</label></th><td><select id="send"><option value="allowed">Allowed</option><option value="ask_first">Ask first</option><option value="off">Off</option></select></td></tr>
-      <tr><th scope="row"><label for="share">Share files</label></th><td><select id="share"><option value="allowed">Allowed</option><option value="off">Off</option></select></td></tr>
+      <tr><th scope="row"><label for="send">Send messages</label></th><td><select class="permission-pill" id="send"><option value="allowed">Allowed</option><option value="ask_first">Ask first</option><option value="off">Off</option></select></td></tr>
+      <tr><th scope="row"><label for="share">Share files</label></th><td><select class="permission-pill" id="share"><option value="allowed">Allowed</option><option value="off">Off</option></select></td></tr>
       <tr><th scope="row">Spend money <small>Payments from your NEAR balance</small></th><td>Allowed, with limits</td></tr>
       </tbody></table>
       <form id="limits">
         <div class="heading"><h2>Payees</h2><label>Daily limit <input id="cap" type="number" min="0" max="1000" step="0.000001" required> NEAR</label></div>
         <div id="payees"></div>
+        <p id="vault" hidden></p>
         <div class="actions"><button id="add" type="button">Add payee</button><button id="keys" type="button">Agent keys</button><button id="export" type="button" hidden>Download signed policy</button></div>
-        <div class="actions save" id="save" hidden><button id="discard" type="button">Discard</button><button class="primary" type="submit">Save changes</button></div>
+        <div class="actions save" id="save" hidden><span id="change-count"></span><button id="discard" type="button">Discard</button><button class="primary" type="submit">Save changes</button></div>
       </form>
     </section>
     <section id="evidence" hidden>
-      <div class="heading filters"><label>Filter <select id="filter"><option value="">All</option><option value="pay">Money</option><option value="block">Blocked</option><option value="screen">Private checks</option><option value="permission">Changes</option></select></label>
-      <label>Search evidence <input id="search" type="search"></label></div>
+      <div class="heading filters"><div class="filter-group" role="group" aria-label="Filter evidence">
+        <button type="button" data-filter="" aria-pressed="true">All</button>
+        <button type="button" data-filter="pay" aria-pressed="false">Money</button>
+        <button type="button" data-filter="block" aria-pressed="false">Blocked</button>
+        <button type="button" data-filter="screen" aria-pressed="false">Private checks</button>
+        <button type="button" data-filter="permission" aria-pressed="false">Changes</button>
+      </div>
+      <label>Search evidence <input id="search" type="search" aria-keyshortcuts="/"></label></div>
       <ul id="records"></ul>
     </section>
   </main>
