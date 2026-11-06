@@ -1,25 +1,27 @@
 # envoi guard
 
-A clean-room prototype for signed agent permissions, payment limits, and verifiable evidence.
+A demo for signed agent permissions, payment limits, and verifiable evidence. Run commands from this directory with Node 22.13 or later.
 
 ## Run locally
-
-Use Node 22.13 or newer.
 
 ```sh
 npm install
 npm test
 npm run demo
+npm run demo -- --serve
 ```
 
-The offline command-line prototype uses fictional accounts and an in-memory SQLite database. It runs a locally screened invoice, a refused payment, a blocked share, an allowed payment, and a proof tamper check. Its screening uses local rules. The evidence seal is local and temporary.
+Open http://127.0.0.1:4173/permissions for Settings and Evidence, or /check for the proof checker. The terminal demo screens a fictional invoice with local rules, refuses one payment, permits another, and checks an edited proof. Browser changes in offline mode are saved for the current tab. The offline records are generated separately against the demo’s original rules.
 
-Run `npm run demo -- --serve` and visit http://127.0.0.1:4173/permissions for local Settings and Evidence. The confirmation sheet signs the displayed rules in the browser and saves them for this tab. The demo transaction history uses its original local policy. Open /check for the proof checker. The page includes a generated local sample and an edited copy. The upload stays in the browser.
+## Rehearse on NEAR testnet
 
-The shared proof checker can inspect JSON with a separate trusted evidence key map.
+1. Build the contracts with `cargo build --locked --release --target wasm32-unknown-unknown --manifest-path contracts/near/Cargo.toml`. Deploy the resulting record and spend files to separate testnet accounts. Initialize the record with the testnet publisher account and initialize the spending contract. Save the published code hash for the checker. Keep the deployment keys with the testnet custodian while validating the run.
+2. Have the owner register Milo on the spending contract with one yoctoNEAR attached and fund the owner’s testnet vault. Put a function-call key with only `pay` on the spending contract on Milo’s account. Put a function-call key with only `seal` on the record contract on the publisher’s account. Use testnet accounts for both payees, including the controlled attacker address. Keep full-access keys outside the demo.
+3. Copy .env.example to .env and fill in the testnet IDs. Run `npm run demo:testnet`, then open http://127.0.0.1:4173/permissions in the browser you’ll sign from. Under **Agent keys**, copy the device’s public access key and registry key. Have the owner add the access key to their testnet account as a function-call key for `set_policy` only, restricted to the spending contract. Register the hex public key as a `demo_device` in the record contract with a storage deposit. The browser keeps the private key in its local device store.
+4. In Settings, add the allowed payee, set a daily cap, and leave Share files off. Sign the displayed rules and download the confirmed signed policy into this directory as signed-policy.json. The screen reports success after reading the new version and hash back from testnet.
+5. Install the verifier dependencies in an isolated Python environment with `python -m pip install -r adapters/nearai/requirements.txt`. Set NEAR_AI_PYTHON if needed, set the API key locally, and select a TEE model that returns provider signatures. Configure the scoped Milo and publisher credentials in the live runner environment and set NEAR_ENABLE_DEMO_PAYMENTS=yes.
+6. Run `npm run demo:live`. The script requires a fully verified, flagged message before broadcasting. It reads each finalized outcome from testnet and then seals the evidence. It reserves a fresh output file before broadcasting. If execution stops partway, inspect the existing file and transaction hashes before deciding whether to retry. Set NEAR_EVIDENCE_RUN_FILE to the completed rehearsal file and restart the browser demo to inspect the testnet evidence and attestation rows.
 
-```sh
-npm run check -- proof.json trusted-evidence-keys.json
-```
+The testnet proof CLI accepts an independently trusted evidence key map and checks contract state with `npm run check -- proof.json trusted-evidence-keys.json --testnet`. For this rehearsal, use the evidence key map from the trusted runner’s output. Keep the record account’s code hash in trusted configuration. A record contract with remaining access keys fails the locked-contract check. Offline CLI checks show skipped online checks.
 
-An unverified online check is reported as skipped. The prototype does not include deployed contracts, attestation recordings, or an online trust configuration.
+The verifier requires a provider TEE signature, the exact request and response hashes, one matching attested signer, nonce binding, an up-to-date non-debug Intel TDX quote, and a matching NVIDIA verdict. The fixture tests exercise the application’s receipt handling. A live credentialed run is required to confirm compatibility with the selected model and deployed contracts.

@@ -1,3 +1,5 @@
+import { demoDevice } from '/device.mjs';
+import { applyTestnetPolicy, describeDevice, getTestnetPolicy } from '/testnet.mjs';
 import { hashJson, publicHex, sign, verify } from '/packages/core/crypto.mjs';
 import { displayPermission, formatNear } from '/packages/core/policy.mjs';
 
@@ -9,11 +11,11 @@ const evidence = $('#evidence');
 const sheet = $('#sheet');
 const content = $('#sheet-content');
 const status = $('#status');
-const storageKey = 'envoi-guard-demo-permission';
+const storageKey = 'envoi-guard-demo-permission-' + (state.testnet?.spendContract ?? 'local');
 let active = state.genuine.permission.document;
 let signed;
-let device;
-const records = [...state.records];
+const testnet = state.testnet;
+const records = [...(testnet ? state.testnetRecords : state.records)];
 
 function make(tag, text, attributes = {}) {
   const node = document.createElement(tag);
@@ -72,7 +74,7 @@ function markDirty() {
 async function readStored() {
   try {
     const entry = JSON.parse(sessionStorage.getItem(storageKey));
-    if (entry && await verify(entry.publicKey, entry.signature, await hashJson(entry.document))) {
+    if (entry && entry.document.agent === (testnet?.agent ?? active.agent) && entry.document.owner === (testnet?.owner ?? active.owner) && await verify(entry.publicKey, entry.signature, await hashJson(entry.document))) {
       active = entry.document;
       signed = entry;
     }
@@ -80,6 +82,23 @@ async function readStored() {
 }
 
 await readStored();
+if (testnet) {
+  $('#seal-status').textContent = 'NEAR testnet';
+  try {
+    const current = await getTestnetPolicy(testnet);
+    if (!signed || current.policy_hash !== await hashJson(signed.document) || current.version !== signed.document.version) {
+      signed = undefined;
+      const seed = state.genuine.permission.document;
+      const spend = seed.rules.spend_money;
+      active = { ...seed, owner: testnet.owner, agent: testnet.agent, version: current.version, rules: {
+        ...seed.rules, spend_money: { ...spend, dailyCap: current.daily_cap, payees: current.payees.map(payee => ({
+          account: payee.account, label: payee.account, maxPerPayment: payee.max_per_payment
+        })) }
+      } };
+      status.textContent = 'Review and sign the testnet policy on this device.';
+    }
+  } catch (error) { signed = undefined; status.textContent = error.message; }
+}
 settings.hidden = onEvidence;
 evidence.hidden = !onEvidence;
 document.querySelector('nav a[href="' + (onEvidence ? '/permissions/evidence' : '/permissions') + '"]').setAttribute('aria-current', 'page');
@@ -101,32 +120,36 @@ $('#limits').onsubmit = async event => {
       label: row.querySelector('[name=label]').value.trim(), account: row.querySelector('[name=account]').value.trim(),
       maxPerPayment: nearAmount(row.querySelector('[name=max]').value)
     }));
+    const current = testnet ? await getTestnetPolicy(testnet) : null;
     const draft = {
-      ...active, version: active.version + 1, previousHash: await hashJson(active), issuedAtMs: Date.now(),
+      ...active, owner: testnet?.owner ?? active.owner, agent: testnet?.agent ?? active.agent,
+      version: (current?.version ?? active.version) + 1,
+      previousHash: current?.policy_hash ?? await hashJson(active), issuedAtMs: Date.now(),
       rules: { send_messages: $('#send').value, share_files: { default: $('#share').value, allow: [] },
         spend_money: { payees, dailyCap: nearAmount($('#cap').value), unit: 'yoctoNEAR' } }
     };
     draft.display = displayPermission(draft);
     const approve = make('button', 'Sign and save', { class: 'primary', type: 'button' });
-    const note = make('p', 'Signing with Demo device (this browser). Saves this local demo policy.', { role: 'status' });
+    const note = make('p', testnet ? 'Signing with Demo device (this browser). This also updates Milo’s limits on NEAR testnet.' : 'Signing with Demo device (this browser). Saves this local demo policy.', { role: 'status' });
     open("Save Milo's permissions", ...draft.display.map(line => make('p', line)), note, approve);
     approve.onclick = async () => {
       approve.disabled = true;
       try {
-        device ??= await crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']);
+        const device = await demoDevice();
         const hash = await hashJson(draft);
         const publicKey = await publicHex(device.publicKey);
         const signature = await sign(device.privateKey, hash);
         if (!await verify(publicKey, signature, hash)) throw new Error('Signature check failed');
         const next = { document: draft, publicKey, signature };
-        sessionStorage.setItem(storageKey, JSON.stringify(next));
+        if (testnet) await applyTestnetPolicy(testnet, device, draft);
+        try { sessionStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* Policy may already be finalized. */ }
         signed = next;
         active = draft;
         populate();
         sheet.close();
-        status.textContent = 'Saved and signed in this browser.';
-      } catch {
-        note.textContent = "Couldn't sign and save. Your previous local settings are still in force.";
+        status.textContent = testnet ? 'Saved and signed on NEAR testnet.' : 'Saved and signed in this browser.';
+      } catch (error) {
+        note.textContent = testnet ? error.message : "Couldn't sign and save. Your previous local settings are still in force.";
         approve.disabled = false;
       }
     };
@@ -142,15 +165,22 @@ function renderRecords() {
   const visible = items.filter(item => (!filter || item.type.includes(filter)) && item.summary.toLowerCase().includes(search));
   const rows = visible.map(item => {
     const button = make('button', item.summary, { class: 'record', type: 'button' });
-    button.append(make('span', item.display ? 'Signed locally' : 'Sealed locally (demo)', { class: 'chip' }));
+    button.append(make('span', item.display ? (testnet ? 'Signed on testnet' : 'Signed locally') : (testnet ? 'Sealed on testnet' : 'Sealed locally (demo)'), { class: 'chip' }));
     button.onclick = () => {
       const details = [make('p', item.summary), make('p', new Date(item.createdAtMs).toLocaleString())];
       if (item.display) details.push(...item.display.map(line => make('p', line)));
       if (item.details?.flaggedText) {
         details.push(make('h3', 'Flagged text'), make('p', item.details.flaggedText), make('h3', 'Hardware attestation'));
-        details.push(make('p', 'Not checked. This demo uses local rules.'));
+        const checks = {
+          signed_text: 'Answer matches what was signed', signature: 'Response signature matches',
+          signer_attested: 'Signer belongs to the attested hardware', report_data: 'Attestation matches this signer and request',
+          tdx_quote: 'Intel TDX hardware verified', gpu: 'NVIDIA GPU verified'
+        };
+        for (const check of item.details.checks ?? []) {
+          details.push(make('p', checks[check.id] + ' · ' + ({ passed: 'Passed', failed: 'Failed', not_checked: 'Not checked' })[check.status]));
+        }
       }
-      if (item.type === 'pay_refused') details.push(make('a', 'Check proof', { href: '/check' }));
+      if (!testnet && item.type === 'pay_refused') details.push(make('a', 'Check proof', { href: '/check' }));
       open('Evidence record', ...details);
     };
     const row = make('li', '');

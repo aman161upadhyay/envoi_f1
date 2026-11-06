@@ -1,7 +1,8 @@
+import { readFile } from 'node:fs/promises';
 import { serveChecker } from './check-site.mjs';
 import { hashJson, publicHex, sign, verify } from '../../packages/core/crypto.mjs';
 import { buildTree, ZERO_ROOT } from '../../packages/core/tree.mjs';
-import { displayPermission } from '../../packages/core/policy.mjs';
+import { displayPermission, validAccount } from '../../packages/core/policy.mjs';
 import { makeEvidence } from '../../packages/core/evidence.mjs';
 import { checkProof } from '../../packages/check/index.mjs';
 import { createLocalAdapters } from '../../adapters/local/store.mjs';
@@ -100,7 +101,18 @@ try {
   console.log('Sealed locally (demo). Local proof checks passed. NEAR and hardware attestation were not checked.');
   console.log('Edited proof: This record was changed after it was recorded.');
   if (process.argv.includes('--serve')) {
-    const server = await serveChecker({ evidenceKeys: trust.evidenceKeys, genuine: proof, edited, records, agentAccount: await adapters.agentAccounts.describe(agent) });
+    const testnet = process.argv.includes('--testnet') ? {
+      owner: process.env.NEAR_OWNER_ACCOUNT, agent: process.env.NEAR_AGENT_ACCOUNT,
+      spendContract: process.env.NEAR_SPEND_CONTRACT, recordContract: process.env.NEAR_RECORD_CONTRACT
+    } : null;
+    if (testnet && !Object.values(testnet).every(account => validAccount(account) && account.endsWith('.testnet'))) {
+      throw new Error('Configure all four testnet account IDs before enabling testnet signing.');
+    }
+    const run = testnet && process.env.NEAR_EVIDENCE_RUN_FILE
+      ? JSON.parse(await readFile(process.env.NEAR_EVIDENCE_RUN_FILE, 'utf8')) : null;
+    const testnetRecords = run?.network === 'near-testnet' && run.status === 'sealed' ? run.records : [];
+    const server = await serveChecker({ evidenceKeys: trust.evidenceKeys, genuine: proof, edited, records,
+      agentAccount: await adapters.agentAccounts.describe(agent), testnet, testnetRecords });
     console.log('Permissions demo at http://127.0.0.1:' + server.address().port + '/permissions');
   }
 } finally {

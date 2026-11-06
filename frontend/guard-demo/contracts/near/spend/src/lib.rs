@@ -94,8 +94,9 @@ impl Spend {
         });
     }
 
-    pub fn set_policy(&mut self, agent: AccountId, payees: Vec<Payee>, daily_cap: U128, policy_hash: String) {
+    pub fn set_policy(&mut self, agent: AccountId, payees: Vec<Payee>, daily_cap: U128, policy_hash: String, expected_version: u32) {
         let mut current = self.owned_policy(&agent);
+        require!(current.version == expected_version, "stale policy version");
         require!(payees.len() <= 32, "too many payees");
         require!(policy_hash.len() == 64 && policy_hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')), "invalid policy hash");
         let mut accounts = BTreeSet::new();
@@ -115,7 +116,7 @@ impl Spend {
 
     pub fn resume(&mut self, agent: AccountId) { self.set_paused(agent, false); }
 
-    pub fn pay(&mut self, to: AccountId, amount: U128, case_ref: String) -> PromiseOrValue<Value> {
+    pub fn pay(&mut self, to: AccountId, amount: U128, case_ref: String, expected_policy_hash: Option<String>) -> PromiseOrValue<Value> {
         require!(amount.0 > 0 && !case_ref.is_empty() && case_ref.len() <= 128, "invalid payment");
         let agent = env::predecessor_account_id();
         let policy = self.get_policy(agent.clone());
@@ -128,6 +129,9 @@ impl Spend {
             PromiseOrValue::Value(data)
         };
         let Some(policy_ref) = &policy else { return refuse("not_registered"); };
+        if let Some(expected) = expected_policy_hash {
+            require!(expected == policy_ref.policy_hash, "stale policy hash");
+        }
         if policy_ref.paused { return refuse("paused"); }
         let Some(payee) = policy_ref.payees.iter().find(|entry| entry.account == to) else { return refuse("not_payee"); };
         if amount.0 > payee.max_per_payment.0 { return refuse("over_max"); }
