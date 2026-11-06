@@ -62,7 +62,8 @@ function populate() {
   $('#cap').value = formatNear(rules.spend_money.dailyCap).split(' ')[0];
   $('#payees').replaceChildren();
   for (const payee of rules.spend_money.payees) addPayee(payee);
-  $('#version').textContent = 'Signed, version ' + active.version;
+  $('#version').textContent = testnet && !signed ? 'Review required' : 'Signed, version ' + active.version;
+  $('#export').hidden = !testnet || !signed;
   $('#save').hidden = true;
 }
 
@@ -106,13 +107,41 @@ populate();
 for (const input of [$('#send'), $('#share'), $('#limits')]) input.addEventListener('input', markDirty);
 $('#add').onclick = () => { addPayee(); markDirty(); $('#payees').lastElementChild.querySelector('input').focus(); };
 $('#discard').onclick = () => { populate(); status.textContent = ''; };
-$('#keys').onclick = () => {
+$('#keys').onclick = async () => {
+  if (testnet) {
+    const loading = make('p', 'Opening your demo device…', { role: 'status' });
+    open('Demo device', loading);
+    try {
+      const keys = await describeDevice(await demoDevice());
+      if (!sheet.open || !content.contains(loading)) return;
+      const fields = [['Limited access key', keys.accessKey], ['Registry public key', keys.hex]].map(([name, value]) => {
+        const label = make('label', name, { class: 'public-key' });
+        const field = make('input', '', { readonly: '' });
+        field.value = value;
+        field.onclick = () => field.select();
+        label.append(field);
+        return label;
+      });
+      open('Demo device', make('p', 'Owner: ' + testnet.owner), ...fields,
+        make('p', 'Register this device with the owner account and give it access to set payment limits.'));
+    } catch {
+      loading.textContent = 'Could not open the demo device. Allow browser storage and try again.';
+    }
+    return;
+  }
   const key = state.agentAccount.keys[0];
   const restricted = state.agentAccount.keys.length === 1 && key?.kind === 'function_call' &&
     key.receiver === 'local-spend' && key.methods.length === 1 && key.methods[0] === 'pay';
   open('Agent keys', make('p', state.agentAccount.account), make('p', 'Local demo account'),
     make('p', restricted ? 'Milo holds one key. It can only ask the spending contract to pay.' : 'Payment-only restriction could not be confirmed.'));
 };
+$('#export').onclick = () => {
+  if (!signed) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(signed, null, 2)], { type: 'application/json' }));
+  make('a', '', { href: url, download: 'signed-policy.json' }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+if (testnet) $('#screen-mode').textContent = records.length ? 'NEAR AI Cloud' : 'Awaiting testnet rehearsal';
 $('#limits').onsubmit = async event => {
   event.preventDefault();
   try {
@@ -131,9 +160,17 @@ $('#limits').onsubmit = async event => {
     draft.display = displayPermission(draft);
     const approve = make('button', 'Sign and save', { class: 'primary', type: 'button' });
     const note = make('p', testnet ? 'Signing with Demo device (this browser). This also updates Milo’s limits on NEAR testnet.' : 'Signing with Demo device (this browser). Saves this local demo policy.', { role: 'status' });
-    open("Save Milo's permissions", ...draft.display.map(line => make('p', line)), note, approve);
+    const rules = make('ul', '', { class: 'signed-rules' });
+    rules.append(...draft.display.map(line => make('li', line)));
+    const cancel = make('button', 'Cancel', { type: 'button' });
+    cancel.onclick = () => sheet.close();
+    const actions = make('div', '', { class: 'actions sheet-actions' });
+    actions.append(cancel, approve);
+    open("Save Milo's permissions", rules, note, actions);
     approve.onclick = async () => {
       approve.disabled = true;
+      cancel.disabled = true;
+      note.textContent = 'Signing on this device…';
       try {
         const device = await demoDevice();
         const hash = await hashJson(draft);
@@ -141,7 +178,10 @@ $('#limits').onsubmit = async event => {
         const signature = await sign(device.privateKey, hash);
         if (!await verify(publicKey, signature, hash)) throw new Error('Signature check failed');
         const next = { document: draft, publicKey, signature };
-        if (testnet) await applyTestnetPolicy(testnet, device, draft);
+        if (testnet) {
+          note.textContent = 'Signed. Waiting for NEAR testnet…';
+          await applyTestnetPolicy(testnet, device, draft);
+        }
         try { sessionStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* Policy may already be finalized. */ }
         signed = next;
         active = draft;
@@ -151,6 +191,8 @@ $('#limits').onsubmit = async event => {
       } catch (error) {
         note.textContent = testnet ? error.message : "Couldn't sign and save. Your previous local settings are still in force.";
         approve.disabled = false;
+        cancel.disabled = false;
+        approve.textContent = 'Try again';
       }
     };
   } catch (error) { status.textContent = error.message; }
@@ -162,9 +204,17 @@ function renderRecords() {
   const items = [...records].reverse().map(entry => ({ ...entry.record, details: entry.details }));
   if (signed) items.unshift({ type: 'permission_changed', summary: 'Dana signed changes on the demo device.',
     createdAtMs: signed.document.issuedAtMs, display: signed.document.display });
-  const visible = items.filter(item => (!filter || item.type.includes(filter)) && item.summary.toLowerCase().includes(search));
+  const categories = {
+    pay: ['paid', 'pay_refused'], block: ['share_blocked', 'pay_refused'],
+    screen: ['screen_flagged', 'screen_clear'], permission: ['permission_changed', 'agent_paused', 'agent_resumed']
+  };
+  const visible = items.filter(item => (!filter || categories[filter]?.includes(item.type)) &&
+    item.summary.toLowerCase().includes(search));
   const rows = visible.map(item => {
-    const button = make('button', item.summary, { class: 'record', type: 'button' });
+    const button = make('button', '', { class: 'record', type: 'button' });
+    const summary = make('span', item.summary);
+    summary.append(make('small', new Date(item.createdAtMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })));
+    button.append(summary);
     button.append(make('span', item.display ? (testnet ? 'Signed on testnet' : 'Signed locally') : (testnet ? 'Sealed on testnet' : 'Sealed locally (demo)'), { class: 'chip' }));
     button.onclick = () => {
       const details = [make('p', item.summary), make('p', new Date(item.createdAtMs).toLocaleString())];
@@ -187,7 +237,9 @@ function renderRecords() {
     row.append(button);
     return row;
   });
-  $('#records').replaceChildren(...(rows.length ? rows : [make('li', filter === 'block' ? 'Nothing blocked' : 'No matching evidence')]));
+  const empty = testnet && !items.length ? 'No testnet evidence yet. Run the testnet rehearsal to see its records here.' :
+    filter === 'block' && !search ? 'Nothing blocked' : 'No matching evidence';
+  $('#records').replaceChildren(...(rows.length ? rows : [make('li', empty, { class: 'empty' })]));
 }
 $('#filter').onchange = renderRecords;
 $('#search').oninput = renderRecords;

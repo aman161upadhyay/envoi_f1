@@ -29,3 +29,16 @@ dialog::backdrop { background: #1d1d1f45; }
 .close { float: right; }
 dialog h2 { padding-right: 72px; }
 @media (max-width: 600px) { main { padding: 0 16px; } .payee { grid-template-columns: 1fr 1fr; } .record { flex-wrap: wrap; } }
+
+:root { color-scheme: light; }
+::selection { background: #dceeff; color: var(--ink); }
+input { caret-color: var(--accent); }
+button:disabled { cursor: wait; opacity: .65; }
+.chip { flex-shrink: 0; }
+.record small { margin-top: 3px; font-variant-numeric: tabular-nums; }
+.empty { padding: 24px 8px; color: var(--ink2); }
+.public-key { display: block; margin: 16px 0; }
+.public-key input { display: block; width: 100%; margin-top: 5px; }
+.signed-rules { margin-block: 20px; }
+.signed-rules li { padding-block: 12px; }
+.sheet-actions { justify-content: flex-end; }
