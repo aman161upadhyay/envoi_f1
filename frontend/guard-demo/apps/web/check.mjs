@@ -34,11 +34,14 @@ async function show(read) {
     }) } : { evidenceKeys: config.evidenceKeys };
     const result = await checkProof(proof, trust);
     if (id !== latest) return;
-    for (const { id: check, status } of result.checks) {
+    for (const { id: check, status, message, reason } of result.checks) {
       const row = document.createElement('li');
       row.dataset.status = status;
-      row.textContent = status === 'SKIP' ? labels[check][0] + ' · Not checked' :
-        (status === 'PASS' ? '✓ ' + labels[check][0] : '× ' + labels[check][1]);
+      const [pass, fail] = labels[check] ?? [check, check];
+      const fallback = status === 'PASS' ? pass : status === 'FAIL' ? fail :
+        pass + (reason === 'unavailable' ? " - Couldn't reach the public record. Try again later." : ' - Not checked');
+      const marker = { PASS: 'Pass', FAIL: 'Failed', SKIP: 'Skipped' }[status];
+      row.textContent = (marker ? marker + ': ' : '') + (message ?? fallback);
       results.append(row);
       if (check === 'display' && status === 'PASS') {
         for (const line of proof.permission.document.display) {
@@ -48,18 +51,22 @@ async function show(read) {
         }
       }
     }
-    verdict.textContent = {
+    verdict.textContent = result.message ?? {
       failed: "This record can't be trusted.",
+      bad_file: "This isn't an envoi proof file.",
       partial: "Signatures check out. Some checks still need verification.",
       verified: 'This record is genuine and unchanged.'
     }[result.verdict];
-  } catch {
-    if (id === latest) verdict.textContent = "This record can't be trusted.";
+  } catch (error) {
+    if (id !== latest) return;
+    if (error instanceof SyntaxError) verdict.textContent = "This isn't an envoi proof file.";
+    else if (error instanceof RangeError) verdict.textContent = error.message;
+    else verdict.textContent = "Couldn't check this proof. Try opening the file again.";
   }
 }
 function choose(file) {
   if (file) show(async () => {
-    if (file.size > 2 * 1024 * 1024) throw new Error('Proof is too large');
+    if (file.size > 2 * 1024 * 1024) throw new RangeError('Proof is too large. Choose a file under 2 MB.');
     return JSON.parse(await file.text());
   });
 }
