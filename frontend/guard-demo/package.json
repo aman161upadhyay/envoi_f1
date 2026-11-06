@@ -1,0 +1,1 @@
+{"name":"envoi-guard","private":true,"type":"module","engines":{"node":">=22.13"},"scripts":{"test":"node --test","demo":"node apps/server/demo.mjs","check":"node packages/check/cli.mjs"}}
