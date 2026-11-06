@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { ACCOUNT_CHANGED_EVENT, ApiError, SESSION_EXPIRED_EVENT, api, setExpectedHuman } from './api';
 import { prepareCaseAssetDownload } from './case-files';
+import { fileFolderFor, fileSourceView } from './file-folders';
 import LandingPage from './LandingPage';
 import { ConnectPage, ConnectionActions } from './onboarding/ConnectPage';
 import { agentCatalog, productAsset } from './onboarding/agent-catalog';
@@ -1055,7 +1056,7 @@ export function AppShell(props: ShellProps) {
         {props.claimRoute ? <main id="main-content" className="utility-content"><ClaimWorkspace key={human.id} humanId={human.id} authorizationSearch={authorizationRoute ? window.location.search : undefined} workspaces={workspaces.filter(item => item.kind !== 'agent' && (!authorizationRoute || (item.id === workspace.id ? view.canManageInbox : childViews[item.id]?.canManageInbox)))} entries={agentEntries} onRefresh={onRefresh} onSelectAgent={async (agentId, address) => { const inbox = workspaces.find(item => item.kind === 'agent' && (item.ownerAgentId === agentId || agentEntries.some(entry => entry.agent.address === address && entry.agent.id === item.ownerAgentId))); if (inbox) { await onSelectWorkspace(inbox, 'integrations'); window.location.assign('/app'); } }} /></main> : utilitySection ? (
           <main id="main-content" className="utility-content">
             <button className="icon-button mobile-only utility-menu" aria-label="Open navigation" onClick={() => setNavOpen(true)}><Menu size={18} /></button>
-{section === 'documents' && <SharedFilesPage view={view} notify={setToast} onOpenCase={openCaseFromUtility} onConnect={openConnect} />}
+{section === 'documents' && <SharedFilesPage view={view} notify={setToast} onOpenCase={openCaseFromUtility} />}
 {section === 'policies' && <PoliciesPage entries={agentEntries} onConnect={openConnect} onRefresh={refreshAgentInbox} notify={setToast} />}
             {section === 'integrations' && <IntegrationsPage view={view} workspace={rootWorkspace} entries={agentEntries} humanId={human.id} canManageInbox={canManageInbox} onConnect={openConnect} onSelectWorkspace={onSelectWorkspace} onPermissions={() => chooseSection('policies')} onRefresh={onRefresh} onRefreshAgent={refreshAgentInbox} notify={setToast} />}
             {section === 'activity' && <ActivityPage view={view} onOpenCase={openCaseFromUtility} />}
@@ -1496,34 +1497,34 @@ export function ReceiptCard({ workCase }: { workCase: WorkCase }) {
   );
 }
 
-function SharedFilesPage({ view, notify, onOpenCase, onConnect }: { view: HumanView; notify: (message: string) => void; onOpenCase: (workCase: WorkCase) => void; onConnect: () => void }) {
+function SharedFilesPage({ view, notify, onOpenCase }: { view: HumanView; notify: (message: string) => void; onOpenCase: (workCase: WorkCase) => void }) {
   const [query, setQuery] = useState('');
   const [direction, setDirection] = useState<'all' | 'received' | 'sent'>('all');
   const [kind, setKind] = useState('');
   const [layout, setLayout] = useState<'list' | 'grid'>('list');
   const [folder, setFolder] = useState('');
-  const caseFor = (asset: Asset) => view.caseQueue.find(item => item.id === asset.caseId);
-  const folderFor = (asset: Asset) => {
-    const workCase = caseFor(asset);
-    if (!workCase) return 'Other files';
-    const events = timelineForCase(workCase, view.messages);
-    const id = participantIds(workCase, events).find(value => value !== localAgentId(workCase, view) && value !== workCase.principal);
-    return resolveParticipant(workCase, id, view.agents, view.participantDirectory, localAgentId(workCase, view)).displayName;
-  };
-  const folders = [...new Set(view.assets.map(folderFor))].sort();
+  const sourceFor = (asset: Asset) => fileSourceView(asset, view);
+  const caseFor = (asset: Asset) => sourceFor(asset).caseQueue.find(item => item.id === asset.caseId) || view.caseQueue.find(item => item.id === asset.caseId);
+  const folderFor = (asset: Asset) => fileFolderFor(asset, view);
+  const folders = [...new Map(view.assets.map(asset => {
+    const fileFolder = folderFor(asset);
+    return [fileFolder.id, fileFolder] as const;
+  })).values()].sort((left, right) => left.label.localeCompare(right.label));
+  const selectedFolder = folders.find(item => item.id === folder);
   const kinds = [{ label: 'PDFs', match: 'pdf' }, { label: 'Documents', match: 'document' }, { label: 'Spreadsheets', match: 'sheet' }, { label: 'Images', match: 'image/' }, { label: 'Archives', match: 'zip' }];
   const files = view.assets.filter(asset => {
     const workCase = caseFor(asset);
-    const localId = workCase ? localAgentId(workCase, view) : view.inbox.ownerAgentId;
+    const source = sourceFor(asset);
+    const localId = workCase ? localAgentId(workCase, source) : source.inbox.ownerAgentId;
     const owner = Boolean(localId && asset.createdByAgentId === localId);
-    return (!folder || folderFor(asset) === folder) && (!query || `${assetDisplayName(asset)} ${caseFor(asset)?.objective || ''} ${folderFor(asset)}`.toLowerCase().includes(query.toLowerCase())) && (direction === 'all' || Boolean(localId) && (direction === 'sent') === owner) && (!kind || `${asset.mimeType} ${assetDisplayName(asset)}`.toLowerCase().includes(kind));
+    return (!folder || folderFor(asset).id === folder) && (!query || `${assetDisplayName(asset)} ${caseFor(asset)?.objective || ''} ${folderFor(asset).label}`.toLowerCase().includes(query.toLowerCase())) && (direction === 'all' || Boolean(localId) && (direction === 'sent') === owner) && (!kind || `${asset.mimeType} ${assetDisplayName(asset)}`.toLowerCase().includes(kind));
   }).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   return <div className="files-page">
     <div className="files-heading"><div><h1>Files</h1><p>Files shared in your agents’ conversations.</p></div>{view.assets.length > 0 && <div className="files-search"><Search size={16} /><input aria-label="Search files" placeholder="Search files" value={query} onChange={event => setQuery(event.target.value)} /></div>}</div>
     {view.assets.length > 0 && <><div className="files-toolbar"><div className="files-segment" aria-label="File direction">{([['all','All'],['received','Received'],['sent','Sent by my agents']] as const).map(([value,label]) => <button key={value} aria-pressed={direction === value} onClick={() => setDirection(value)}>{label}</button>)}</div><div className="files-types">{kinds.map(item => <button key={item.label} aria-pressed={kind === item.match} onClick={() => setKind(current => current === item.match ? '' : item.match)}>{item.label}</button>)}</div><div className="files-segment layout-toggle"><button aria-label="List view" aria-pressed={layout === 'list'} onClick={() => setLayout('list')}><List size={16} /></button><button aria-label="Grid view" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}><LayoutGrid size={16} /></button></div></div>
-    {folder && <div className="files-breadcrumb"><button onClick={() => setFolder('')}>Files</button><ChevronRight size={16} /><span>{folder}</span></div>}</>}
-    {!folder && folders.length > 0 && <section className="files-folders"><h2>Folders</h2><div className="folder-grid">{folders.map((name, index) => <button key={name} onClick={() => setFolder(name)}><Folder size={22} fill={AGENT_COLORS[index % AGENT_COLORS.length]} color={AGENT_COLORS[index % AGENT_COLORS.length]} /><span>{name}</span><small>{view.assets.filter(asset => folderFor(asset) === name).length}</small></button>)}</div></section>}
-    <section className="recent-files">{view.assets.length > 0 && <h2>{folder ? folder : 'Recent files'}</h2>}{files.length ? <div className={`file-items ${layout}`}><div className="file-columns"><span>Name</span><span>Case</span><span>From</span><span>Modified</span><span>Size</span><span>Status</span></div>{files.map(asset => <FileItem key={asset.id} asset={asset} workCase={caseFor(asset)} creator={view.agents.find(agent => agent.id === asset.createdByAgentId)} inboxId={view.inbox.id} notify={notify} onOpenCase={onOpenCase} />)}</div> : <div className="files-empty"><span className="empty-icon"><FileText size={25} /></span><strong>{view.assets.length ? 'No matching files' : 'No files yet'}</strong><span>{view.assets.length ? 'Try another search or filter.' : 'Files shared in conversations will appear here.'}</span>{!view.assets.length && !view.agents.length && <button className="button secondary" onClick={onConnect}>Connect an agent</button>}</div>}</section>
+    {folder && <div className="files-breadcrumb"><button onClick={() => setFolder('')}>Files</button><ChevronRight size={16} /><span>{selectedFolder?.label || 'Other files'}</span></div>}</>}
+    {!folder && folders.length > 0 && <section className="files-folders"><h2>Folders</h2><div className="folder-grid">{folders.map((item, index) => <button key={item.id} onClick={() => setFolder(item.id)}><Folder size={22} fill={AGENT_COLORS[index % AGENT_COLORS.length]} color={AGENT_COLORS[index % AGENT_COLORS.length]} /><span>{item.label}</span><small>{view.assets.filter(asset => folderFor(asset).id === item.id).length}</small></button>)}</div></section>}
+    <section className="recent-files">{view.assets.length > 0 && <h2>{selectedFolder?.label || 'Recent files'}</h2>}{files.length ? <div className={`file-items ${layout}`}><div className="file-columns"><span>Name</span><span>Case</span><span>From</span><span>Modified</span><span>Size</span><span>Status</span></div>{files.map(asset => <FileItem key={asset.id} asset={asset} workCase={caseFor(asset)} creator={sourceFor(asset).agents.find(agent => agent.id === asset.createdByAgentId)} inboxId={sourceFor(asset).inbox.id} notify={notify} onOpenCase={onOpenCase} />)}</div> : <div className="files-empty"><span className="empty-icon"><FileText size={25} /></span><strong>{view.assets.length ? 'No matching files' : 'No files yet'}</strong><span>{view.assets.length ? 'Try another search or filter.' : 'Files shared in conversations will appear here.'}</span></div>}</section>
   </div>;
 }
 

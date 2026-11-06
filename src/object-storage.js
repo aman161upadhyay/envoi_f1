@@ -3,9 +3,7 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DurableMalwareScanLifecycle } from './object-scan-lifecycle.js';
 
-const DEFAULT_ALLOWED_MIME_TYPES = Object.freeze([
-  'application/pdf', 'image/jpeg', 'image/png', 'text/plain'
-]);
+const DEFAULT_ALLOWED_MIME_TYPES = Object.freeze(['*/*']);
 const SHA256_BASE64_LENGTH = 44;
 const MAX_PRESIGN_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_REQUEST_TIMEOUT_MS = 120_000;
@@ -32,7 +30,7 @@ export function validateObjectStorageConfig(config = {}) {
   if (!['local', 's3'].includes(provider)) throw new ObjectStorageError('INVALID_STORAGE_CONFIG', 'provider must be "local", "s3", or "r2"');
   if (!Number.isSafeInteger(maxObjectBytes) || maxObjectBytes < 1) throw new ObjectStorageError('INVALID_STORAGE_CONFIG', 'maxObjectBytes must be a positive integer');
   if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS) throw new ObjectStorageError('INVALID_STORAGE_CONFIG', 'requestTimeoutMs must be an integer from 1 to 120000');
-  if (!Array.isArray(allowedMimeTypes) || !allowedMimeTypes.length || allowedMimeTypes.some(type => typeof type !== 'string' || !MIME_TYPE.test(type))) {
+  if (!Array.isArray(allowedMimeTypes) || !allowedMimeTypes.length || allowedMimeTypes.some(type => typeof type !== 'string' || (type !== '*/*' && !MIME_TYPE.test(type)))) {
     throw new ObjectStorageError('INVALID_STORAGE_CONFIG', 'allowedMimeTypes must contain valid MIME types');
   }
   if (provider === 'local') {
@@ -76,7 +74,8 @@ function validateUploadInput(input, config) {
   if (typeof input.filename !== 'string' || !input.filename || input.filename !== input.filename.trim() || input.filename.length > 255 || /[\\/\u0000-\u001f\u007f]/.test(input.filename) || ['.', '..'].includes(input.filename)) {
     throw new ObjectStorageError('INVALID_FILENAME', 'Filename must be a non-empty basename without control characters');
   }
-  if (typeof input.mimeType !== 'string' || !MIME_TYPE.test(input.mimeType) || !config.allowedMimeTypes.includes(input.mimeType)) {
+  if (typeof input.mimeType !== 'string' || !MIME_TYPE.test(input.mimeType)
+    || (!config.allowedMimeTypes.includes('*/*') && !config.allowedMimeTypes.includes(input.mimeType))) {
     throw new ObjectStorageError('INVALID_MIME_TYPE', 'MIME type is not permitted');
   }
   if (!Number.isSafeInteger(input.size) || input.size < 1 || input.size > config.maxObjectBytes) throw new ObjectStorageError('INVALID_SIZE', 'Object size is not permitted');
