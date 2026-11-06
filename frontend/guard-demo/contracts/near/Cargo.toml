@@ -11,3 +11,4 @@ lto = true
 opt-level = "z"
 overflow-checks = true
 panic = "abort"
+strip = "symbols"

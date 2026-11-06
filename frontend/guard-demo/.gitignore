@@ -10,3 +10,4 @@ signed-policy.json
 testnet-run*.json
 __pycache__/
 .venv/
+smoke-*.json

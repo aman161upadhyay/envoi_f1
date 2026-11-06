@@ -54,7 +54,12 @@ async def verify(evidence):
     if len(matches) != 1:
         return checks
     attestation = matches[0]
-    if attestation.get("request_nonce", "").lower() != nonce:
+    checks.update(await verify_hardware(attestation, nonce, address))
+    return checks
+
+async def verify_hardware(attestation, nonce, address):
+    checks = dict.fromkeys(("signer_attested", "report_data", "tdx_quote", "gpu"), False)
+    if not re.fullmatch(r"0x[0-9a-f]{40}", address) or attestation.get("request_nonce", "").lower() != nonce:
         return checks
     quote = bytes.fromhex(attestation["intel_quote"])
     version = int.from_bytes(quote[0:2], "little")
@@ -79,6 +84,15 @@ async def verify(evidence):
 
 if __name__ == "__main__":
     try:
-        print(json.dumps(asyncio.run(verify(json.load(sys.stdin)))))
+        evidence = json.load(sys.stdin)
+        if sys.argv[1:] == ["--hardware-only"]:
+            nonce = evidence["nonce"]
+            attestation = evidence["attestation"]
+            if not re.fullmatch(r"[0-9a-f]{64}", nonce):
+                sys.exit(1)
+            result = asyncio.run(verify_hardware(attestation, nonce, attestation["signing_address"].lower()))
+        else:
+            result = asyncio.run(verify(evidence))
+        print(json.dumps(result))
     except Exception:
         sys.exit(1)
