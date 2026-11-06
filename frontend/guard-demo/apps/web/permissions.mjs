@@ -135,12 +135,12 @@ $('#keys').onclick = async () => {
   open('Agent keys', make('p', state.agentAccount.account), make('p', 'Local demo account'),
     make('p', restricted ? 'Milo holds one key. It can only ask the spending contract to pay.' : 'Payment-only restriction could not be confirmed.'));
 };
-$('#export').onclick = () => {
-  if (!signed) return;
-  const url = URL.createObjectURL(new Blob([JSON.stringify(signed, null, 2)], { type: 'application/json' }));
-  make('a', '', { href: url, download: 'signed-policy.json' }).click();
+function downloadJson(value, filename) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
+  make('a', '', { href: url, download: filename }).click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-};
+}
+$('#export').onclick = () => { if (signed) downloadJson(signed, 'signed-policy.json'); };
 if (testnet) $('#screen-mode').textContent = records.length ? 'NEAR AI Cloud' : 'Awaiting testnet rehearsal';
 $('#limits').onsubmit = async event => {
   event.preventDefault();
@@ -230,7 +230,17 @@ function renderRecords() {
           details.push(make('p', checks[check.id] + ' · ' + ({ passed: 'Passed', failed: 'Failed', not_checked: 'Not checked' })[check.status]));
         }
       }
-      if (!testnet && item.type === 'pay_refused') details.push(make('a', 'Check proof', { href: '/check' }));
+      const proof = testnet ? state.testnetProofs?.find(entry => entry.record.id === item.id)
+        : state.genuine.record.id === item.id ? state.genuine : null;
+      if (proof) {
+        const actions = make('div', '', { class: 'actions' });
+        const download = make('button', 'Download proof', { type: 'button' });
+        download.onclick = () => downloadJson(proof, 'proof-' + proof.record.id + '.json');
+        actions.append(download, make('a', 'Check proof', {
+          href: testnet ? '/check?record=' + encodeURIComponent(item.id) : '/check?sample=genuine'
+        }));
+        details.push(actions);
+      }
       open('Evidence record', ...details);
     };
     const row = make('li', '');

@@ -21,7 +21,9 @@ test('browser checker serves the shared code and rejects uploads', async () => {
       assert.equal(page.status, 200);
       assert.match(page.body, /Save changes/);
     }
-    const page = request('/check');
+    assert.match(request('/demo').body, /Offline replay/);
+    assert.equal(request('/replay.mjs').status, 200);
+    const page = request('/check?sample=genuine');
     assert.equal(page.status, 200);
     assert.match(page.body, /Checked on your device/);
     const library = request('/packages/check/index.mjs');

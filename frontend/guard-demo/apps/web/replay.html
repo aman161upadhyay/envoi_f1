@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Invoice 1042 · envoi</title>
+  <link rel="stylesheet" href="/check.css">
+  <link rel="stylesheet" href="/permissions.css">
+  <link rel="stylesheet" href="/replay.css">
+</head>
+<body>
+  <header><a href="/permissions"><span class="mark" aria-hidden="true">e</span> envoi</a></header>
+  <main class="replay">
+    <section aria-labelledby="title">
+      <div class="heading"><h1 id="title">Invoice 1042 from Ledger Co</h1><span class="chip">Offline replay</span></div>
+      <p>Milo · Northwind purchasing agent</p>
+      <ol id="timeline" aria-live="polite"><li>Waiting for Ledger Co’s invoice.</li></ol>
+    </section>
+    <aside aria-labelledby="demo">
+      <h2 id="demo">Demo</h2>
+      <p id="step" role="status">Step 1 of 5</p>
+      <button id="advance" class="primary" type="button">Send Ledger Co’s invoice</button>
+      <a id="next-link" hidden></a>
+      <button id="reset" type="button" hidden>Reset demo</button>
+    </aside>
+  </main>
+  <script type="module" src="/replay.mjs"></script>
+</body>
+</html>

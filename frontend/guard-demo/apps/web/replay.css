@@ -1,0 +1,9 @@
+.replay { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); gap: 32px; }
+.replay h2 { margin: 0; }
+.replay aside { align-self: start; background: var(--side); border-radius: 14px; padding: 20px; }
+.replay aside a { display: block; color: #005bb5; }
+.replay aside button + button, .replay aside a + button { margin-top: 12px; }
+.replay ol { padding-left: 24px; }
+.replay li { padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.replay li[data-warning] { color: #8a4000; }
+@media (max-width: 700px) { .replay { grid-template-columns: minmax(0, 1fr); gap: 20px; } }

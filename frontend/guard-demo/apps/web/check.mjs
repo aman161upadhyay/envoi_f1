@@ -1,3 +1,4 @@
+import { nearReaders } from '/adapters/near/read.mjs';
 import { checkProof } from '/packages/check/index.mjs';
 
 const results = document.querySelector('#results');
@@ -26,13 +27,17 @@ async function show(read) {
   verdict.textContent = 'Checking proof';
   try {
     const proof = await read();
-    const { evidenceKeys } = await configuration;
-    const result = await checkProof(proof, { evidenceKeys });
+    const config = await configuration;
+    const online = proof?.seal?.network === 'near-testnet' && config.testnet && config.testnetTrust;
+    const trust = online ? { ...config.testnetTrust, ...nearReaders({
+      ...config.testnet, ...config.testnetTrust, rpcUrl: '/testnet-rpc'
+    }) } : { evidenceKeys: config.evidenceKeys };
+    const result = await checkProof(proof, trust);
     if (id !== latest) return;
     for (const { id: check, status } of result.checks) {
       const row = document.createElement('li');
       row.dataset.status = status;
-      row.textContent = status === 'SKIP' ? labels[check][0] + ' · Not checked online' :
+      row.textContent = status === 'SKIP' ? labels[check][0] + ' · Not checked' :
         (status === 'PASS' ? '✓ ' + labels[check][0] : '× ' + labels[check][1]);
       results.append(row);
       if (check === 'display' && status === 'PASS') {
@@ -45,7 +50,7 @@ async function show(read) {
     }
     verdict.textContent = {
       failed: "This record can't be trusted.",
-      partial: "Signatures check out. Couldn't reach NEAR to finish.",
+      partial: "Signatures check out. Some checks still need verification.",
       verified: 'This record is genuine and unchanged.'
     }[result.verdict];
   } catch {
@@ -72,3 +77,9 @@ if (config.genuine && config.edited) {
     document.querySelector('#' + sample).addEventListener('click', () => show(async () => config[sample]));
   }
 }
+
+const query = new URLSearchParams(location.search);
+const sample = query.get('sample');
+const record = query.get('record');
+if (sample === 'genuine' || sample === 'edited') show(async () => config[sample]);
+else if (record) show(async () => config.testnetProofs?.find(proof => proof.record.id === record));

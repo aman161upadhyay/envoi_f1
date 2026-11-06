@@ -32,3 +32,13 @@ The verifier requires a provider TEE signature, the exact request and response h
 - `npm run testnet:preflight` checks the network, deployed Wasm hashes, accounts, key restrictions, vault, and signed policy with read-only RPC calls. The NEAR AI check confirms local configuration only.
 - `npm run testnet:smoke` sends a deliberately refused testnet payment and seals a smoke record. It checks that the vault balance stays the same. This is a contract test. It does not call inference, transfer funds from the vault, or produce an attested demo proof.
 - `npm run demo:live` is the full rehearsal. It holds both demo payments until a real inference receipt passes all checks. Use a fresh output filename after any partial run and inspect its recorded transaction IDs before retrying.
+
+## Judge walkthrough
+
+1. Run `npm ci --offline`, `npm test`, and `npm run demo -- --serve` from this directory. Open [Demo replay](http://127.0.0.1:4173/demo).
+2. Send Ledger Co’s invoice. The timeline shows the locally screened message, the refusal, the blocked share, and the allowed invoice as you advance. The replay displays demo events and leaves the network untouched.
+3. Open Evidence. Select **Money** to see both payment outcomes. Open the refused payment and download its proof or select **Check proof**. Select **Edited proof** to verify that the checker rejects a modified record.
+4. In Settings, edit Milo’s daily cap and choose **Save changes**. The confirmation sheet shows exactly what the browser signs. In offline mode the browser saves that policy in the current tab.
+5. After a credentialed testnet run, load its completed output using NEAR_EVIDENCE_RUN_FILE. Evidence offers individual proof downloads. The browser can check testnet transaction and contract data. Use the CLI for full inference-receipt verification.
+
+For a fresh-clone dry run, start with Node 22.13+ and Git on a clean machine. Time the commands above and confirm the replay, refusal and modified-proof failure before reviewing the online artifacts.
