@@ -1,0 +1,23 @@
+{
+  "local": { "kind": "local", "contractId": "local.envoi" },
+  "near-testnet": {
+    "kind": "near",
+    "rpcUrl": "https://test.rpc.fastnear.com",
+    "rpcEnv": "NEAR_TESTNET_RPC_URL",
+    "contractId": "",
+    "contractEnv": "NEAR_TESTNET_RECORD_CONTRACT",
+    "publisherIdEnv": "NEAR_TESTNET_PUBLISHER_ID",
+    "publisherKeyEnv": "NEAR_TESTNET_PUBLISHER_KEY",
+    "explorer": "https://testnet.nearblocks.io/txns/{tx}"
+  },
+  "near-mainnet": {
+    "kind": "near",
+    "rpcUrl": "https://free.rpc.fastnear.com",
+    "rpcEnv": "NEAR_MAINNET_RPC_URL",
+    "contractId": "",
+    "contractEnv": "NEAR_MAINNET_RECORD_CONTRACT",
+    "publisherIdEnv": "NEAR_MAINNET_PUBLISHER_ID",
+    "publisherKeyEnv": "NEAR_MAINNET_PUBLISHER_KEY",
+    "explorer": "https://nearblocks.io/txns/{tx}"
+  }
+}

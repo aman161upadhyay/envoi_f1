@@ -1,0 +1,103 @@
+{
+ "description": "Fixed vectors for envoi.proof/v1. Leaves are sha256(\"envoi-vector-leaf-\"+i). Roots are RFC 6962 MTH with 0x00 leaf and 0x01 node prefixes.",
+ "merkle": [
+  {
+   "leaves": [
+    "f6e01f7a7e16f604d1b9963f394c19ea61dd5d6d3d33fd73cb1638f14827d063"
+   ],
+   "root": "7f28f6b1a5fcdf2bbecec6a092d018ce46f89d6eb468b3f21dd6cf96f42a951f"
+  },
+  {
+   "leaves": [
+    "f6e01f7a7e16f604d1b9963f394c19ea61dd5d6d3d33fd73cb1638f14827d063",
+    "a23c14c587b675c7857bb7ded5c0f4ad992a51f2f967829876791c73d94381e6"
+   ],
+   "root": "408f256b78d92ceac940d8f9c37e19b957baa26e665e17310572b3ed275de318"
+  },
+  {
+   "leaves": [
+    "f6e01f7a7e16f604d1b9963f394c19ea61dd5d6d3d33fd73cb1638f14827d063",
+    "a23c14c587b675c7857bb7ded5c0f4ad992a51f2f967829876791c73d94381e6",
+    "05926d5ea4122a6e3051b16d3262769e9f8e26a0c30934b57a1fe0e547064ffa"
+   ],
+   "root": "80dad7afba713b147d063858c5c23a6518625b59231ee13ee20ad64f2f724ece"
+  },
+  {
+   "leaves": [
+    "f6e01f7a7e16f604d1b9963f394c19ea61dd5d6d3d33fd73cb1638f14827d063",
+    "a23c14c587b675c7857bb7ded5c0f4ad992a51f2f967829876791c73d94381e6",
+    "05926d5ea4122a6e3051b16d3262769e9f8e26a0c30934b57a1fe0e547064ffa",
+    "7da8a2fb9dc9cb73697f663c4521a0bfa7ec7e212e43ee7424224150ccd1c172"
+   ],
+   "root": "60ee5a5dc6d3d2b2688e50ba5a95b3fc3a42bedc434cbc9fa2654bcb31b7b70a"
+  },
+  {
+   "leaves": [
+    "f6e01f7a7e16f604d1b9963f394c19ea61dd5d6d3d33fd73cb1638f14827d063",
+    "a23c14c587b675c7857bb7ded5c0f4ad992a51f2f967829876791c73d94381e6",
+    "05926d5ea4122a6e3051b16d3262769e9f8e26a0c30934b57a1fe0e547064ffa",
+    "7da8a2fb9dc9cb73697f663c4521a0bfa7ec7e212e43ee7424224150ccd1c172",
+    "feae87e36fd97e29daa33bc70a65ffc8ce9ae7c6fee5ba82fa9a4c75177ae986"
+   ],
+   "root": "04235324bcc5a4b7ded8c5112919b1d858946992a6bf8620ea3e2e354e09dc8a"
+  },
+  {
+   "leaves": [
+    "f6e01f7a7e16f604d1b9963f394c19ea61dd5d6d3d33fd73cb1638f14827d063",
+    "a23c14c587b675c7857bb7ded5c0f4ad992a51f2f967829876791c73d94381e6",
+    "05926d5ea4122a6e3051b16d3262769e9f8e26a0c30934b57a1fe0e547064ffa",
+    "7da8a2fb9dc9cb73697f663c4521a0bfa7ec7e212e43ee7424224150ccd1c172",
+    "feae87e36fd97e29daa33bc70a65ffc8ce9ae7c6fee5ba82fa9a4c75177ae986",
+    "943dc301c8fe46bedb9c56a80ac5a340a3a498057eed1e2d640587c4b7714b77",
+    "289cc148bbe3eb04d6daa1b5025da959c8eeed65e49ace46103e745772d7127d"
+   ],
+   "root": "43630ea720a046e550a9611aae1ac400ff256a1ac731f3b59d3f9850337c33f9"
+  },
+  {
+   "leaves": [
+    "f6e01f7a7e16f604d1b9963f394c19ea61dd5d6d3d33fd73cb1638f14827d063",
+    "a23c14c587b675c7857bb7ded5c0f4ad992a51f2f967829876791c73d94381e6",
+    "05926d5ea4122a6e3051b16d3262769e9f8e26a0c30934b57a1fe0e547064ffa",
+    "7da8a2fb9dc9cb73697f663c4521a0bfa7ec7e212e43ee7424224150ccd1c172",
+    "feae87e36fd97e29daa33bc70a65ffc8ce9ae7c6fee5ba82fa9a4c75177ae986",
+    "943dc301c8fe46bedb9c56a80ac5a340a3a498057eed1e2d640587c4b7714b77",
+    "289cc148bbe3eb04d6daa1b5025da959c8eeed65e49ace46103e745772d7127d",
+    "7a1a398c0ae7959f91640b0d2320f4b880f434e8b9e575b9025e2be99443add9"
+   ],
+   "root": "82c67f7cf8b82c32730e9c97dfcf3b1ed8387f1f7a69225ebf0c2dc2a42fd6dd"
+  }
+ ],
+ "canonical": [
+  {
+   "input": {
+    "b": 1,
+    "a": [
+     true,
+     null,
+     "x"
+    ],
+    "c": {
+     "z": "é",
+     "y": -0.5
+    }
+   },
+   "output": "{\"a\":[true,null,\"x\"],\"b\":1,\"c\":{\"y\":-0.5,\"z\":\"é\"}}"
+  },
+  {
+   "input": {
+    "é": 1,
+    "a": 2,
+    "B": 3
+   },
+   "output": "{\"B\":3,\"a\":2,\"é\":1}"
+  },
+  {
+   "input": {
+    "n": 1e+21,
+    "m": 0.1,
+    "k": 100
+   },
+   "output": "{\"k\":100,\"m\":0.1,\"n\":1e+21}"
+  }
+ ]
+}

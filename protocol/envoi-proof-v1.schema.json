@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://envoi-agents.com/protocol/envoi-proof-v1.schema.json",
+  "title": "envoi proof bundle v1",
+  "description": "One evidence record plus everything needed to check it against NEAR. See docs/proof-format.md.",
+  "type": "object",
+  "required": ["format", "record", "recordHash", "envoiSignature", "batch", "seals"],
+  "additionalProperties": false,
+  "$defs": {
+    "hex32": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hex32OrNull": { "anyOf": [{ "$ref": "#/$defs/hex32" }, { "type": "null" }] },
+    "b64url": { "type": "string", "pattern": "^[A-Za-z0-9_-]*$" },
+    "time": { "type": "string", "format": "date-time" },
+    "jwkEd25519": {
+      "type": "object", "required": ["kty", "crv", "x"], "additionalProperties": false,
+      "properties": { "kty": { "const": "OKP" }, "crv": { "const": "Ed25519" }, "x": { "$ref": "#/$defs/b64url" } }
+    },
+    "jwkP256": {
+      "type": "object", "required": ["kty", "crv", "x", "y"], "additionalProperties": false,
+      "properties": { "kty": { "const": "EC" }, "crv": { "const": "P-256" }, "x": { "$ref": "#/$defs/b64url" }, "y": { "$ref": "#/$defs/b64url" } }
+    }
+  },
+  "properties": {
+    "format": { "const": "envoi.proof/v1" },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "workspaceId", "seq", "type", "agentId", "caseId", "summary", "detailsHash", "ruleVersionHash", "privateCheckHash", "chainRef", "occurrences", "firstAt", "lastAt", "salt", "previousHash"],
+      "properties": {
+        "schema": { "const": "envoi.evidence/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "workspaceId": { "type": "string", "minLength": 1 },
+        "seq": { "type": "integer", "minimum": 1 },
+        "type": { "enum": ["permission_changed", "permission_blocked", "payment_blocked", "injection_flagged", "approval_given", "approval_declined", "agent_paused", "agent_resumed", "agent_revoked", "signature_mismatch", "owner_key_added", "auto_paused"] },
+        "agentId": { "type": ["string", "null"] },
+        "caseId": { "type": ["string", "null"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "detailsHash": { "$ref": "#/$defs/hex32" },
+        "ruleVersionHash": { "$ref": "#/$defs/hex32OrNull" },
+        "privateCheckHash": { "$ref": "#/$defs/hex32OrNull" },
+        "chainRef": { "type": ["string", "null"] },
+        "occurrences": { "type": "integer", "minimum": 1 },
+        "firstAt": { "$ref": "#/$defs/time" },
+        "lastAt": { "$ref": "#/$defs/time" },
+        "salt": { "$ref": "#/$defs/hex32" },
+        "previousHash": { "$ref": "#/$defs/hex32OrNull" }
+      }
+    },
+    "details": { "type": ["object", "null"] },
+    "detailsSalt": { "$ref": "#/$defs/hex32" },
+    "redaction": { "type": ["object", "null"], "properties": { "by": { "type": "string" }, "at": { "$ref": "#/$defs/time" } } },
+    "recordHash": { "$ref": "#/$defs/hex32" },
+    "envoiSignature": {
+      "type": "object", "required": ["keyId", "alg", "signature", "publicKey"], "additionalProperties": false,
+      "properties": {
+        "keyId": { "type": "string", "minLength": 1 },
+        "alg": { "const": "Ed25519" },
+        "signature": { "$ref": "#/$defs/b64url" },
+        "publicKey": { "$ref": "#/$defs/jwkEd25519" }
+      }
+    },
+    "permissionVersion": {
+      "type": "object",
+      "required": ["document", "documentHash", "method", "ownerRef", "rpId", "rpOrigin", "ownerPublicKey", "assertion"],
+      "properties": {
+        "document": { "type": "object", "required": ["schema", "issuedAt"], "properties": { "schema": { "const": "envoi.permissions/v1" }, "issuedAt": { "$ref": "#/$defs/time" } } },
+        "documentHash": { "$ref": "#/$defs/hex32" },
+        "method": { "enum": ["passkey", "demo_device"] },
+        "ownerRef": { "$ref": "#/$defs/hex32" },
+        "ownerName": { "type": "string" },
+        "rpId": { "type": "string", "minLength": 1 },
+        "rpOrigin": { "type": "string", "minLength": 1 },
+        "ownerPublicKey": { "$ref": "#/$defs/jwkP256" },
+        "assertion": {
+          "type": "object", "required": ["authenticatorData", "clientDataJSON", "signature"],
+          "properties": {
+            "authenticatorData": { "$ref": "#/$defs/b64url" },
+            "clientDataJSON": { "$ref": "#/$defs/b64url" },
+            "signature": { "$ref": "#/$defs/b64url" }
+          }
+        }
+      }
+    },
+    "privateCheck": {
+      "type": ["object", "null"],
+      "required": ["verdict", "model", "requestHash", "responseHash", "signedText", "signature", "signingAddress", "mock"],
+      "properties": {
+        "verdict": { "enum": ["clean", "suspicious", "likely_injection"] },
+        "reason": { "type": "string" },
+        "model": { "type": "string" },
+        "chatId": { "type": "string" },
+        "requestHash": { "type": "string" },
+        "responseHash": { "type": "string" },
+        "signatureKind": { "enum": ["provider_tee", "gateway"] },
+        "signedText": { "type": "string" },
+        "signature": { "type": "string" },
+        "signingAddress": { "type": "string" },
+        "attestation": { "type": "object" },
+        "mock": { "type": "boolean" }
+      }
+    },
+    "batch": {
+      "type": "object", "required": ["batchId", "root", "previousRoot", "count", "leafIndex", "siblings"], "additionalProperties": false,
+      "properties": {
+        "batchId": { "type": "integer", "minimum": 1 },
+        "root": { "$ref": "#/$defs/hex32" },
+        "previousRoot": { "$ref": "#/$defs/hex32OrNull" },
+        "count": { "type": "integer", "minimum": 1 },
+        "leafIndex": { "type": "integer", "minimum": 0 },
+        "siblings": {
+          "type": "array",
+          "items": { "type": "object", "required": ["hash", "side"], "additionalProperties": false,
+            "properties": { "hash": { "$ref": "#/$defs/hex32" }, "side": { "enum": ["left", "right"] } } }
+        }
+      }
+    },
+    "registry": {
+      "type": "object", "required": ["network", "contractId"], "additionalProperties": false,
+      "description": "Where the key registry lives. Defaults to the first seal's contract.",
+      "properties": { "network": { "type": "string" }, "contractId": { "type": "string" } }
+    },
+    "seals": {
+      "type": "array", "minItems": 0,
+      "items": {
+        "type": "object", "required": ["network", "contractId", "batchId"],
+        "properties": {
+          "network": { "type": "string", "pattern": "^(local|near-testnet|near-mainnet)$" },
+          "contractId": { "type": "string" },
+          "batchId": { "type": "integer", "minimum": 1 },
+          "txRef": { "type": "string" },
+          "explorerUrl": { "type": "string" }
+        }
+      }
+    }
+  }
+}

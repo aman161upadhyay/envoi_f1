@@ -1,0 +1,28 @@
+[package]
+name = "envoi-record"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Public record for envoi evidence: chained Merkle batch roots and an append-only signing-key registry. No customer data."
+repository = "https://github.com/aman161upadhyay/envoi_f1"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Reproducible builds: run `cargo near build reproducible-wasm` once the
+# [package.metadata.near.reproducible_build] section is added (image + digest from the
+# cargo-near docs for the version you install). See README.md in this folder.
+
+[dependencies]
+near-sdk = "5.29.1"
+
+[dev-dependencies]
+near-sdk = { version = "5.29.1", features = ["unit-testing"] }
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

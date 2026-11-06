@@ -1,0 +1,13 @@
+{
+  "name": "@envoi/verify",
+  "version": "0.1.0",
+  "description": "Check an envoi evidence proof against NEAR, offline except for reading the chain. Runs in Node 22+ and modern browsers.",
+  "type": "module",
+  "license": "MIT",
+  "exports": { ".": "./src/index.js" },
+  "bin": { "envoi-verify": "./bin/envoi-verify.js" },
+  "files": ["src", "bin", "README.md"],
+  "engines": { "node": ">=22" },
+  "peerDependencies": { "ethers": "^6.17.0" },
+  "peerDependenciesMeta": { "ethers": { "optional": true } }
+}

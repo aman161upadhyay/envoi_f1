@@ -1,0 +1,43 @@
+{
+  "lastBatchId": 1,
+  "lastRoot": "279a6b20e43bff285dc13c2eb80f9dae6944c22b7b5df1c2984179851b2b4ad8",
+  "roots": {
+    "1": {
+      "root": "279a6b20e43bff285dc13c2eb80f9dae6944c22b7b5df1c2984179851b2b4ad8",
+      "previous_root": null,
+      "count": 2,
+      "block_ts": "1793993649145000000"
+    }
+  },
+  "keys": [
+    {
+      "kind": "envoi",
+      "key_ref": "envoi",
+      "key_id": "ev-sample-1793993649132",
+      "fingerprint": "e2d91a53b50acda6f06bab4a9360be3081c43b89be846ace99a9e68917f7708f",
+      "alg": "Ed25519",
+      "prev_sig_ref": null,
+      "block_ts": "1793993649136000000"
+    },
+    {
+      "kind": "owner_demo",
+      "key_ref": "71001b71289eea11510d03899c20063ad10a8955209205200760d02600309393",
+      "key_id": "demo-device",
+      "fingerprint": "1e1ee8ad260c6ccebb699e50fe23a6ca0240b7643b3773eb018bf8d3c5b69210",
+      "alg": "ES256",
+      "prev_sig_ref": null,
+      "block_ts": "1793993649140000000"
+    }
+  ],
+  "txs": {
+    "local-d7ce880f9afd5def2f874d04aa57abe5": {
+      "submittedAt": 1793993649137
+    },
+    "local-afc8800c917ab8bba82e4cb6289d0a8f": {
+      "submittedAt": 1793993649140
+    },
+    "local-f88789dc7b5e50db3195685fcade9e17": {
+      "submittedAt": 1793993649145
+    }
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "format": "envoi.proof/v1",
+  "record": {
+    "schema": "envoi.evidence/v1",
+    "caseId": "case_q4_hiring",
+    "ruleVersionHash": "9c283775b8db24a1f3d657e7591daaebcbec1019f4e5b606b01b33644e359b84",
+    "chainRef": null,
+    "previousHash": null,
+    "occurrences": 1,
+    "id": "ev_sample_1",
+    "workspaceId": "ws_sample",
+    "seq": 1,
+    "type": "permission_blocked",
+    "agentId": "ag_milo",
+    "summary": "Milo tried to share budget.xlsx with Ledger's agent. Blocked because Share files is Allowed.",
+    "firstAt": "2026-11-06T19:34:09.143Z",
+    "lastAt": "2026-11-06T19:34:09.143Z",
+    "detailsHash": "b317c835f027a07ba28953e1258a095f598445d639b9aa99f37e9134f79530e2",
+    "privateCheckHash": null,
+    "salt": "8f4be56d734117de73471544ce974175a31c6709d756aa2ea745b30f3fe286a2"
+  },
+  "recordHash": "84208dc1608f3ec08047cf7daa740aabc5bf8afe731662b6006e087a7276b741",
+  "envoiSignature": {
+    "keyId": "ev-sample-1793993649132",
+    "alg": "Ed25519",
+    "signature": "k8e_W_vwTTCrX-pURPzWdE7K303TMjlXHpjKO9aITqUA5irbeu29LbPTc6HPmEUT43R0RTWyJaSfmulAOxRWCg",
+    "publicKey": {
+      "kty": "OKP",
+      "crv": "Ed25519",
+      "x": "brHTZv_bniO9XVp47XD3HMtYE6-E8yUNGOIOzSIj0o8"
+    }
+  },
+  "batch": {
+    "batchId": 1,
+    "root": "279a6b20e43bff285dc13c2eb80f9dae6944c22b7b5df1c2984179851b2b4ad8",
+    "previousRoot": null,
+    "count": 2,
+    "leafIndex": 0,
+    "siblings": [
+      {
+        "hash": "0676bf71a0afba7cdfda9505e3a3a16e2128a65c9eeb11c099328e9bc8ce9f98",
+        "side": "right"
+      }
+    ]
+  },
+  "seals": [
+    {
+      "network": "local",
+      "contractId": "local.envoi",
+      "batchId": 1,
+      "txRef": "local-f88789dc7b5e50db3195685fcade9e17"
+    }
+  ],
+  "details": {
+    "file": "budget.xlsx",
+    "counterparty": "finance@ledger.example",
+    "note": "Fictional sample data"
+  },
+  "detailsSalt": "0e1ada000f7b797882f660bb79d88657a90882dfab6d2f26ea0e9768c25c212f",
+  "permissionVersion": {
+    "document": {
+      "schema": "envoi.permissions/v1",
+      "workspaceId": "ws_sample",
+      "agentId": "ag_milo",
+      "agentAccount": "a7f3c2.agents.envoi.testnet",
+      "version": 1,
+      "previousHash": null,
+      "rules": {
+        "receive_messages": "allowed",
+        "send_messages": "allowed",
+        "share_files": "off",
+        "submit_forms": "ask_first",
+        "spend_money": {
+          "level": "ask_first",
+          "perTx": "5",
+          "daily": "10",
+          "unit": "NEAR",
+          "allowlist": []
+        }
+      },
+      "issuedAt": "2026-11-06T19:34:14.140Z",
+      "issuedBy": "owner_rachel"
+    },
+    "documentHash": "9c283775b8db24a1f3d657e7591daaebcbec1019f4e5b606b01b33644e359b84",
+    "method": "demo_device",
+    "ownerRef": "71001b71289eea11510d03899c20063ad10a8955209205200760d02600309393",
+    "ownerName": "Rachel Gonsalves (sample)",
+    "rpId": "localhost",
+    "rpOrigin": "http://localhost:5173",
+    "ownerPublicKey": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "ywGlHE_p2Yagq8F9rfL1wiWMYNF9dBkWtZ9BCZiD7-8",
+      "y": "aeLgLB-mnIjln6CInixtBXAI0WCJ9CBvPJWox_nsDb4"
+    },
+    "assertion": {
+      "authenticatorData": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAA",
+      "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoibkNnM2RiamJKS0h6MWxmbldSMnE2OHZzRUJuMDViWUdzQnN6WkU0MW00USIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3Q6NTE3MyIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "signature": "MEQCIFHzyF2UGp89E4wicV4yR_bNwKkHcgGngW4bidwCwc68AiBym0YWqFRm-yx3bC4QsieajqDwYpWAESxLc0vsoxAb7g"
+    }
+  }
+}
