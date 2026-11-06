@@ -37,7 +37,7 @@ import { agentLabel, connectionLabel } from './agent-presence';
 import { mergeHistory, olderCursors } from './history';
 import { createEventCursorStore, PROGRESS_ONLY_EVENTS, subscribeReplayRecovery, WORKSPACE_EVENT_TYPES } from './event-replay';
 import { applyOrderedViewResponse, applyOrderedViewResponses, createRefreshCoordinator, createViewResponseOrder } from './workspace-refresh';
-import { QUIET_VALIDATION_TIMEOUT_MS, SESSION_VALIDATION_TIMEOUT_MS, validateWorkspaceReturn, withReadDeadline, workspaceRequester } from './session-validation';
+import { QUIET_VALIDATION_TIMEOUT_MS, SESSION_VALIDATION_TIMEOUT_MS, cachedWorkspaceView, validateWorkspaceReturn, withReadDeadline, workspaceRequester } from './session-validation';
 import { RUNTIME_OPTIONS, connectorDownloads, dotsRouteUnavailableNotice, dotsSetupSkillFile, isLoopbackOrigin, runtimeLabel, setupPrompt, setupSkillFile, suggestedAgentAddress, watchEnrollmentStatus, type EnrollmentResult, type EnrollmentStatus } from './quick-connect';
 import type { ConnectorRuntime } from '../../sdk/typescript/src/quick-connect';
 import { SESSION_ENDED_NOTICE, SessionRequestCancelled, hasRememberedSession, invalidateSessionRequests, isCurrentSession, publishSessionEnd, publishSessionIdentity, rememberSessionStatus, ridesOutTabSwitch, sessionEndedNotice, sessionGeneration, watchSessionLifecycle } from './session-lifecycle';
@@ -143,6 +143,10 @@ function WorkspaceApp() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [view, setView] = useState<HumanView | null>(null);
+  // Only reuse views authorized for this human in the current browser session.
+  // A fresh server read still checks access and replaces each reused snapshot.
+  const workspaceViewCache = useRef<Record<string, HumanView>>({});
+  const rootPrefetch = useRef<AbortController | null>(null);
   // Child snapshots stay available across workspace switches within one
   // authenticated session. AppShell unmounts while the selected view reloads.
   const childViewCache = useRef<Record<string, HumanView>>({});
@@ -202,6 +206,9 @@ function WorkspaceApp() {
     setWorkspaces([]);
     setWorkspace(null);
     setView(null);
+    rootPrefetch.current?.abort();
+    rootPrefetch.current = null;
+    workspaceViewCache.current = {};
     childViewCache.current = {};
     setError('');
     setRequestedSection('inbox');
@@ -252,11 +259,12 @@ function WorkspaceApp() {
     if (!quiet) activeWorkspace.current = workspaceId;
     if (activeWorkspace.current !== workspaceId) throw new SessionRequestCancelled();
     const ticket = viewOrder.current.begin();
-    if (!quiet) setView(null);
+    if (!quiet) setView(cachedWorkspaceView(workspaceViewCache.current, workspaceId, humanRef.current?.id || ''));
     try {
       const next = await api.humanView(workspaceId, undefined, viewRequests.current.signal);
       if (!isCurrentSession(generation) || !viewOrder.current.isCurrent(ticket) || activeWorkspace.current !== workspaceId) throw new SessionRequestCancelled();
       checkViewIdentity(next, workspaceId);
+      workspaceViewCache.current[workspaceId] = next;
       setView(current => {
         if (!isCurrentSession(generation) || activeWorkspace.current !== workspaceId) return current;
         return applyOrderedViewResponse<HumanView | null>(current, next, viewOrder.current, ticket, (previous, incoming, stale) => incoming ? quiet ? mergeHistory(previous, incoming, undefined, stale) : incoming : previous);
@@ -264,9 +272,14 @@ function WorkspaceApp() {
       return next;
     } catch (caught) {
       if (isCurrentSession(generation) && viewOrder.current.isCurrent(ticket) && caught instanceof ApiError && caught.status === 403) loseWorkspaceAccess(workspaceId);
+      if (isCurrentSession(generation) && viewOrder.current.isCurrent(ticket) && caught instanceof ApiError && caught.status === 401) {
+        delete workspaceViewCache.current[workspaceId];
+        setView(null);
+        expireSession();
+      }
       throw caught;
     }
-  }, [checkViewIdentity, loseWorkspaceAccess]);
+  }, [checkViewIdentity, expireSession, loseWorkspaceAccess]);
 
   const quietRefresh = useCallback((workspaceId: string) => {
     const generation = sessionGeneration();
@@ -371,6 +384,21 @@ function WorkspaceApp() {
   }, [clearPrivateState, config, endSession, loadView, loadWorkspaceDirectory]);
 
   loadAccountRef.current = loadAccount;
+
+  useEffect(() => {
+    const parentId = workspace?.kind === 'agent' ? workspace.parentInboxId : null;
+    if (boot !== 'ready' || !parentId || !human || workspaceViewCache.current[parentId] || rootPrefetch.current) return;
+    const generation = sessionGeneration();
+    const controller = new AbortController();
+    rootPrefetch.current = controller;
+    void api.humanView(parentId, undefined, controller.signal).then(next => {
+      if (isCurrentSession(generation) && cachedWorkspaceView({ [parentId]: next }, parentId, human.id)) {
+        workspaceViewCache.current[parentId] = next;
+      }
+    }).catch(() => {}).finally(() => {
+      if (rootPrefetch.current === controller) rootPrefetch.current = null;
+    });
+  }, [boot, human?.id, workspace?.id, workspace?.kind, workspace?.parentInboxId]);
 
   const revalidateAccount = useCallback(async (quiet = false) => {
     if (signingOut.current || endedElsewhere.current) return;
@@ -608,6 +636,7 @@ function WorkspaceApp() {
           const verified = Object.fromEntries(Object.entries(next).filter(([inboxId, child]) =>
             child.inbox.id === inboxId && child.requester?.id === human.id && child.requester.auth.assurance !== 'phone'));
           childViewCache.current = { ...childViewCache.current, ...verified };
+          workspaceViewCache.current = { ...workspaceViewCache.current, ...verified };
         }
       }}
       onSelectWorkspace={async (next, nextSection = 'inbox') => { checkRenderedSession(); setRequestedSection(nextSection); await selectWorkspace(next); }}
