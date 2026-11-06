@@ -37,6 +37,15 @@ export function workspaceRequester(view: HumanView, workspaceId: string): Worksp
   return Object.hasOwn(view, 'requester') ? requester(view.requester) : undefined;
 }
 
+export function cachedWorkspaceView(views: Record<string, HumanView>, workspaceId: string, accountId: string): HumanView | null {
+  const view = views[workspaceId];
+  if (!view) return null;
+  try {
+    const actor = workspaceRequester(view, workspaceId);
+    return actor?.id === accountId && actor.auth.assurance !== 'phone' ? view : null;
+  } catch { return null; }
+}
+
 type Readers = {
   snapshot: (signal: AbortSignal) => Promise<HumanView>;
   identity: (signal: AbortSignal) => Promise<Human>;
