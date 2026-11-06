@@ -66,6 +66,28 @@ async function createAndUpload({ service, adapter }, body = Buffer.from('safe me
   return started;
 }
 
+test('valid file types, including Markdown and CSV, pass the same scan gate', async t => {
+  const setup = await createLocalService({ allowedMimeTypes: ['*/*'] });
+  t.after(() => rm(setup.root, { recursive: true, force: true }));
+  assert.deepEqual(validateObjectStorageConfig({ provider: 'local', root: setup.root, allowedMimeTypes: ['*/*'] }).allowedMimeTypes, ['*/*']);
+  for (const [filename, mimeType] of [
+    ['budget.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['budget.xls', 'application/vnd.ms-excel'],
+    ['notes.md', 'text/markdown'],
+    ['budget.csv', 'text/csv'],
+    ['archive.zip', 'application/zip'],
+    ['data.bin', 'application/octet-stream']
+  ]) {
+    const started = await createAndUpload(setup, Buffer.from(filename), { filename, mimeType });
+    await assert.rejects(() => setup.service.createDownload(started.object.id), error => error.code === 'OBJECT_NOT_CLEAN');
+    await setup.service.completeUpload(started.object.id);
+    const scanned = await setup.service.scanObject(started.object.id);
+    assert.equal(scanned.state, 'clean');
+    assert.equal((await setup.service.getObject(started.object.id)).mimeType, mimeType);
+  }
+  await assert.rejects(() => setup.service.beginUpload({ workspaceId: 'workspace_a', filename: 'bad.bin', mimeType: 'not a mime type', size: 1, checksumSha256: checksum(Buffer.from('x')) }), error => error.code === 'INVALID_MIME_TYPE');
+});
+
 test('local storage isolates workspace keys and fails downloads closed until clean', async t => {
   const setup = await createLocalService();
   t.after(() => rm(setup.root, { recursive: true, force: true }));

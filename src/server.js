@@ -197,7 +197,7 @@ const operationalBacklogLogIntervalMs = Number(process.env.ENVOI_OPERATIONAL_BAC
 if (!Number.isSafeInteger(objectScanWorkerIntervalMs) || objectScanWorkerIntervalMs < 1) throw new TypeError('ENVOI_SCAN_WORKER_INTERVAL_MS must be a positive integer');
 if (!Number.isSafeInteger(objectScanRetentionIntervalMs) || objectScanRetentionIntervalMs < 1) throw new TypeError('ENVOI_SCAN_RETENTION_INTERVAL_MS must be a positive integer');
 if (!Number.isSafeInteger(operationalBacklogLogIntervalMs) || operationalBacklogLogIntervalMs < 10_000) throw new TypeError('ENVOI_OPERATIONAL_BACKLOG_LOG_INTERVAL_MS must be an integer of at least 10000');
-const objectAllowedMimeTypes = (process.env.ENVOI_OBJECT_ALLOWED_MIME_TYPES || 'application/pdf,image/jpeg,image/png,text/plain,text/csv,application/json').split(',').map(value => value.trim()).filter(Boolean);
+const objectAllowedMimeTypes = (process.env.ENVOI_OBJECT_ALLOWED_MIME_TYPES || '*/*').split(',').map(value => value.trim()).filter(Boolean);
 const objectStorageAdapter = createObjectStorageAdapter(objectStorageProvider === 's3' ? {
   provider: 's3',
   endpoint: process.env.ENVOI_S3_ENDPOINT || `https://s3.${process.env.ENVOI_S3_REGION || 'ca-central-1'}.amazonaws.com`,

@@ -48,7 +48,7 @@ The closed beta runs one Cloudflare application Container behind its Worker. Pos
 - `ENVOI_REQUEST_TIMEOUT_MS`, `ENVOI_MAX_SSE_PER_PRINCIPAL`: request and concurrent-stream resource bounds.
 - `ENVOI_OBJECT_STORAGE_PROVIDER`: set to `s3` in production; `local` is for development.
 - `ENVOI_S3_ENDPOINT`, `ENVOI_S3_BUCKET`, `ENVOI_S3_REGION`, `ENVOI_S3_ACCESS_KEY_ID`, `ENVOI_S3_SECRET_ACCESS_KEY`, `ENVOI_S3_SESSION_TOKEN`: private S3-compatible storage settings. Public buckets and public base URLs are rejected.
-- `ENVOI_OBJECT_MAX_BYTES`, `ENVOI_WORKSPACE_OBJECT_QUOTA_BYTES`, `ENVOI_OBJECT_ALLOWED_MIME_TYPES`: immutable upload and quota policy.
+- `ENVOI_OBJECT_MAX_BYTES`, `ENVOI_WORKSPACE_OBJECT_QUOTA_BYTES`, `ENVOI_OBJECT_ALLOWED_MIME_TYPES`: upload and quota policy. MIME types default to `*/*`, allowing valid file types including Excel, Markdown, CSV, archives, and binary files through the same size, quota, checksum, and malware scan gates. An explicit comma-separated MIME list restricts uploads; check the deployed environment for an override.
 - `ENVOI_MALWARE_SCANNER_URL`, `ENVOI_MALWARE_SCANNER_TOKEN`: HTTPS scanner endpoint. Downloads remain locked unless a scan returns `clean`; no scanner means fail closed.
 - `ENVOI_OBJECT_QUOTA_REAPER_INTERVAL_MS`: interval for reclaiming abandoned upload reservations; defaults to five minutes.
 - `ENVOI_S3_REQUEST_TIMEOUT_MS`: bounded timeout for private object-storage operations; defaults to 30 seconds.
