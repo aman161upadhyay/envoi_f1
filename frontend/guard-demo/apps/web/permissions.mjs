@@ -16,6 +16,11 @@ let active = state.genuine.permission.document;
 let signed;
 const testnet = state.testnet;
 const records = [...(testnet ? state.testnetRecords : state.records)];
+const recordTitles = {
+  pay_refused: 'Payment refused', paid: 'Payment made', share_blocked: 'File share blocked',
+  screen_flagged: 'Hidden instructions found', screen_clear: 'Private check complete',
+  permission_changed: 'Permissions changed', agent_paused: 'Agent paused', agent_resumed: 'Agent resumed'
+};
 
 function make(tag, text, attributes = {}) {
   const node = document.createElement(tag);
@@ -217,31 +222,12 @@ function renderRecords() {
     button.append(summary);
     button.append(make('span', item.display ? (testnet ? 'Signed on testnet' : 'Signed locally') : (testnet ? 'Sealed on testnet' : 'Sealed locally (demo)'), { class: 'chip' }));
     button.onclick = () => {
-      const details = [make('p', item.summary), make('p', new Date(item.createdAtMs).toLocaleString())];
-      if (item.display) details.push(...item.display.map(line => make('p', line)));
-      if (item.details?.flaggedText) {
-        details.push(make('h3', 'Flagged text'), make('p', item.details.flaggedText), make('h3', 'Hardware attestation'));
-        const checks = {
-          signed_text: 'Answer matches what was signed', signature: 'Response signature matches',
-          signer_attested: 'Signer belongs to the attested hardware', report_data: 'Attestation matches this signer and request',
-          tdx_quote: 'Intel TDX hardware verified', gpu: 'NVIDIA GPU verified'
-        };
-        for (const check of item.details.checks ?? []) {
-          details.push(make('p', checks[check.id] + ' · ' + ({ passed: 'Passed', failed: 'Failed', not_checked: 'Not checked' })[check.status]));
-        }
+      if (item.id) {
+        const url = new URL(location.href);
+        url.searchParams.set('record', item.id);
+        history.replaceState(null, '', url);
       }
-      const proof = testnet ? state.testnetProofs?.find(entry => entry.record.id === item.id)
-        : state.genuine.record.id === item.id ? state.genuine : null;
-      if (proof) {
-        const actions = make('div', '', { class: 'actions' });
-        const download = make('button', 'Download proof', { type: 'button' });
-        download.onclick = () => downloadJson(proof, 'proof-' + proof.record.id + '.json');
-        actions.append(download, make('a', 'Check proof', {
-          href: testnet ? '/check?record=' + encodeURIComponent(item.id) : '/check?sample=genuine'
-        }));
-        details.push(actions);
-      }
-      open('Evidence record', ...details);
+      showRecord(item);
     };
     const row = make('li', '');
     row.append(button);
@@ -251,6 +237,64 @@ function renderRecords() {
     filter === 'block' && !search ? 'Nothing blocked' : 'No matching evidence';
   $('#records').replaceChildren(...(rows.length ? rows : [make('li', empty, { class: 'empty' })]));
 }
+
+function showRecord(item) {
+  const details = [make('p', item.summary), make('p', new Date(item.createdAtMs).toLocaleString())];
+  if (item.display) details.push(...item.display.map(line => make('p', line)));
+  if (item.details?.flaggedText) {
+    details.push(make('h3', 'Flagged text'), make('p', item.details.flaggedText), make('h3', 'Hardware attestation'));
+    const checks = {
+      signed_text: 'Answer matches what was signed', signature: 'Response signature matches',
+      signer_attested: 'Signer belongs to the attested hardware', report_data: 'Attestation matches this signer and request',
+      tdx_quote: 'Intel TDX hardware verified', gpu: 'NVIDIA GPU verified'
+    };
+    for (const check of item.details.checks ?? []) {
+      details.push(make('p', checks[check.id] + ' · ' + ({ passed: 'Passed', failed: 'Failed', not_checked: 'Not checked' })[check.status]));
+    }
+  }
+  const proof = testnet ? state.testnetProofs?.find(entry => entry.record.id === item.id)
+    : state.genuine.record.id === item.id ? state.genuine : null;
+  if (proof) {
+    if (proof.permission?.document?.display && !item.display) {
+      const rules = make('ul', '', { class: 'signed-rules' });
+      rules.append(...proof.permission.document.display.map(line => make('li', line)));
+      details.push(make('h3', 'Rule in force'), rules);
+    }
+    if (testnet) {
+      const explorer = 'https://explorer.testnet.near.org/transactions/';
+      const refs = [['View payment transaction', proof.chainEvent?.txRef], ['View evidence seal', proof.seal?.txRef]];
+      const links = make('div', '', { class: 'actions' });
+      for (const [label, tx] of refs) {
+        if (typeof tx === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tx)) {
+          links.append(make('a', label, { href: explorer + tx, target: '_blank', rel: 'noopener noreferrer' }));
+        }
+      }
+      if (links.children.length) details.push(links);
+    }
+    const actions = make('div', '', { class: 'actions' });
+    const download = make('button', 'Download proof', { type: 'button' });
+    download.onclick = () => downloadJson(proof, 'proof-' + proof.record.id + '.json');
+    actions.append(download, make('a', 'Check proof', {
+      href: testnet ? '/check?record=' + encodeURIComponent(item.id) : '/check?sample=genuine'
+    }));
+    details.push(actions);
+  }
+  open(recordTitles[item.type] ?? 'Evidence record', ...details);
+}
 $('#filter').onchange = renderRecords;
 $('#search').oninput = renderRecords;
 renderRecords();
+if (onEvidence) {
+  const id = new URLSearchParams(location.search).get('record');
+  if (id) {
+    const entry = records.find(row => row.record.id === id);
+    if (entry) showRecord({ ...entry.record, details: entry.details });
+    else status.textContent = 'This evidence record is unavailable in the current rehearsal.';
+  }
+  sheet.addEventListener('close', () => {
+    const url = new URL(location.href);
+    if (!url.searchParams.has('record')) return;
+    url.searchParams.delete('record');
+    history.replaceState(null, '', url);
+  });
+}
