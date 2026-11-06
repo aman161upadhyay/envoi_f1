@@ -42,3 +42,8 @@ button:disabled { cursor: wait; opacity: .65; }
 .signed-rules { margin-block: 20px; }
 .signed-rules li { padding-block: 12px; }
 .sheet-actions { justify-content: flex-end; }
+
+.attestation-checks { margin-block: 8px 16px; }
+.attestation-checks li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; }
+.chip[data-check=failed] { background: #fce8eb; color: #9b1029; }
+.chip[data-check=not_checked] { background: var(--side); color: var(--ink2); }

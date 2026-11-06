@@ -206,7 +206,7 @@ $('#limits').onsubmit = async event => {
 function renderRecords() {
   const filter = $('#filter').value;
   const search = $('#search').value.trim().toLowerCase();
-  const items = [...records].reverse().map(entry => ({ ...entry.record, details: entry.details }));
+  const items = [...records].reverse().map(entry => ({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck }));
   if (signed) items.unshift({ type: 'permission_changed', summary: 'Dana signed changes on the demo device.',
     createdAtMs: signed.document.issuedAtMs, display: signed.document.display });
   const categories = {
@@ -248,8 +248,23 @@ function showRecord(item) {
       signer_attested: 'Signer belongs to the attested hardware', report_data: 'Attestation matches this signer and request',
       tdx_quote: 'Intel TDX hardware verified', gpu: 'NVIDIA GPU verified'
     };
+    const statuses = { passed: 'Passed', failed: 'Failed', not_checked: 'Not checked' };
+    const list = make('ul', '', { class: 'attestation-checks' });
     for (const check of item.details.checks ?? []) {
-      details.push(make('p', checks[check.id] + ' · ' + ({ passed: 'Passed', failed: 'Failed', not_checked: 'Not checked' })[check.status]));
+      if (!Object.hasOwn(checks, check.id)) continue;
+      const status = Object.hasOwn(statuses, check.status) ? check.status : 'not_checked';
+      const row = make('li', '');
+      row.append(make('span', checks[check.id]), make('span', statuses[status], { class: 'chip', 'data-check': status }));
+      list.append(row);
+    }
+    if (list.children.length) details.push(list);
+    if (item.privateCheck?.provider === 'near-ai-cloud') {
+      details.push(make('p', 'Model: ' + item.privateCheck.model));
+      const download = make('button', 'Download attestation', { type: 'button' });
+      download.onclick = () => downloadJson(item.privateCheck, 'attestation-' + item.id + '.json');
+      details.push(download);
+    } else {
+      details.push(make('p', 'This replay used local screening.'));
     }
   }
   const proof = testnet ? state.testnetProofs?.find(entry => entry.record.id === item.id)
@@ -288,7 +303,7 @@ if (onEvidence) {
   const id = new URLSearchParams(location.search).get('record');
   if (id) {
     const entry = records.find(row => row.record.id === id);
-    if (entry) showRecord({ ...entry.record, details: entry.details });
+    if (entry) showRecord({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck });
     else status.textContent = 'This evidence record is unavailable in the current rehearsal.';
   }
   sheet.addEventListener('close', () => {
