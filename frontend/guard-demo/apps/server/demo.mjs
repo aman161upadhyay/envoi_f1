@@ -1,3 +1,6 @@
+import { passkeyOrigins } from '../../scripts/permission-file.mjs';
+import { EvidenceStore } from './evidence-store.mjs';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { serveChecker } from './check-site.mjs';
 import { hashJson, publicHex, sign, verify } from '../../packages/core/crypto.mjs';
@@ -111,12 +114,29 @@ try {
     const run = testnet && process.env.NEAR_EVIDENCE_RUN_FILE
       ? JSON.parse(await readFile(process.env.NEAR_EVIDENCE_RUN_FILE, 'utf8')) : null;
     const testnetRecords = run?.network === 'near-testnet' && run.status === 'sealed' ? run.records : [];
+    const evidencePath = process.env.NEAR_EVIDENCE_DB || 'data/evidence.sqlite';
+    const durableStore = testnet && existsSync(evidencePath) ? new EvidenceStore(evidencePath, {
+      network: 'near-testnet', recordContract: testnet.recordContract, publisher: process.env.NEAR_PUBLISHER_ACCOUNT
+    }) : null;
+    const evidenceProvider = durableStore ? async () => {
+      const records = durableStore.snapshot();
+      const proofs = [];
+      for (const entry of records) {
+        if (entry.sealState === 'final') proofs.push(await durableStore.proofFor(entry.eventId, undefined, {
+          network: 'near-testnet', contract: testnet.recordContract, spendContract: testnet.spendContract
+        }));
+      }
+      return { testnetRecords: records, testnetProofs: proofs, testnetTrust: {
+        publisher: process.env.NEAR_PUBLISHER_ACCOUNT, recordCodeHash: process.env.NEAR_RECORD_CODE_HASH, passkeyOrigins: passkeyOrigins()
+      } };
+    } : undefined;
     const server = await serveChecker({ evidenceKeys: trust.evidenceKeys, genuine: proof, edited, records,
       agentAccount: await adapters.agentAccounts.describe(agent),
       vaultBalance: await spendGuard.vaultOf(owner), testnet, testnetRecords,
       testnetProofs: testnetRecords.length ? run.proofs : [],
       testnetTrust: testnetRecords.length ? { evidenceKeys: run.evidenceKeys, publisher: process.env.NEAR_PUBLISHER_ACCOUNT,
-        recordCodeHash: process.env.NEAR_RECORD_CODE_HASH } : null });
+        recordCodeHash: process.env.NEAR_RECORD_CODE_HASH, passkeyOrigins: passkeyOrigins() } : null }, 4173, evidenceProvider);
+    server.once('close', () => durableStore?.close());
     console.log('Permissions demo at http://localhost:' + server.address().port + '/permissions');
   }
 } finally {

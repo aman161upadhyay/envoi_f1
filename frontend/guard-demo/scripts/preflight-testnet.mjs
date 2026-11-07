@@ -1,11 +1,11 @@
+import { validatePermissionFile, passkeyOrigins } from './permission-file.mjs';
 import { PUBLISHER_METHODS } from './evidence-key.mjs';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { base58Encode } from '../adapters/near/sign.mjs';
 import { nearReaders } from '../adapters/near/read.mjs';
-import { hashJson, verify } from '../packages/core/crypto.mjs';
-import { displayPermission, validAccount } from '../packages/core/policy.mjs';
+import { validAccount } from '../packages/core/policy.mjs';
 
 const env = process.env;
 const rpcUrl = env.NEAR_RPC_URL || DEFAULT_RPC['near-testnet'];
@@ -78,15 +78,14 @@ if (rpcReady && configured) {
     requireThat(BigInt(JSON.parse(Buffer.from(response.result))) >= 5n * 10n ** 23n, 'Fund the owner vault with at least 0.5 testnet NEAR.');
   });
   await check('Signed policy', async () => {
-    const { document, publicKey, signature } = JSON.parse(await readFile(env.NEAR_SIGNED_POLICY_FILE || 'signed-policy.json', 'utf8'));
-    const hash = await hashJson(document);
-    const [registry, chain] = await Promise.all([readers.ownerRegistry.lookup(owner, publicKey), readers.spendGuard.getPolicy(agent)]);
-    requireThat(document.owner === owner && document.agent === agent && JSON.stringify(displayPermission(document)) === JSON.stringify(document.display) &&
-      await verify(publicKey, signature, hash) && registry?.type === 'demo_device' && registry.revokedAtMs === undefined &&
-      registry.registeredAtMs <= document.issuedAtMs && chain?.policyHash === hash && chain.version === document.version &&
-      !chain.paused && chain.payees.some(entry => entry.account === payee && BigInt(entry.maxPerPayment) >= 5n * 10n ** 23n) &&
-      !chain.payees.some(entry => entry.account === attacker) && BigInt(chain.dailyCap) >= 5n * 10n ** 23n,
-      'Register the device, sign suitable limits in the browser, and download the confirmed policy.');
+    const signed = JSON.parse(await readFile(env.NEAR_SIGNED_POLICY_FILE || 'signed-policy.json', 'utf8'));
+    const [registry, policy] = await Promise.all([
+      readers.ownerRegistry.lookup(owner, signed.publicKey), readers.spendGuard.getPolicy(agent)
+    ]);
+    await validatePermissionFile(signed, { owner, agent, registry, policy, allowedOrigins: passkeyOrigins() });
+    requireThat(policy.payees.some(entry => entry.account === payee && BigInt(entry.maxPerPayment) >= 5n * 10n ** 23n) &&
+      !policy.payees.some(entry => entry.account === attacker) && BigInt(policy.dailyCap) >= 5n * 10n ** 23n,
+      'The demo needs an allowed payee and enough payment capacity.');
   });
 }
 await check('NEAR AI configuration', () => requireThat(env.NEAR_AI_API_KEY && env.NEAR_AI_MODEL,

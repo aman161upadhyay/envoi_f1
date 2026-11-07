@@ -1,13 +1,16 @@
+import { passkeyOrigins } from './permission-file.mjs';
+import { EvidenceStore } from '../apps/server/evidence-store.mjs';
+import { EvidenceBatcher } from '../apps/server/evidence-batcher.mjs';
+import { testnetSealer } from '../apps/server/testnet-sealer.mjs';
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { nearReaders } from '../adapters/near/read.mjs';
 import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { loadScopedKey } from '../adapters/near/key-file.mjs';
-import { callWithScopedKey } from '../adapters/near/sign.mjs';
-import { makeEvidence } from '../packages/core/evidence.mjs';
 import { hashJson, publicHex } from '../packages/core/crypto.mjs';
-import { buildTree, ZERO_ROOT } from '../packages/core/tree.mjs';
 import { checkProof } from '../packages/check/index.mjs';
-import { PUBLISHER_METHODS, registerEvidenceKey } from './evidence-key.mjs';
+import { registerEvidenceKey } from './evidence-key.mjs';
 
 const env = process.env;
 const recordContract = env.NEAR_RECORD_CONTRACT;
@@ -30,36 +33,44 @@ const registration = await registerEvidenceKey({
 });
 const signed = JSON.parse(await readFile(env.NEAR_SIGNED_POLICY_FILE || 'signed-policy.json', 'utf8'));
 const document = signed.document;
-const evidence = await makeEvidence({
-  seq: 1, type: 'permission_changed', agent: document.agent, counterparty: publisher, caseRef: 'record-upgrade-check',
-  summary: 'The testnet evidence registry and seal were verified.',
-  previousHash: ZERO_ROOT, permissionHash: await hashJson(document),
-  details: { purpose: 'Deployment verification', evidenceKeyId: keyId },
-  createdAtMs: Math.max(Date.now(), registration.registeredAtMs)
-}, evidenceKeys);
-evidence.envoi.keyId = keyId;
-const tip = await rpc('query', { request_type: 'call_function', finality: 'final', account_id: recordContract,
-  method_name: 'last', args_base64: 'e30=' });
-const [last, previousRoot] = JSON.parse(Buffer.from(tip.result));
-const tree = await buildTree([evidence.recordHash]);
-const batch = { batchId: last + 1, previousRoot, root: tree.root, count: 1, leafIndex: 0, siblings: [] };
-const txRef = await callWithScopedKey({ rpc, keys, sender: publisher, receiver: recordContract,
-  method: 'seal', methods: PUBLISHER_METHODS,
-  args: { batch_id: batch.batchId, root: batch.root, previous_root: previousRoot, count: 1 } });
-const proof = {
-  format: 'envoi.proof/v1', ...evidence, batch, seal: { network: 'near-testnet', contract: recordContract, txRef },
-  permission: { document, ownerKey: signed.publicKey, signature: signed.signature, keyType: signed.keyType ?? 'demo_device',
-    ...(signed.rpId ? { rpId: signed.rpId } : {}), registry: { network: 'near-testnet', contract: recordContract } }
-};
-const result = await checkProof(proof, {
-  ...readers, recordContract, spendContract: env.NEAR_SPEND_CONTRACT, recordCodeHash: env.NEAR_RECORD_CODE_HASH
-});
-const file = 'testnet-run-evidence-' + keyId + '.json';
-await writeFile(file, JSON.stringify({ proof, result, registration }, null, 2), { flag: 'wx' });
-for (const row of result.checks) console.log(row.status, row.id, row.message);
-console.log('Registration:', registration.txRef);
-console.log('Seal:', txRef);
-console.log('Proof saved:', file);
-if (result.checks.some(row => row.status !== 'PASS' && !(row.id === 'locked_record' && !contract.locked))) {
-  throw new Error('Evidence deployment verification did not pass.');
-}
+const path = env.NEAR_EVIDENCE_DB || 'data/evidence.sqlite';
+await mkdir(dirname(path), { recursive: true });
+const store = new EvidenceStore(path, { network: 'near-testnet', recordContract, publisher });
+try {
+  const permission = {
+    document, ownerKey: signed.publicKey, signature: signed.signature, keyType: signed.keyType ?? 'demo_device',
+    ...(signed.rpId ? { rpId: signed.rpId } : {}), registry: { network: 'near-testnet', contract: recordContract }
+  };
+  await store.savePermission(permission);
+  await store.append(keyId, {
+    type: 'permission_changed', agent: document.agent, counterparty: publisher, caseRef: 'record-upgrade-check',
+    summary: 'The testnet evidence registry and seal were verified.',
+    permissionHash: await hashJson(document),
+    details: { purpose: 'Deployment verification', evidenceKeyId: keyId },
+    createdAtMs: Math.max(Date.now(), registration.registeredAtMs)
+  }, evidenceKeys, keyId);
+  const batcher = new EvidenceBatcher({ store, transport: testnetSealer({
+    rpc, keys, publisher, recordContract, publicRecord: readers.publicRecord
+  }) });
+  let batch;
+  do {
+    batch = await batcher.tick({ force: true });
+    if (batch && batch.status !== 'final') throw new Error('The durable seal is ' + batch.status + '. Use evidence:batch to recover it.');
+  } while (store.pendingRecords().length);
+  const proof = await store.proofFor(keyId, undefined, {
+    network: 'near-testnet', contract: recordContract, spendContract: env.NEAR_SPEND_CONTRACT
+  });
+  const txRef = proof.seal.txRef;
+  const result = await checkProof(proof, {
+    ...readers, recordContract, spendContract: env.NEAR_SPEND_CONTRACT, recordCodeHash: env.NEAR_RECORD_CODE_HASH, passkeyOrigins: passkeyOrigins()
+  });
+  const file = 'testnet-run-evidence-' + keyId + '.json';
+  await writeFile(file, JSON.stringify({ proof, result, registration }, null, 2), { flag: 'wx' });
+  for (const row of result.checks) console.log(row.status, row.id, row.message);
+  console.log('Registration:', registration.txRef);
+  console.log('Seal:', txRef);
+  console.log('Proof saved:', file);
+  if (result.checks.some(row => row.status !== 'PASS' && !(row.id === 'locked_record' && !contract.locked))) {
+    throw new Error('Evidence deployment verification did not pass.');
+  }
+} finally { store.close(); }

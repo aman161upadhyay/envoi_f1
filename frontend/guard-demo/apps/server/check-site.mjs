@@ -2,7 +2,7 @@ import { createRpc } from '../../adapters/near/rpc.mjs';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 
-export async function serveChecker(samples, port = 4173) {
+export async function serveChecker(samples, port = 4173, evidenceProvider) {
   const routes = new Map([
     ['/demo', ['apps/web/replay.html', 'text/html; charset=utf-8']],
     ['/replay.css', ['apps/web/replay.css', 'text/css; charset=utf-8']],
@@ -58,6 +58,14 @@ export async function serveChecker(samples, port = 4173) {
     const path = req.url.split('?')[0];
     const route = path === '/cases/invoice-1042' ? '/demo' :
       /^\/permissions\/evidence\/[a-z0-9-]+$/i.test(path) ? '/permissions/evidence' : path;
+    if (route === '/demo-samples.json' && evidenceProvider) {
+      try {
+        const data = await evidenceProvider();
+        return res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ ...samples, ...data }));
+      } catch {
+        return res.writeHead(503, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'Evidence is temporarily unavailable.' }));
+      }
+    }
     const asset = assets.get(route);
     if (!asset) return res.writeHead(404).end();
     res.writeHead(200, { 'Content-Type': asset[1] }).end(asset[0]);

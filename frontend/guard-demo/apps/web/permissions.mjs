@@ -266,7 +266,7 @@ function downloadJson(value, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 $('#export').onclick = () => { if (signed) downloadJson(signed, 'signed-policy.json'); };
-if (testnet) $('#screen-mode').textContent = records.length ? 'NEAR AI Cloud' : 'Awaiting testnet rehearsal';
+if (testnet) $('#screen-mode').textContent = records.some(entry => entry.privateCheck?.provider === 'near-ai-cloud') ? 'NEAR AI Cloud' : 'Awaiting private-check rehearsal';
 $('#limits').onsubmit = async event => {
   event.preventDefault();
   try {
@@ -342,7 +342,7 @@ $('#limits').onsubmit = async event => {
 
 function renderRecords() {
   const search = $('#search').value.trim().toLowerCase();
-  const items = [...records].reverse().map(entry => ({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck }));
+  const items = [...records].reverse().map(entry => ({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck, sealState: entry.sealState }));
   if (signed) items.unshift({ type: 'permission_changed', summary: signed.keyType === 'passkey' ? 'Dana signed changes with a passkey.' : 'Dana signed changes on the demo device.',
     createdAtMs: signed.document.issuedAtMs, display: signed.document.display });
   const categories = {
@@ -364,7 +364,9 @@ function renderRecords() {
     const summary = make('span', item.summary);
     summary.append(make('small', new Date(item.createdAtMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })));
     button.append(summary);
-    button.append(make('span', item.display ? (testnet ? 'Signed on testnet' : 'Signed locally') : (testnet ? 'Sealed on testnet' : 'Sealed locally (demo)'), { class: 'chip' }));
+    const sealLabel = testnet && item.sealState && item.sealState !== 'final'
+      ? (item.sealState === 'blocked' ? 'Needs review' : item.sealState === 'retrying' ? 'Retrying' : 'Sealing') : null;
+    button.append(make('span', sealLabel ?? (item.display ? (testnet ? 'Signed on testnet' : 'Signed locally') : (testnet ? 'Sealed on testnet' : 'Sealed locally (demo)')), { class: 'chip' }));
     button.onclick = () => {
       if (item.id) {
         history.replaceState(null, '', '/permissions/evidence/' + encodeURIComponent(item.id));
@@ -384,6 +386,7 @@ function renderRecords() {
 
 function showRecord(item) {
   const details = [make('p', item.summary), make('p', new Date(item.createdAtMs).toLocaleString())];
+  if (item.sealState === 'blocked') details.push(make('p', 'This batch needs review before sealing can continue.'));
   if (item.caseRef === 'invoice-1042') {
     details.push(make('a', 'Invoice 1042 from Ledger Co', { href: '/cases/invoice-1042' }));
     details.push(make('p', 'Milo: ' + item.agent));
@@ -486,7 +489,7 @@ if (onEvidence) {
   const id = location.pathname.split('/')[3] || new URLSearchParams(location.search).get('record');
   if (id) {
     const entry = records.find(row => row.record.id === id);
-    if (entry) showRecord({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck });
+    if (entry) showRecord({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck, sealState: entry.sealState });
     else status.textContent = 'This evidence record is unavailable in the current rehearsal.';
   }
   sheet.addEventListener('close', () => {

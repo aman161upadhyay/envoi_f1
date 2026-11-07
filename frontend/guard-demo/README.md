@@ -69,11 +69,10 @@ For a fresh-clone dry run, start with Node 22.13+ and Git on a clean machine. Ti
 
 Open the demo at http://localhost:4173/permissions, select **Create passkey**, and complete the device prompt. The public credential information is saved for this origin and owner. The passkey stays with the authenticator.
 
-For a testnet update, use **Passkey details** to obtain the public key and register it as type `passkey` from the owner account on the updated record contract. The browser also needs its separate Ed25519 device key authorized on the owner account for `set_policy` only. The passkey signs the displayed permission document. The limited NEAR key then submits that document�s hash and spending limits.
+For a testnet update, use **Passkey details** to obtain the public key and register it as type `passkey` from the owner account on the updated record contract. The browser also needs its separate Ed25519 device key authorized on the owner account for `set_policy` only, with a 0.2 NEAR gas allowance for the rehearsal. The passkey signs the displayed permission document. The limited NEAR key then submits that document�s hash and spending limits.
 
 Select **Passkey** under **Signing with**, edit the limits, and review the confirmation sheet. Cancellation, an unregistered passkey, a revoked key, or an unsuitable NEAR access key keeps the previous active policy. Success appears after the browser reads back the confirmed version, hash, payees, and daily limit. **Download signed policy** includes `keyType`, `rpId`, the passkey public key and the WebAuthn assertion.
 
-The live runner�s permission-file input still needs passkey support before this file can replace the demo-device file in a full rehearsal. Browser testing used a virtual authenticator and simulated testnet responses for this integration. A real device and an updated deployed record contract are needed for live acceptance.
 
 ## Evidence-key setup
 
@@ -82,3 +81,21 @@ The publisher's function-call key is limited to `seal` and `register_evidence_ke
 `npm run testnet:evidence` registers a verification key, signs and seals one deployment-verification record, and checks the resulting proof through the public evidence registry. It makes no payments or inference calls. The command is restricted to the disposable PR302 deployment. An unlocked record contract remains a failing locked-contract check even when registration, signatures and sealing pass.
 
 The deployed record code hash is documented in [docs/contracts.md](docs/contracts.md). Keep the matching value in the ignored local .env.
+
+## Durable evidence and batching
+
+The live runner accepts both older Ed25519 demo-device files and passkey-signed files. Set NEAR_PASSKEY_ORIGINS to a comma-separated list of exact trusted origins. The default is http://localhost:4173. The origin comes from trusted configuration, and the passkey assertion must match the permission document, owner registry, and active spending policy.
+
+Evidence records and their signed permissions are stored in NEAR_EVIDENCE_DB, which defaults to data/evidence.sqlite. Records have durable event IDs, a global sequence and previous-record links. A repeated event ID returns the existing record only when its content matches. A database is bound to its network, record contract and publisher.
+
+Run `npm run evidence:batch` alongside the testnet demo to check for seal work every 30 seconds. The normal interval is ten minutes, or two minutes with DEMO_MODE=1. Refused payments, blocked shares and flagged messages trigger earlier sealing. `npm run evidence:batch -- --once --force` attempts one pending batch immediately and exits.
+
+The batcher saves the exact signed transaction before broadcasting. On retry or restart it first checks the public record, then reuses that same submission. Evidence shows Sealing or Retrying until a final root and transaction match. A conflicting public batch or a known failed transaction blocks the batch for review. Operator reconciliation is needed for a blocked batch or an expired transaction. The worker never replays payments.
+
+The Settings/Evidence server reads this database in testnet mode when it exists. Refresh Evidence to see persisted records and their batch state. Downloaded final proofs use the original stored signed permission, including passkey metadata. Proof export is unavailable while a record is waiting for final sealing.
+
+A failed full rehearsal can leave durable records awaiting a seal. Recover them with the batch worker. Payment replay remains guarded by the run-output file, which must be reviewed before starting a new rehearsal.
+
+API-free validation on November 7 also used a virtual browser authenticator to sign the disposable owner’s real testnet policy, then submitted it with a separate scoped NEAR key. The runner validated that confirmed version 2 policy. The local rehearsal now reads the ignored signed-policy-passkey.json file. A physical-device acceptance run remains outstanding.
+
+The persistent batcher registered a new evidence key and sealed a record using the passkey-signed permission in transaction `6X5bHczCKB6Fn6U4jtAEHH9JS6WLGnrdAf5abNdEAy4F`. Signature, owner registry, policy, batch inclusion and seal checks passed. The record account still has deployment keys, so the locked-contract check remains a failure.
