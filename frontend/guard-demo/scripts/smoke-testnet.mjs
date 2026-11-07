@@ -1,5 +1,5 @@
 import { writeFile } from 'node:fs/promises';
-import { createRpc } from '../adapters/near/rpc.mjs';
+import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { nearReaders } from '../adapters/near/read.mjs';
 import { callWithScopedKey } from '../adapters/near/sign.mjs';
 import { loadScopedKey } from '../adapters/near/key-file.mjs';
@@ -16,7 +16,7 @@ const attacker = env.NEAR_DEMO_ATTACKER;
 const accounts = [owner, agent, publisher, recordContract, spendContract, attacker];
 if (!accounts.every(account => validAccount(account) && account.endsWith('.testnet')) ||
     new Set(accounts).size !== accounts.length) throw new Error('Set distinct testnet account IDs.');
-const rpcUrl = env.NEAR_RPC_URL || 'https://rpc.testnet.near.org';
+const rpcUrl = env.NEAR_RPC_URL || DEFAULT_RPC['near-testnet'];
 const rpc = createRpc(rpcUrl);
 if ((await rpc('status', [])).chain_id !== 'testnet') throw new Error('Testnet RPC required.');
 const { spendGuard, publicRecord } = nearReaders({ rpcUrl, recordContract, spendContract, publisher });

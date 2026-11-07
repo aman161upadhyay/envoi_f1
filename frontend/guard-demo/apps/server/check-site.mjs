@@ -17,8 +17,8 @@ export async function serveChecker(samples, port = 4173) {
     ['/check', ['apps/web/check.html', 'text/html; charset=utf-8']],
     ['/check.css', ['apps/web/check.css', 'text/css; charset=utf-8']],
     ['/check.mjs', ['apps/web/check.mjs', 'text/javascript; charset=utf-8']],
-    ['/packages/check/index.mjs', ['packages/check/index.mjs', 'text/javascript; charset=utf-8']],
-    ...['crypto', 'policy', 'tree'].map(name => [`/packages/core/${name}.mjs`, [`packages/core/${name}.mjs`, 'text/javascript; charset=utf-8']])
+    ...['index', 'messages'].map(name => [`/packages/check/${name}.mjs`, [`packages/check/${name}.mjs`, 'text/javascript; charset=utf-8']]),
+    ...['crypto', 'policy', 'tree', 'webauthn', 'passkey'].map(name => [`/packages/core/${name}.mjs`, [`packages/core/${name}.mjs`, 'text/javascript; charset=utf-8']])
   ]);
   const assets = new Map(await Promise.all(Array.from(routes, async ([route, [file, type]]) => [
     route, [await readFile(new URL('../../' + file, import.meta.url)), type]
@@ -41,7 +41,13 @@ export async function serveChecker(samples, port = 4173) {
         if (!['query', 'send_tx', 'tx'].includes(method)) throw new Error('Unsupported RPC method');
         const result = await rpc(method, params);
         return res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ result }));
-      } catch {
+      } catch (error) {
+        // Pass NEAR's own refusals through (unknown transaction, unknown account), so the browser
+        // fails a proof that names them. Only a real outage becomes 502, which reads "not checked".
+        if (error?.rpcError) {
+          return res.writeHead(200, { 'Content-Type': 'application/json' })
+            .end(JSON.stringify({ error: { name: 'HANDLER_ERROR', cause: { name: error.rpcError } } }));
+        }
         return res.writeHead(502).end();
       }
     }

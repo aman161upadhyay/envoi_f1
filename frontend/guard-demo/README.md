@@ -22,7 +22,9 @@ Open http://127.0.0.1:4173/permissions for Settings and Evidence, or /check for 
 5. Install the verifier dependencies in an isolated Python environment with `python -m pip install -r adapters/nearai/requirements.txt`. Set NEAR_AI_PYTHON if needed, set the API key locally, and select a TEE model that returns provider signatures. Configure the scoped Milo and publisher credentials in the live runner environment and set NEAR_ENABLE_DEMO_PAYMENTS=yes.
 6. Run `npm run demo:live`. The script requires a fully verified, flagged message before broadcasting. It reads each finalized outcome from testnet and then seals the evidence. It reserves a fresh output file before broadcasting. If execution stops partway, inspect the existing file and transaction hashes before deciding whether to retry. Set NEAR_EVIDENCE_RUN_FILE to the completed rehearsal file and restart the browser demo to inspect the testnet evidence and attestation rows.
 
-The testnet proof CLI accepts an independently trusted evidence key map and checks contract state with `npm run check -- proof.json trusted-evidence-keys.json --testnet`. For this rehearsal, use the evidence key map from the trusted runner’s output. Keep the record account’s code hash in trusted configuration. A record contract with remaining access keys fails the locked-contract check. Offline CLI checks show skipped online checks.
+The testnet proof CLI accepts an independently trusted evidence key map and checks contract state with `npm run check -- proof.json trusted-evidence-keys.json --testnet`. Use `--mainnet` for mainnet contracts and `--json` for machine-readable output. For this rehearsal, use the evidence key map from the trusted runner’s output. Keep the record account’s code hash in trusted configuration. A record contract with remaining access keys fails the locked-contract check. Offline CLI checks show skipped online checks.
+
+The CLI prints one plain line per check and exits with **0** when every check passed, **1** when the record can't be trusted, **2** when signatures check out but some checks were skipped or NEAR couldn't be reached, and **3** for a usage error or a file that isn't an envoi proof. A NEAR outage is reported as "Couldn't reach the public record" and never counts as passed or failed. RPC calls use FastNEAR first and fall back to the near.org endpoint; set `NEAR_RPC_URL` to use one endpoint only.
 
 The verifier requires a provider TEE signature, the exact request and response hashes, one matching attested signer, nonce binding, an up-to-date non-debug Intel TDX quote, and a matching NVIDIA verdict. The fixture tests exercise the application’s receipt handling. A live credentialed run is required to confirm compatibility with the selected model and deployed contracts.
 
@@ -32,6 +34,26 @@ The verifier requires a provider TEE signature, the exact request and response h
 - `npm run testnet:preflight` checks the network, deployed Wasm hashes, accounts, key restrictions, vault, and signed policy with read-only RPC calls. The NEAR AI check confirms local configuration only.
 - `npm run testnet:smoke` sends a deliberately refused testnet payment and seals a smoke record. It checks that the vault balance stays the same. This is a contract test. It does not call inference, transfer funds from the vault, or produce an attested demo proof.
 - `npm run demo:live` is the full rehearsal. It holds both demo payments until a real inference receipt passes all checks. Use a fresh output filename after any partial run and inspect its recorded transaction IDs before retrying.
+
+### Record contract: passkeys and envoi's evidence key
+
+The record contract (`contracts/near/record`) lists two kinds of signing key, so a proof can be checked against NEAR without trusting a file from envoi:
+
+| Method | Caller | What it does |
+|---|---|---|
+| `register_owner_key({ key_type, public_key, label })` | the owner's own account, with a storage deposit | `key_type` is `demo_device` (Ed25519, 32-byte hex) or `passkey` (WebAuthn P-256, uncompressed `04…` hex, 130 characters) |
+| `revoke_owner_key({ public_key })` | the owner | Rules signed after revocation stop verifying |
+| `register_evidence_key({ key_id, public_key })` | the publisher | Lists one of envoi's Ed25519 evidence keys. Key IDs are lowercase letters, digits and dashes, and are never reused |
+| `revoke_evidence_key({ key_id })` | the publisher | Records created after revocation stop verifying |
+| `evidence_key({ key_id })`, `owner_keys({ owner })`, `root_of`, `last`, `publisher` | anyone (view) | Read by the checker |
+
+Evidence keys use their own storage prefix, so this code can replace the deployed record contract without migrating its state; already-listed demo keys and sealed batches stay. After redeploying, update `NEAR_RECORD_CODE_HASH`. The publisher's limited key needs `register_evidence_key` added to its method list, or the custodian makes that one call with a full-access key. Then list the runner's evidence key once, before sealing anything signed with it.
+
+With envoi's key listed, `npm run check -- proof.json --testnet` needs no key map. A key map passed as the second argument still overrides the contract.
+
+Passkeys in the browser: `packages/core/passkey.mjs` has `createPasskey()` (returns the hex key to list with `register_owner_key`) and `signWithPasskey({ credentialId, hash })` (returns the proof's `permission.signature`). Set `permission.keyType = 'passkey'` and `permission.rpId`. WebAuthn needs `https` or `http://localhost`; it refuses `127.0.0.1`.
+
+Contract unit tests live in `contracts/near/record/src/lib.rs`. To run them, add `near-sdk = { workspace = true, features = ["unit-testing"] }` under `[dev-dependencies]` in `contracts/near/record/Cargo.toml`, run `cargo test --manifest-path contracts/near/Cargo.toml -p envoi-record` once with network access, and commit the updated `Cargo.lock` together with that line so `--locked` builds keep working.
 
 ## Judge walkthrough
 

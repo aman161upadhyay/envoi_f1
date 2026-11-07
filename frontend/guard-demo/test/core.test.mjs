@@ -80,7 +80,7 @@ test('proof verifier rejects all twelve specified tamper classes', async () => {
     const trust = { evidenceKeys: { 'ev-1': evidence.envoi.publicKey }, ...adapters, recordContract: 'local-record', spendContract: 'local-spend' };
     const good = await checkProof(proof, trust);
     assert.equal(good.verdict, 'partial');
-    assert.deepEqual(good.checks.filter(row => row.status !== 'PASS'), [{ id: 'locked_record', status: 'SKIP' }]);
+    assert.deepEqual(good.checks.filter(row => row.status !== 'PASS').map(({ id, status }) => ({ id, status })), [{ id: 'locked_record', status: 'SKIP' }]);
     const otherKeys = await keys();
     const otherKey = await publicHex(otherKeys.publicKey);
     const otherSignature = await sign(otherKeys.privateKey, permissionHash);

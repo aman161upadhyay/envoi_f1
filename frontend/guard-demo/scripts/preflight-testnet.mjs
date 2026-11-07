@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { createRpc } from '../adapters/near/rpc.mjs';
+import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { base58Encode } from '../adapters/near/sign.mjs';
 import { nearReaders } from '../adapters/near/read.mjs';
 import { hashJson, verify } from '../packages/core/crypto.mjs';
 import { displayPermission, validAccount } from '../packages/core/policy.mjs';
 
 const env = process.env;
-const rpcUrl = env.NEAR_RPC_URL || 'https://rpc.testnet.near.org';
+const rpcUrl = env.NEAR_RPC_URL || DEFAULT_RPC['near-testnet'];
 const rpc = createRpc(rpcUrl);
 const owner = env.NEAR_OWNER_ACCOUNT;
 const agent = env.NEAR_AGENT_ACCOUNT;

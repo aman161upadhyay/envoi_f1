@@ -1,19 +1,12 @@
+import { createRpc, DEFAULT_RPC } from './rpc.mjs';
+
 const TX_HASH = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const decode = value => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value), char => char.charCodeAt(0))));
 
 export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, recordCodeHash, network = 'near-testnet', fetcher = fetch }) {
   if (!['near-testnet', 'near-mainnet'].includes(network)) throw new TypeError('Unsupported NEAR network');
-  async function rpc(method, params) {
-    const response = await fetcher(rpcUrl, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 'envoi', method, params }),
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!response.ok) throw new Error(`NEAR RPC returned ${response.status}`);
-    const { result, error } = await response.json();
-    if (error || !result) throw new Error(error?.cause?.name ?? 'Missing NEAR RPC result');
-    return result;
-  }
+  // Outages throw NearUnavailable, which the checker reports as "not checked" instead of a failure.
+  const rpc = createRpc(rpcUrl || DEFAULT_RPC[network], fetcher, { timeoutMs: 15000 });
   const query = (request_type, account_id, fields = {}) =>
     rpc('query', { request_type, account_id, finality: 'final', ...fields });
 
@@ -61,6 +54,14 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
         ...(key.revoked_at_ms === null ? {} : { revokedAtMs: key.revoked_at_ms }) } : null;
     }
   };
+  const evidenceRegistry = {
+    network,
+    async lookup(keyId) {
+      const key = await view(recordContract, 'evidence_key', { key_id: keyId });
+      return key && { publicKey: key.public_key, registeredAtMs: key.registered_at_ms,
+        ...(key.revoked_at_ms === null ? {} : { revokedAtMs: key.revoked_at_ms }) };
+    }
+  };
   const spendGuard = {
     network, unit: 'yoctoNEAR',
     async getPolicy(agent) {
@@ -90,5 +91,5 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
       }) };
     }
   };
-  return { publicRecord, ownerRegistry, spendGuard, agentAccounts, recordContract, spendContract, recordCodeHash };
+  return { publicRecord, ownerRegistry, evidenceRegistry, spendGuard, agentAccounts, recordContract, spendContract, recordCodeHash };
 }
