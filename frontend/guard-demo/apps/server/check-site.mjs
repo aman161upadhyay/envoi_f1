@@ -8,7 +8,7 @@ export async function serveChecker(samples, port = 4173) {
     ['/replay.css', ['apps/web/replay.css', 'text/css; charset=utf-8']],
     ['/replay.mjs', ['apps/web/replay.mjs', 'text/javascript; charset=utf-8']],
     ['/adapters/near/read.mjs', ['adapters/near/read.mjs', 'text/javascript; charset=utf-8']],
-    ...['device', 'testnet'].map(name => [`/${name}.mjs`, [`apps/web/${name}.mjs`, 'text/javascript; charset=utf-8']]),
+    ...['device', 'testnet', 'owner-passkey'].map(name => [`/${name}.mjs`, [`apps/web/${name}.mjs`, 'text/javascript; charset=utf-8']]),
     ...['rpc', 'sign'].map(name => [`/adapters/near/${name}.mjs`, [`adapters/near/${name}.mjs`, 'text/javascript; charset=utf-8']]),
     ['/permissions', ['apps/web/permissions.html', 'text/html; charset=utf-8']],
     ['/permissions/evidence', ['apps/web/permissions.html', 'text/html; charset=utf-8']],

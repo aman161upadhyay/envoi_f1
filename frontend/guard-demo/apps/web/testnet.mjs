@@ -1,6 +1,7 @@
 import { base58Encode, callWithScopedKey } from '/adapters/near/sign.mjs';
 import { createRpc } from '/adapters/near/rpc.mjs';
-import { fromHex, hashJson, publicHex } from '/packages/core/crypto.mjs';
+import { verifyPasskeySignature } from '/packages/core/webauthn.mjs';
+import { fromHex, hashJson, publicHex, verify } from '/packages/core/crypto.mjs';
 
 const rpc = createRpc('/testnet-rpc');
 
@@ -22,14 +23,25 @@ export async function describeDevice(keys) {
   return { hex, accessKey: 'ed25519:' + base58Encode(fromHex(hex, 32)) };
 }
 
-export async function applyTestnetPolicy(config, keys, document) {
-  const hash = await hashJson(document);
-  const { hex } = await describeDevice(keys);
+export async function requireRegisteredSigner(config, signer, issuedAtMs) {
   const registered = await view(config.recordContract, 'owner_keys', { owner: config.owner });
-  const key = registered.find(entry => entry.public_key === hex && entry.key_type === 'demo_device');
-  if (!key || key.registered_at_ms > document.issuedAtMs || key.revoked_at_ms !== null) {
-    throw new Error('Register this demo device on testnet before signing.');
+  const key = registered.find(entry => entry.public_key === signer.publicKey && entry.key_type === signer.keyType);
+  if (!key || key.registered_at_ms > issuedAtMs || key.revoked_at_ms !== null) {
+    throw new Error('Register this signing key with the testnet owner before saving permissions.');
   }
+}
+
+export async function applyTestnetPolicy(config, keys, document, signed) {
+  const hash = await hashJson(document);
+  const signer = signed ?? { keyType: 'demo_device', publicKey: (await describeDevice(keys)).hex };
+  if (signed) {
+    const valid = signer.keyType === 'passkey'
+      ? await verifyPasskeySignature({ publicKey: signer.publicKey, hash, signature: signer.signature,
+        rpId: signer.rpId, allowedOrigins: [location.origin] })
+      : signer.keyType === 'demo_device' && await verify(signer.publicKey, signer.signature, hash);
+    if (!valid) throw new Error('The permission signature did not verify.');
+  }
+  await requireRegisteredSigner(config, signer, document.issuedAtMs);
   const spend = document.rules.spend_money;
   if (spend.payees.length > 32) throw new Error('Use at most 32 payees.');
   const intended = spend.payees.map(payee => [payee.account, payee.maxPerPayment]).sort();

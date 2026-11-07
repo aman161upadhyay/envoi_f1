@@ -64,3 +64,13 @@ Contract unit tests live in `contracts/near/record/src/lib.rs`. To run them, add
 5. After a credentialed testnet run, load its completed output using NEAR_EVIDENCE_RUN_FILE. Evidence offers individual proof downloads. The browser can check testnet transaction and contract data. Use the CLI for full inference-receipt verification.
 
 For a fresh-clone dry run, start with Node 22.13+ and Git on a clean machine. Time the commands above and confirm the replay, refusal and modified-proof failure before reviewing the online artifacts.
+
+## Sign permissions with a passkey
+
+Open the demo at http://localhost:4173/permissions, select **Create passkey**, and complete the device prompt. The public credential information is saved for this origin and owner. The passkey stays with the authenticator.
+
+For a testnet update, use **Passkey details** to obtain the public key and register it as type `passkey` from the owner account on the updated record contract. The browser also needs its separate Ed25519 device key authorized on the owner account for `set_policy` only. The passkey signs the displayed permission document. The limited NEAR key then submits that document�s hash and spending limits.
+
+Select **Passkey** under **Signing with**, edit the limits, and review the confirmation sheet. Cancellation, an unregistered passkey, a revoked key, or an unsuitable NEAR access key keeps the previous active policy. Success appears after the browser reads back the confirmed version, hash, payees, and daily limit. **Download signed policy** includes `keyType`, `rpId`, the passkey public key and the WebAuthn assertion.
+
+The live runner�s permission-file input still needs passkey support before this file can replace the demo-device file in a full rehearsal. Browser testing used a virtual authenticator and simulated testnet responses for this integration. A real device and an updated deployed record contract are needed for live acceptance.

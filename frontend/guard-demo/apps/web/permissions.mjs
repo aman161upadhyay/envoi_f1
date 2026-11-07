@@ -1,5 +1,6 @@
+import { enrollPasskey, ownerPasskey, passkeySupported, signPermissionWithPasskey, verifySavedPermission } from '/owner-passkey.mjs';
 import { demoDevice } from '/device.mjs';
-import { applyTestnetPolicy, describeDevice, getTestnetPolicy } from '/testnet.mjs';
+import { applyTestnetPolicy, describeDevice, getTestnetPolicy, requireRegisteredSigner } from '/testnet.mjs';
 import { hashJson, publicHex, sign, verify } from '/packages/core/crypto.mjs';
 import { displayPermission, formatNear, validAccount } from '/packages/core/policy.mjs';
 
@@ -15,9 +16,13 @@ const storageKey = 'envoi-guard-demo-permission-' + (state.testnet?.spendContrac
 let active = state.genuine.permission.document;
 let signed;
 const testnet = state.testnet;
+const signingMethod = $('#signing-method');
+const ownerAccount = testnet?.owner ?? active.owner;
 const records = [...(testnet ? state.testnetRecords : state.records)];
 const sealStatus = $('#seal-status');
 let filter = '';
+let signingBusy = false;
+sheet.addEventListener('cancel', event => { if (signingBusy) event.preventDefault(); });
 const recordTitles = {
   pay_refused: 'Payment refused', paid: 'Payment made', share_blocked: 'File share blocked',
   screen_flagged: 'Hidden instructions found', screen_clear: 'Private check complete',
@@ -71,6 +76,7 @@ function populate() {
   for (const payee of rules.spend_money.payees) addPayee(payee);
   $('#version').textContent = testnet && !signed ? 'Review required' : 'Signed, version ' + active.version;
   $('#export').hidden = !testnet || !signed;
+  $('#version').title = signed?.keyType === 'passkey' ? 'Signed by Dana with a passkey' : 'Signed by Dana on the demo device';
   updateRules();
   $('#save').hidden = true;
   sealStatus.textContent = testnet ? 'NEAR testnet' : 'Protected, sealed locally (demo)';
@@ -147,14 +153,47 @@ function openPayee() {
 async function readStored() {
   try {
     const entry = JSON.parse(sessionStorage.getItem(storageKey));
-    if (entry && entry.document.agent === (testnet?.agent ?? active.agent) && entry.document.owner === (testnet?.owner ?? active.owner) && await verify(entry.publicKey, entry.signature, await hashJson(entry.document))) {
+    if (entry && ['demo_device', 'passkey'].includes(entry.keyType ?? 'demo_device') && entry.document.agent === (testnet?.agent ?? active.agent) && entry.document.owner === (testnet?.owner ?? active.owner) && (entry.keyType === 'passkey'
+      ? await verifySavedPermission(entry, await hashJson(entry.document))
+      : await verify(entry.publicKey, entry.signature, await hashJson(entry.document)))) {
       active = entry.document;
       signed = entry;
     }
   } catch { /* Start with the original demo policy if browser storage is unavailable. */ }
 }
 
+function renderPasskeyStatus() {
+  const key = ownerPasskey(ownerAccount);
+  $('#setup-passkey').textContent = key ? 'Passkey details' : 'Create passkey';
+  $('#passkey-status').textContent = key ? 'Passkey saved for this owner' :
+    passkeySupported() ? 'No passkey on this browser' : 'Use localhost or HTTPS for passkeys';
+}
+function showPasskeyDetails(key) {
+  const label = make('label', 'Public key to register', { class: 'public-key' });
+  const input = make('input', '', { readonly: '' });
+  input.value = key.publicKey;
+  input.onclick = () => input.select();
+  label.append(input);
+  open('Passkey', make('p', 'Owner: ' + ownerAccount), label,
+    make('p', testnet ? 'Register this public key as type passkey with the owner account on the record contract.' :
+      'This passkey signs local demo permissions.'),
+    make('p', testnet ? 'The scoped NEAR device key submits the spending update after you sign.' : 'Saved on ' + location.hostname));
+}
+$('#setup-passkey').onclick = async () => {
+  try {
+    const saved = ownerPasskey(ownerAccount);
+    const key = saved ?? await enrollPasskey(ownerAccount);
+    signingMethod.value = 'passkey';
+    renderPasskeyStatus();
+    showPasskeyDetails(key);
+  } catch (error) {
+    $('#passkey-status').textContent = error.name === 'NotAllowedError' ? 'Passkey setup cancelled. Try again when ready.' : error.message;
+  }
+};
+signingMethod.onchange = renderPasskeyStatus;
+renderPasskeyStatus();
 await readStored();
+if (signed?.keyType === 'passkey') signingMethod.value = 'passkey';
 if (testnet) {
   $('#seal-status').textContent = 'NEAR testnet';
   try {
@@ -177,7 +216,7 @@ evidence.hidden = !onEvidence;
 document.querySelector('nav a[href="' + (onEvidence ? '/permissions/evidence' : '/permissions') + '"]').setAttribute('aria-current', 'page');
 populate();
 if (!testnet && state.vaultBalance) {
-  $('#vault').textContent = 'Balance for agents � ' + formatNear(state.vaultBalance);
+  $('#vault').textContent = 'Balance for agents � ' + formatNear(state.vaultBalance);
   $('#vault').hidden = false;
 }
 for (const input of [$('#send'), $('#share'), $('#limits')]) input.addEventListener('input', markDirty);
@@ -244,8 +283,11 @@ $('#limits').onsubmit = async event => {
         spend_money: { payees, dailyCap: nearAmount($('#cap').value), unit: 'yoctoNEAR' } }
     };
     draft.display = displayPermission(draft);
+    const method = signingMethod.value;
+    if (method === 'passkey' && !ownerPasskey(ownerAccount)) throw new Error('Create a passkey before saving with it.');
     const approve = make('button', 'Sign and save', { class: 'primary', type: 'button' });
-    const note = make('p', testnet ? 'Signing with Demo device (this browser). This also updates Milo’s limits on NEAR testnet.' : 'Signing with Demo device (this browser). Saves this local demo policy.', { role: 'status' });
+    const note = make('p', 'Signing with ' + (method === 'passkey' ? 'Passkey' : 'Demo device (this browser)') +
+      (testnet ? '. The scoped NEAR key will update the spending limits on testnet.' : '. Saves this local demo policy.'), { role: 'status' });
     const rules = make('ul', '', { class: 'signed-rules' });
     rules.append(...draft.display.map(line => make('li', line)));
     const cancel = make('button', 'Cancel', { type: 'button' });
@@ -254,28 +296,42 @@ $('#limits').onsubmit = async event => {
     actions.append(cancel, approve);
     open("Save Milo's permissions", rules, note, actions);
     approve.onclick = async () => {
+      signingBusy = true;
+      sheet.querySelector('.close').disabled = true;
       approve.disabled = true;
       cancel.disabled = true;
       note.textContent = 'Signing on this device…';
       try {
         const device = await demoDevice();
         const hash = await hashJson(draft);
-        const publicKey = await publicHex(device.publicKey);
-        const signature = await sign(device.privateKey, hash);
-        if (!await verify(publicKey, signature, hash)) throw new Error('Signature check failed');
-        const next = { document: draft, publicKey, signature };
+        let signedPermission;
+        if (method === 'passkey') {
+          if (testnet) await requireRegisteredSigner(testnet,
+            { ...ownerPasskey(ownerAccount), keyType: 'passkey' }, draft.issuedAtMs);
+          signedPermission = await signPermissionWithPasskey(ownerAccount, hash);
+        } else {
+          const publicKey = await publicHex(device.publicKey);
+          const signature = await sign(device.privateKey, hash);
+          if (!await verify(publicKey, signature, hash)) throw new Error('Signature check failed');
+          signedPermission = { keyType: 'demo_device', publicKey, signature };
+        }
+        const next = { document: draft, ...signedPermission };
         if (testnet) {
           note.textContent = 'Signed. Waiting for NEAR testnet…';
-          await applyTestnetPolicy(testnet, device, draft);
+          await applyTestnetPolicy(testnet, device, draft, next);
         }
         try { sessionStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* Policy may already be finalized. */ }
         signed = next;
         active = draft;
         populate();
+        signingBusy = false;
+        sheet.querySelector('.close').disabled = false;
         sheet.close();
         status.textContent = testnet ? 'Saved and signed on NEAR testnet.' : 'Saved and signed in this browser.';
       } catch (error) {
-        note.textContent = testnet ? error.message : "Couldn't sign and save. Your previous local settings are still in force.";
+        signingBusy = false;
+        sheet.querySelector('.close').disabled = false;
+        note.textContent = error.name === 'NotAllowedError' ? 'Signing cancelled. Your previous permissions are still active.' : testnet ? error.message : "Couldn't sign and save. Your previous local settings are still in force.";
         approve.disabled = false;
         cancel.disabled = false;
         approve.textContent = 'Try again';
@@ -287,7 +343,7 @@ $('#limits').onsubmit = async event => {
 function renderRecords() {
   const search = $('#search').value.trim().toLowerCase();
   const items = [...records].reverse().map(entry => ({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck }));
-  if (signed) items.unshift({ type: 'permission_changed', summary: 'Dana signed changes on the demo device.',
+  if (signed) items.unshift({ type: 'permission_changed', summary: signed.keyType === 'passkey' ? 'Dana signed changes with a passkey.' : 'Dana signed changes on the demo device.',
     createdAtMs: signed.document.issuedAtMs, display: signed.document.display });
   const categories = {
     pay: ['paid', 'pay_refused'], block: ['share_blocked', 'pay_refused'],
