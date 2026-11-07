@@ -117,7 +117,7 @@ try {
       testnetProofs: testnetRecords.length ? run.proofs : [],
       testnetTrust: testnetRecords.length ? { evidenceKeys: run.evidenceKeys, publisher: process.env.NEAR_PUBLISHER_ACCOUNT,
         recordCodeHash: process.env.NEAR_RECORD_CODE_HASH } : null });
-    console.log('Permissions demo at http://127.0.0.1:' + server.address().port + '/permissions');
+    console.log('Permissions demo at http://localhost:' + server.address().port + '/permissions');
   }
 } finally {
   db.close();
