@@ -1,3 +1,4 @@
+import { PUBLISHER_METHODS } from './evidence-key.mjs';
 import { writeFile } from 'node:fs/promises';
 import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { nearReaders } from '../adapters/near/read.mjs';
@@ -48,7 +49,7 @@ const result = await rpc('query', { request_type: 'call_function', account_id: r
 const [last, previousRoot] = JSON.parse(Buffer.from(result.result));
 const summary = { format: 'envoi.testnet-smoke/v1', outcome, vaultUnchanged: true };
 const batch = { batchId: last + 1, root: await hashJson(summary), previousRoot, count: 1 };
-const sealRef = await callWithScopedKey({ rpc, keys: publisherKey, sender: publisher, receiver: recordContract, method: 'seal',
+const sealRef = await callWithScopedKey({ rpc, keys: publisherKey, sender: publisher, receiver: recordContract, method: 'seal', methods: PUBLISHER_METHODS,
   args: { batch_id: batch.batchId, root: batch.root, previous_root: previousRoot, count: batch.count } });
 if (!await publicRecord.verifySeal(sealRef, batch)) throw new Error('Smoke seal was not verified: ' + sealRef);
 await writeFile(caseRef + '.json', JSON.stringify({ ...summary, batch, sealRef }, null, 2), { flag: 'wx' });

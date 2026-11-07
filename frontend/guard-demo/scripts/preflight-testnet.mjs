@@ -1,3 +1,4 @@
+import { PUBLISHER_METHODS } from './evidence-key.mjs';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
@@ -65,8 +66,8 @@ if (rpcReady && configured) {
     await check(id + ' key', async () => {
       const { keys } = await readers.agentAccounts.describe(id);
       const scoped = keys.find(key => key.publicKey === publicKey);
-      requireThat(scoped?.kind === 'function_call' && scoped.receiver === receiver && scoped.methods.length === 1 &&
-        scoped.methods[0] === method && (scoped.allowance == null || BigInt(scoped.allowance) > 0n),
+      requireThat(scoped?.kind === 'function_call' && scoped.receiver === receiver && scoped.methods.length === (id === publisher ? PUBLISHER_METHODS.length : 1) &&
+        (id === publisher ? PUBLISHER_METHODS.every(name => scoped.methods.includes(name)) : scoped.methods[0] === method) && (scoped.allowance == null || BigInt(scoped.allowance) > 0n),
         'Add the scoped public key and ensure its allowance covers the rehearsal.');
       if (id === agent) requireThat(keys.length === 1, 'Milo must have only its pay key before rehearsal.');
     });

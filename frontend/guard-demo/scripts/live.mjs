@@ -1,3 +1,4 @@
+import { PUBLISHER_METHODS, registerEvidenceKey } from './evidence-key.mjs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { nearAiScreen } from '../adapters/nearai/screen.mjs';
 import { nearReaders } from '../adapters/near/read.mjs';
@@ -58,27 +59,31 @@ async function main() {
   if (check.held || !check.flagged) throw new Error('The private check did not verify and flag the attack. Payments stayed on hold.');
 
   const evidenceKeys = await crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']);
+  const keyId = 'ev-' + crypto.randomUUID().replaceAll('-', '').slice(0, 24);
+  const evidencePublicKey = await publicHex(evidenceKeys.publicKey);
   const records = [];
+  const out = env.NEAR_RUN_OUTPUT || 'testnet-run.json';
+  let evidenceRegistration;
+  const output = extra => JSON.stringify({
+    network, evidenceKeys: { [keyId]: evidencePublicKey }, evidenceRegistration, records, ...extra
+  }, null, 2);
+  // Reserve output before registration or payment broadcasts.
+  await writeFile(out, output({ status: 'started' }), { flag: 'wx' });
+  async function progress(extra) { await writeFile(out, output(extra)); }
+  evidenceRegistration = await registerEvidenceKey({
+    rpc, keys: publisherKeys, publisher, recordContract, registry: readers.evidenceRegistry, keyId, publicKey: evidencePublicKey
+  });
+  await progress({ status: 'evidence-key-registered' });
   async function record(type, summary, details, chainRef, privateCheck) {
     const entry = await makeEvidence({ seq: records.length + 1, agent, counterparty: payee, caseRef, type, summary,
       previousHash: records.at(-1)?.recordHash ?? ZERO_ROOT, permissionHash: hash, details, chainRef, privateCheck,
-      createdAtMs: Date.now() }, evidenceKeys);
+      createdAtMs: Math.max(Date.now(), evidenceRegistration.registeredAtMs) }, evidenceKeys);
+    entry.envoi.keyId = keyId;
     records.push(entry);
   }
-  await record('permission_changed', 'Dana signed Miloâ€™s payment limits.', { display: document.display });
-  await record('screen_flagged', 'Hidden instructions found in a message from Ledger Coâ€™s agent.',
+  await record('permission_changed', 'Dana signed Milo’s payment limits.', { display: document.display });
+  await record('screen_flagged', 'Hidden instructions found in a message from Ledger Co’s agent.',
     { flaggedText: check.quote, redacted: check.redacted, checks: check.checks }, undefined, check.evidence);
-  const out = env.NEAR_RUN_OUTPUT || 'testnet-run.json';
-  const save = async extra => writeFile(out, JSON.stringify({
-    network, evidenceKeys: { 'ev-1': await publicHex(evidenceKeys.publicKey) },
-    records, ...extra
-  }, null, 2), { flag: 'wx' });
-  // Reserve a fresh run file before the first broadcast to prevent an accidental replay.
-  await save({ status: 'started' });
-  async function progress(extra) {
-    await writeFile(out, JSON.stringify({ network, evidenceKeys: { 'ev-1': await publicHex(evidenceKeys.publicKey) },
-      records, ...extra }, null, 2));
-  }
   const transactionRefs = [];
   async function pay(to, amount, expected) {
     const txRef = await callWithScopedKey({ rpc, keys, sender: agent, receiver: spendContract, method: 'pay',
@@ -106,7 +111,7 @@ async function main() {
   const tree = await buildTree(records.map(entry => entry.recordHash));
   const batch = { batchId: last + 1, root: tree.root, previousRoot, count: records.length };
   const sealRef = await callWithScopedKey({ rpc, keys: publisherKeys, sender: publisher, receiver: recordContract,
-    method: 'seal', args: { batch_id: batch.batchId, root: batch.root, previous_root: previousRoot, count: batch.count } });
+    method: 'seal', methods: PUBLISHER_METHODS, args: { batch_id: batch.batchId, root: batch.root, previous_root: previousRoot, count: batch.count } });
   await progress({ status: 'seal-final', sealRef, transactionRefs });
   if (!await readers.publicRecord.verifySeal(sealRef, batch)) throw new Error('Could not verify testnet seal ' + sealRef);
   const permission = { document, ownerKey: signed.publicKey, signature: signed.signature, registry: { network, contract: recordContract } };
