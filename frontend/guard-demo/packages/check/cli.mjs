@@ -1,4 +1,5 @@
-// npm run check -- <proof.json> <trusted-evidence-keys.json> [--testnet | --mainnet] [--json]
+// npm run check -- <proof.json> <trusted-evidence-keys.json> [--json]                 (offline)
+// npm run check -- <proof.json> [trusted-evidence-keys.json] --testnet|--mainnet [--json]
 //
 // Exit codes, so scripts and CI can tell the outcomes apart:
 //   0  verified: every check passed
@@ -13,7 +14,8 @@ import { DEFAULT_RPC } from '../../adapters/near/rpc.mjs';
 import { checkIds, verifyReceipt } from '../../adapters/nearai/screen.mjs';
 import { validAccount } from '../core/policy.mjs';
 
-const USAGE = 'Usage: npm run check -- proof.json trusted-evidence-keys.json [--testnet | --mainnet] [--json]';
+const USAGE = 'Usage: npm run check -- proof.json trusted-evidence-keys.json [--json]\n' +
+  '   or: npm run check -- proof.json [trusted-evidence-keys.json] --testnet|--mainnet [--json]';
 const EXIT = { verified: 0, failed: 1, partial: 2 };
 const NETWORKS = { '--testnet': 'near-testnet', '--mainnet': 'near-mainnet' };
 
@@ -27,9 +29,11 @@ async function main(argv) {
   const [path, keyPath, ...extra] = argv.filter(arg => !arg.startsWith('--'));
   const unknown = flags.filter(flag => !NETWORKS[flag] && flag !== '--json');
   const networkFlags = flags.filter(flag => NETWORKS[flag]);
-  if (!path || !keyPath || extra.length || unknown.length || networkFlags.length > 1) throw new UsageError(USAGE);
   const json = flags.includes('--json');
   const network = NETWORKS[networkFlags[0]];
+  // Offline, envoi's key can only come from a key map. On NEAR, the record contract lists it,
+  // so the key map becomes an optional override.
+  if (!path || (!keyPath && !network) || extra.length || unknown.length || networkFlags.length > 1) throw new UsageError(USAGE);
 
   let proof;
   try {
@@ -38,13 +42,15 @@ async function main(argv) {
     return { exit: 3, output: json ? { verdict: 'failed', reason: 'bad_file', message: VERDICT_MESSAGES.bad_file, checks: [] } : VERDICT_MESSAGES.bad_file };
   }
   let evidenceKeys;
-  try {
-    evidenceKeys = JSON.parse(await readFile(keyPath, 'utf8'));
-  } catch {
-    throw new UsageError('Could not read the trusted evidence key map: ' + keyPath);
+  if (keyPath) {
+    try {
+      evidenceKeys = JSON.parse(await readFile(keyPath, 'utf8'));
+    } catch {
+      throw new UsageError('Could not read the trusted evidence key map: ' + keyPath);
+    }
   }
 
-  let trust = { evidenceKeys };
+  let trust = evidenceKeys ? { evidenceKeys } : {};
   if (network) {
     try { process.loadEnvFile(); } catch { /* .env is optional when the variables are already set */ }
     const env = process.env;

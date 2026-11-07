@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fromHex } from '../../packages/core/crypto.mjs';
 import { ZERO_ROOT } from '../../packages/core/tree.mjs';
 import { parseAmount, refusalReason, validAccount } from '../../packages/core/policy.mjs';
+import { isPasskeyPublicKey } from '../../packages/core/webauthn.mjs';
 
 export function createLocalAdapters(path = ':memory:', clock = Date.now) {
   const db = new DatabaseSync(path);
@@ -10,6 +11,7 @@ export function createLocalAdapters(path = ':memory:', clock = Date.now) {
     PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS batches (id INTEGER PRIMARY KEY, tx TEXT UNIQUE, payload TEXT);
     CREATE TABLE IF NOT EXISTS owner_keys (owner TEXT, key TEXT, payload TEXT, PRIMARY KEY(owner, key));
+    CREATE TABLE IF NOT EXISTS evidence_keys (id TEXT PRIMARY KEY, payload TEXT);
     CREATE TABLE IF NOT EXISTS vaults (owner TEXT PRIMARY KEY, balance TEXT);
     CREATE TABLE IF NOT EXISTS policies (agent TEXT PRIMARY KEY, payload TEXT);
     CREATE TABLE IF NOT EXISTS daily (agent TEXT, day INTEGER, amount TEXT, PRIMARY KEY(agent, day));
@@ -59,8 +61,10 @@ export function createLocalAdapters(path = ':memory:', clock = Date.now) {
       network,
       async lookup(owner, key) { return lookup(owner, key); },
       async register(owner, { type, publicKey, label }) {
-        if (!validAccount(owner) || type !== 'demo_device' || typeof label !== 'string' || !label.length || label.length > 64) throw new Error('Invalid key');
-        fromHex(publicKey, 32);
+        // Same key rules as the record contract's register_owner_key.
+        if (!validAccount(owner) || !['demo_device', 'passkey'].includes(type) || typeof label !== 'string' || !label.length || label.length > 64) throw new Error('Invalid key');
+        const shapeOk = type === 'passkey' ? isPasskeyPublicKey(publicKey) : /^[0-9a-f]{64}$/.test(publicKey);
+        if (!shapeOk) throw new Error('Invalid key');
         return transaction(() => {
           if (get('SELECT COUNT(*) AS n FROM owner_keys WHERE owner = ?', owner).n >= 10) throw new Error('Key limit reached');
           run('INSERT INTO owner_keys VALUES (?, ?, ?)', owner, publicKey, JSON.stringify({ type, label, registeredAtMs: clock() }));
@@ -72,6 +76,27 @@ export function createLocalAdapters(path = ':memory:', clock = Date.now) {
           const key = lookup(owner, publicKey);
           if (!key || key.revokedAtMs !== undefined) throw new Error('No active key');
           run('UPDATE owner_keys SET payload = ? WHERE owner = ? AND key = ?', JSON.stringify({ ...key, revokedAtMs: clock() }), owner, publicKey);
+          return { txRef: randomUUID() };
+        });
+      }
+    },
+    // Mirrors the record contract's register_evidence_key / revoke_evidence_key / evidence_key.
+    evidenceRegistry: {
+      network,
+      async lookup(keyId) { return read('SELECT payload FROM evidence_keys WHERE id = ?', keyId); },
+      async register(keyId, publicKey) {
+        if (typeof keyId !== 'string' || !/^[a-z0-9-]{1,32}$/.test(keyId) || !/^[0-9a-f]{64}$/.test(publicKey)) throw new Error('Invalid key');
+        return transaction(() => {
+          if (get('SELECT id FROM evidence_keys WHERE id = ?', keyId)) throw new Error('Key id already used');
+          run('INSERT INTO evidence_keys VALUES (?, ?)', keyId, JSON.stringify({ publicKey, registeredAtMs: clock() }));
+          return { txRef: randomUUID() };
+        });
+      },
+      async revoke(keyId) {
+        return transaction(() => {
+          const key = read('SELECT payload FROM evidence_keys WHERE id = ?', keyId);
+          if (!key || key.revokedAtMs !== undefined) throw new Error('No active key');
+          run('UPDATE evidence_keys SET payload = ? WHERE id = ?', JSON.stringify({ ...key, revokedAtMs: clock() }), keyId);
           return { txRef: randomUUID() };
         });
       }

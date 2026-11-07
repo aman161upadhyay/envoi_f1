@@ -18,7 +18,7 @@ export async function serveChecker(samples, port = 4173) {
     ['/check.css', ['apps/web/check.css', 'text/css; charset=utf-8']],
     ['/check.mjs', ['apps/web/check.mjs', 'text/javascript; charset=utf-8']],
     ...['index', 'messages'].map(name => [`/packages/check/${name}.mjs`, [`packages/check/${name}.mjs`, 'text/javascript; charset=utf-8']]),
-    ...['crypto', 'policy', 'tree'].map(name => [`/packages/core/${name}.mjs`, [`packages/core/${name}.mjs`, 'text/javascript; charset=utf-8']])
+    ...['crypto', 'policy', 'tree', 'webauthn', 'passkey'].map(name => [`/packages/core/${name}.mjs`, [`packages/core/${name}.mjs`, 'text/javascript; charset=utf-8']])
   ]);
   const assets = new Map(await Promise.all(Array.from(routes, async ([route, [file, type]]) => [
     route, [await readFile(new URL('../../' + file, import.meta.url)), type]

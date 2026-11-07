@@ -54,6 +54,14 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
         ...(key.revoked_at_ms === null ? {} : { revokedAtMs: key.revoked_at_ms }) } : null;
     }
   };
+  const evidenceRegistry = {
+    network,
+    async lookup(keyId) {
+      const key = await view(recordContract, 'evidence_key', { key_id: keyId });
+      return key && { publicKey: key.public_key, registeredAtMs: key.registered_at_ms,
+        ...(key.revoked_at_ms === null ? {} : { revokedAtMs: key.revoked_at_ms }) };
+    }
+  };
   const spendGuard = {
     network, unit: 'yoctoNEAR',
     async getPolicy(agent) {
@@ -83,5 +91,5 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
       }) };
     }
   };
-  return { publicRecord, ownerRegistry, spendGuard, agentAccounts, recordContract, spendContract, recordCodeHash };
+  return { publicRecord, ownerRegistry, evidenceRegistry, spendGuard, agentAccounts, recordContract, spendContract, recordCodeHash };
 }

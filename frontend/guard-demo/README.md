@@ -35,6 +35,26 @@ The verifier requires a provider TEE signature, the exact request and response h
 - `npm run testnet:smoke` sends a deliberately refused testnet payment and seals a smoke record. It checks that the vault balance stays the same. This is a contract test. It does not call inference, transfer funds from the vault, or produce an attested demo proof.
 - `npm run demo:live` is the full rehearsal. It holds both demo payments until a real inference receipt passes all checks. Use a fresh output filename after any partial run and inspect its recorded transaction IDs before retrying.
 
+### Record contract: passkeys and envoi's evidence key
+
+The record contract (`contracts/near/record`) lists two kinds of signing key, so a proof can be checked against NEAR without trusting a file from envoi:
+
+| Method | Caller | What it does |
+|---|---|---|
+| `register_owner_key({ key_type, public_key, label })` | the owner's own account, with a storage deposit | `key_type` is `demo_device` (Ed25519, 32-byte hex) or `passkey` (WebAuthn P-256, uncompressed `04…` hex, 130 characters) |
+| `revoke_owner_key({ public_key })` | the owner | Rules signed after revocation stop verifying |
+| `register_evidence_key({ key_id, public_key })` | the publisher | Lists one of envoi's Ed25519 evidence keys. Key IDs are lowercase letters, digits and dashes, and are never reused |
+| `revoke_evidence_key({ key_id })` | the publisher | Records created after revocation stop verifying |
+| `evidence_key({ key_id })`, `owner_keys({ owner })`, `root_of`, `last`, `publisher` | anyone (view) | Read by the checker |
+
+Evidence keys use their own storage prefix, so this code can replace the deployed record contract without migrating its state; already-listed demo keys and sealed batches stay. After redeploying, update `NEAR_RECORD_CODE_HASH`. The publisher's limited key needs `register_evidence_key` added to its method list, or the custodian makes that one call with a full-access key. Then list the runner's evidence key once, before sealing anything signed with it.
+
+With envoi's key listed, `npm run check -- proof.json --testnet` needs no key map. A key map passed as the second argument still overrides the contract.
+
+Passkeys in the browser: `packages/core/passkey.mjs` has `createPasskey()` (returns the hex key to list with `register_owner_key`) and `signWithPasskey({ credentialId, hash })` (returns the proof's `permission.signature`). Set `permission.keyType = 'passkey'` and `permission.rpId`. WebAuthn needs `https` or `http://localhost`; it refuses `127.0.0.1`.
+
+Contract unit tests live in `contracts/near/record/src/lib.rs`. To run them, add `near-sdk = { workspace = true, features = ["unit-testing"] }` under `[dev-dependencies]` in `contracts/near/record/Cargo.toml`, run `cargo test --manifest-path contracts/near/Cargo.toml -p envoi-record` once with network access, and commit the updated `Cargo.lock` together with that line so `--locked` builds keep working.
+
 ## Judge walkthrough
 
 1. Run `npm ci --offline`, `npm test`, and `npm run demo -- --serve` from this directory. Open [Demo replay](http://127.0.0.1:4173/demo).
