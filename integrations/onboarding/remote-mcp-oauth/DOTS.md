@@ -46,7 +46,8 @@ Chrome may be closed while a native task remains enabled. Closing Chrome does no
 | Subscription returns “unexpected error” with no ID | Stop the attempt and retain the public error and time. The operator checks deployment readiness, OAuth validity, Events enablement, callback verification and the exact allowlisted origin. Do not disclose the callback or assume an unknown subscription was cancelled. |
 | A tool asks to reconnect or returns an authentication error | Reconnect the Envoi plugin's OAuth in ChatGPT. On Envoi's approval page choose **Reconnect an existing agent**, select the same agent and confirm the replacement. Verify `envoi_agent_info`, then ask the Dot to create the monitoring task again, because the replaced installation's subscription has ended. Do not create a replacement identity automatically. |
 | Agent access was revoked | If the agent is still offered under **Reconnect an existing agent**, reconnect it there. If it is not offered, Envoi treats it as frozen and the Dot cannot reconnect to it. The owner decides whether to re-onboard that agent or approve a new one; the Dot never chooses. |
-| Monitoring stopped after about seven days | The subscription expired without renewal. Ask the Dot to create the monitoring task again, then reconcile pending work from Envoi. |
+| Monitoring stopped after about seven days | Check the actual source state and expiry; elapsed time alone does not prove expiration. Verify native repair capability, then use a supported source refresh or retire the old source before exactly one replacement. Reconcile pending work without manufacturing another arrival. |
+| A recent subscription received callbacks, then shows `ended_by_host` | This is distinct from feature disabling or transport failure. Correlate the source with its actual task/attempt and inspect the host end/unsubscribe trace. Callback acknowledgments do not prove a task persisted or work completed. Keep the working OAuth connection and stop repeated setup attempts while the exact host/interop result is investigated. |
 | No work appears after a notification | Check the native task/update area and canonical claim result. A hint may be coalesced or stale. Do not manufacture a message or repeatedly poll from model timers. |
 | Task was stopped or the host restarted | Confirm the task is enabled and its native subscription is active. Reconcile pending work from Envoi before claiming success. Preserve case, work and idempotency identifiers across recovery. |
 | Case or agent is paused | Keep work held. Do not reconnect or retry around a pause. Resume only at the owner's request, then reconcile the canonical queue. |
@@ -54,6 +55,18 @@ Chrome may be closed while a native task remains enabled. Closing Chrome does no
 | A reply may have succeeded but its response was lost | Retry only the identical authorized payload with the same idempotency key. A new key risks a second message. Settle with the existing current lease and settlement key. |
 
 The native host manages OAuth refresh and subscription renewal privately. Server renewal/expiry tests and a browser restart test are different evidence: neither proves that a seven-day subscription naturally expired during a one-hour acceptance window.
+
+## Customer walkthrough
+
+Start at the intended deployment's `/connect?platform=dots`. The connection prompt verifies the active identity before consent; the separate verification prompt reports the actual address, message permissions and callable send tools. Use **Create a new agent** only when the owner wants a new identity. Existing owners keep their identity and history through the supported recovery flow.
+
+After verification, the owner can authorize a real recipient and message in ordinary product usage. Require the returned case/message identifiers and delivery state. A delivered native Envoi message is not an external Gmail/SMTP email. Do not add file, calendar, spending or execution privileges merely to send a native message.
+
+Treat automatic receiving as a separate, explicitly authorized workflow. Ask what to do, which exact senders are allowed and when to stop. Verify native creation capability before changing tasks and require source/activity evidence, then actual work/reply/completion receipts. Report direct Dot execution and owner-chosen Work execution accurately. Do not label the entire onboarding flow complete while automatic receiving is unverified.
+
+When setup fails, use **Setup failed? Collect a read-only report** in the guide. Share the actual address/permission names, callable tool availability, public error, attempt time/timezone and actual task ID/chat link if known. Mark unavailable checks unverified. The diagnostic prompt performs no OAuth, tool refresh, task edits, message reads, work claims or sends. Support can correlate a host attempt with subscription/end traces; neither a generic error nor a nearby database timestamp establishes that correlation alone.
+
+Customer installation also requires a verified available official release. A private development App, portable source ZIP or working `/mcp` endpoint is not a public installation link. Follow the [publisher readiness checklist](OFFICIAL-PLUGIN.md#public-release-readiness); customers should not have to configure scopes or publisher code.
 
 ## Stop and verify
 
