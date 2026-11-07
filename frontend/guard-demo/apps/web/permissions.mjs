@@ -1,7 +1,7 @@
 import { demoDevice } from '/device.mjs';
 import { applyTestnetPolicy, describeDevice, getTestnetPolicy } from '/testnet.mjs';
 import { hashJson, publicHex, sign, verify } from '/packages/core/crypto.mjs';
-import { displayPermission, formatNear } from '/packages/core/policy.mjs';
+import { displayPermission, formatNear, validAccount } from '/packages/core/policy.mjs';
 
 const $ = selector => document.querySelector(selector);
 const state = await fetch('/demo-samples.json').then(response => response.json());
@@ -16,6 +16,8 @@ let active = state.genuine.permission.document;
 let signed;
 const testnet = state.testnet;
 const records = [...(testnet ? state.testnetRecords : state.records)];
+const sealStatus = $('#seal-status');
+let filter = '';
 const recordTitles = {
   pay_refused: 'Payment refused', paid: 'Payment made', share_blocked: 'File share blocked',
   screen_flagged: 'Hidden instructions found', screen_clear: 'Private check complete',
@@ -69,12 +71,77 @@ function populate() {
   for (const payee of rules.spend_money.payees) addPayee(payee);
   $('#version').textContent = testnet && !signed ? 'Review required' : 'Signed, version ' + active.version;
   $('#export').hidden = !testnet || !signed;
+  updateRules();
   $('#save').hidden = true;
+  sealStatus.textContent = testnet ? 'NEAR testnet' : 'Protected, sealed locally (demo)';
+  sealStatus.removeAttribute('data-check');
+}
+
+function updateRules() {
+  for (const input of [$('#send'), $('#share')]) input.dataset.rule = input.value;
+}
+
+function payeeInputs(row) {
+  return {
+    label: row.querySelector('[name=label]').value.trim(),
+    account: row.querySelector('[name=account]').value.trim(),
+    amount: row.querySelector('[name=max]').value
+  };
 }
 
 function markDirty() {
-  $('#save').hidden = false;
-  status.textContent = 'Changes not signed yet';
+  updateRules();
+  const rules = active.rules;
+  let changes = Number($('#send').value !== rules.send_messages) +
+    Number($('#share').value !== rules.share_files.default) +
+    Number($('#cap').value !== formatNear(rules.spend_money.dailyCap).split(' ')[0]);
+  const old = new Map(rules.spend_money.payees.map(entry => [entry.account, entry]));
+  for (const row of $('#payees').children) {
+    const payee = payeeInputs(row);
+    const previous = old.get(payee.account);
+    if (!previous || payee.label !== previous.label || payee.amount !== formatNear(previous.maxPerPayment).split(' ')[0]) changes++;
+    old.delete(payee.account);
+  }
+  changes += old.size;
+  $('#change-count').textContent = changes + (changes === 1 ? ' change' : ' changes');
+  $('#save').hidden = changes === 0;
+  sealStatus.textContent = changes ? 'Changes not signed yet' : (testnet ? 'NEAR testnet' : 'Protected, sealed locally (demo)');
+  if (changes) sealStatus.dataset.check = 'pending';
+  else sealStatus.removeAttribute('data-check');
+}
+
+function openPayee() {
+  const form = make('form', '', { class: 'payee-sheet' });
+  const fields = [
+    ['Name', 'label', { maxlength: '64' }], ['NEAR account', 'account', { maxlength: '64' }],
+    ['Up to amount (NEAR)', 'amount', { inputmode: 'decimal' }]
+  ];
+  for (const [label, name, attributes] of fields) {
+    const wrapper = make('label', label);
+    wrapper.append(make('input', '', { name, required: '', ...attributes }));
+    form.append(wrapper);
+  }
+  const message = make('p', '', { role: 'status' });
+  form.append(message, make('button', 'Add payee', { type: 'submit', class: 'primary' }));
+  form.onsubmit = event => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const account = data.get('account').trim();
+    try {
+      if (!validAccount(account)) throw new Error('Enter a valid NEAR account.');
+      if ([...$('#payees').children].some(row => payeeInputs(row).account === account)) throw new Error('This account is already a payee.');
+      const maxPerPayment = nearAmount(data.get('amount'));
+      if (BigInt(maxPerPayment) <= 0n || BigInt(maxPerPayment) > BigInt(nearAmount($('#cap').value))) {
+        throw new Error('Enter a positive amount within the daily limit.');
+      }
+      const label = data.get('label').trim();
+      if (!label) throw new Error('Enter a name for this payee.');
+      addPayee({ account, label, maxPerPayment });
+      markDirty();
+      sheet.close();
+    } catch (error) { message.textContent = error.message; }
+  };
+  open('Add payee', form);
 }
 
 async function readStored() {
@@ -109,8 +176,12 @@ settings.hidden = onEvidence;
 evidence.hidden = !onEvidence;
 document.querySelector('nav a[href="' + (onEvidence ? '/permissions/evidence' : '/permissions') + '"]').setAttribute('aria-current', 'page');
 populate();
+if (!testnet && state.vaultBalance) {
+  $('#vault').textContent = 'Balance for agents · ' + formatNear(state.vaultBalance);
+  $('#vault').hidden = false;
+}
 for (const input of [$('#send'), $('#share'), $('#limits')]) input.addEventListener('input', markDirty);
-$('#add').onclick = () => { addPayee(); markDirty(); $('#payees').lastElementChild.querySelector('input').focus(); };
+$('#add').onclick = openPayee;
 $('#discard').onclick = () => { populate(); status.textContent = ''; };
 $('#keys').onclick = async () => {
   if (testnet) {
@@ -137,8 +208,18 @@ $('#keys').onclick = async () => {
   const key = state.agentAccount.keys[0];
   const restricted = state.agentAccount.keys.length === 1 && key?.kind === 'function_call' &&
     key.receiver === 'local-spend' && key.methods.length === 1 && key.methods[0] === 'pay';
-  open('Agent keys', make('p', state.agentAccount.account), make('p', 'Local demo account'),
-    make('p', restricted ? 'Milo holds one key. It can only ask the spending contract to pay.' : 'Payment-only restriction could not be confirmed.'));
+  const details = [make('p', state.agentAccount.account), make('p', 'Local demo account')];
+  if (restricted) {
+    details.push(make('p', 'Milo holds one key'));
+    const list = make('ul', '', { class: 'signed-rules' });
+    for (const line of ['Can call the spending contract (' + key.receiver + ')', 'Can only ask it to pay',
+      "Can't send NEAR directly", "Can't change its own limits"]) list.append(make('li', line));
+    details.push(list, make('p', 'Fee allowance left: ' + formatNear(key.allowance)));
+  } else {
+    details.push(make('p', state.agentAccount.keys.some(entry => entry.kind === 'full')
+      ? 'This account has a key that can do anything' : 'Payment-only restriction could not be confirmed.'));
+  }
+  open('Agent keys', ...details);
 };
 function downloadJson(value, filename) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
@@ -204,7 +285,6 @@ $('#limits').onsubmit = async event => {
 };
 
 function renderRecords() {
-  const filter = $('#filter').value;
   const search = $('#search').value.trim().toLowerCase();
   const items = [...records].reverse().map(entry => ({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck }));
   if (signed) items.unshift({ type: 'permission_changed', summary: 'Dana signed changes on the demo device.',
@@ -215,7 +295,15 @@ function renderRecords() {
   };
   const visible = items.filter(item => (!filter || categories[filter]?.includes(item.type)) &&
     item.summary.toLowerCase().includes(search));
-  const rows = visible.map(item => {
+  const rows = [];
+  let previousDay;
+  for (const item of visible) {
+    const day = new Date(item.createdAtMs).toDateString();
+    if (day !== previousDay) {
+      rows.push(make('li', new Date(item.createdAtMs).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }),
+        { class: 'evidence-day' }));
+      previousDay = day;
+    }
     const button = make('button', '', { class: 'record', type: 'button' });
     const summary = make('span', item.summary);
     summary.append(make('small', new Date(item.createdAtMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })));
@@ -223,26 +311,38 @@ function renderRecords() {
     button.append(make('span', item.display ? (testnet ? 'Signed on testnet' : 'Signed locally') : (testnet ? 'Sealed on testnet' : 'Sealed locally (demo)'), { class: 'chip' }));
     button.onclick = () => {
       if (item.id) {
-        const url = new URL(location.href);
-        url.searchParams.set('record', item.id);
-        history.replaceState(null, '', url);
+        history.replaceState(null, '', '/permissions/evidence/' + encodeURIComponent(item.id));
       }
       showRecord(item);
     };
     const row = make('li', '');
     row.append(button);
-    return row;
-  });
+    rows.push(row);
+  }
   const empty = testnet && !items.length ? 'No testnet evidence yet. Run the testnet rehearsal to see its records here.' :
     filter === 'block' && !search ? 'Nothing blocked' : 'No matching evidence';
-  $('#records').replaceChildren(...(rows.length ? rows : [make('li', empty, { class: 'empty' })]));
+  const emptyRow = make('li', empty, { class: 'empty' });
+  if (empty === 'Nothing blocked') emptyRow.append(make('p', 'Your agents stayed inside their permissions.'));
+  $('#records').replaceChildren(...(rows.length ? rows : [emptyRow]));
 }
 
 function showRecord(item) {
   const details = [make('p', item.summary), make('p', new Date(item.createdAtMs).toLocaleString())];
+  if (item.caseRef === 'invoice-1042') {
+    details.push(make('a', 'Invoice 1042 from Ledger Co', { href: '/cases/invoice-1042' }));
+    details.push(make('p', 'Milo: ' + item.agent));
+  }
+  if (item.type === 'pay_refused' && item.details?.reason === 'not_payee') {
+    details.push(make('p', "Refused by the spending contract because it isn't one of Milo's payees."));
+    const flagged = records.find(entry => entry.record.type === 'screen_flagged' && entry.record.caseRef === item.caseRef);
+    if (flagged) details.push(make('a', "Asked by Ledger Co's agent in a hidden instruction",
+      { href: '/permissions/evidence/' + encodeURIComponent(flagged.record.id) }));
+  }
   if (item.display) details.push(...item.display.map(line => make('p', line)));
   if (item.details?.flaggedText) {
-    details.push(make('h3', 'Flagged text'), make('p', item.details.flaggedText), make('h3', 'Hardware attestation'));
+    details.push(make('h3', 'Flagged text'), make('p', item.details.flaggedText),
+      make('h3', 'What happened'), make('p', 'Milo got the message with this text removed.'),
+      make('h3', item.privateCheck ? 'Private check on NEAR AI Cloud' : 'Hardware attestation'));
     const checks = {
       signed_text: 'Answer matches what was signed', signature: 'Response signature matches',
       signer_attested: 'Signer belongs to the attested hardware', report_data: 'Attestation matches this signer and request',
@@ -293,14 +393,41 @@ function showRecord(item) {
       href: testnet ? '/check?record=' + encodeURIComponent(item.id) : '/check?sample=genuine'
     }));
     details.push(actions);
+    const metadata = make('details', '', { class: 'record-metadata' });
+    metadata.append(make('summary', 'More details'), make('p', 'Record number: ' + item.seq),
+      make('p', 'Batch number: ' + proof.batch.batchId));
+    if (/^[a-f0-9]{64}$/.test(proof.recordHash)) {
+      const fingerprint = make('p', 'Fingerprint: ' + proof.recordHash.slice(0, 8) + '...' + proof.recordHash.slice(-8));
+      const copy = make('button', 'Copy fingerprint', { type: 'button' });
+      const result = make('span', '', { role: 'status' });
+      copy.onclick = async () => {
+        try { await navigator.clipboard.writeText(proof.recordHash); result.textContent = 'Copied'; }
+        catch { result.textContent = 'Could not copy. Download the proof to get the full fingerprint.'; }
+      };
+      metadata.append(fingerprint, copy, result);
+    }
+    if (testnet) metadata.append(make('p', 'Record contract: ' + proof.seal.contract));
+    details.push(metadata);
   }
   open(recordTitles[item.type] ?? 'Evidence record', ...details);
 }
-$('#filter').onchange = renderRecords;
+for (const button of document.querySelectorAll('[data-filter]')) {
+  button.onclick = () => {
+    filter = button.dataset.filter;
+    for (const choice of document.querySelectorAll('[data-filter]')) choice.setAttribute('aria-pressed', String(choice === button));
+    renderRecords();
+  };
+}
+document.addEventListener('keydown', event => {
+  if (onEvidence && event.key === '/' && !sheet.open && !event.target.matches('input, textarea, select, [contenteditable]')) {
+    event.preventDefault();
+    $('#search').focus();
+  }
+});
 $('#search').oninput = renderRecords;
 renderRecords();
 if (onEvidence) {
-  const id = new URLSearchParams(location.search).get('record');
+  const id = location.pathname.split('/')[3] || new URLSearchParams(location.search).get('record');
   if (id) {
     const entry = records.find(row => row.record.id === id);
     if (entry) showRecord({ ...entry.record, details: entry.details, privateCheck: entry.privateCheck });
@@ -308,8 +435,7 @@ if (onEvidence) {
   }
   sheet.addEventListener('close', () => {
     const url = new URL(location.href);
-    if (!url.searchParams.has('record')) return;
-    url.searchParams.delete('record');
-    history.replaceState(null, '', url);
+    if (url.pathname === '/permissions/evidence' && !url.searchParams.has('record')) return;
+    history.replaceState(null, '', '/permissions/evidence');
   });
 }

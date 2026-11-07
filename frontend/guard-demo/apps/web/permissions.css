@@ -47,3 +47,21 @@ button:disabled { cursor: wait; opacity: .65; }
 .attestation-checks li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; }
 .chip[data-check=failed] { background: #fce8eb; color: #9b1029; }
 .chip[data-check=not_checked] { background: var(--side); color: var(--ink2); }
+
+.permission-pill { border-radius: 99px; font-size: 13px; }
+.permission-pill[data-rule=allowed] { background: #e9f6ed; color: #18672e; }
+.permission-pill[data-rule=ask_first] { background: #fff1df; color: #804200; }
+.permission-pill[data-rule=off] { background: var(--side); color: var(--ink); }
+.save #change-count { margin-right: auto; }
+.filter-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-group button[aria-pressed=true] { background: #e9f2fd; color: #005bb5; border-color: #a9d0f5; }
+#records .evidence-day { color: var(--ink2); font-size: 13px; font-weight: 600; padding-top: 18px; }
+#vault { font-variant-numeric: tabular-nums; }
+.payee-sheet { display: grid; gap: 12px; }
+.payee-sheet label { display: grid; gap: 4px; }
+@media (max-width: 699px) { dialog { width: 100%; } }
+
+.chip[data-check=pending] { background: #fff1df; color: #804200; }
+.record-metadata { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; }
+.record-metadata summary { cursor: pointer; font-weight: 600; }
+.record-metadata [role=status] { display: block; margin-top: 4px; }

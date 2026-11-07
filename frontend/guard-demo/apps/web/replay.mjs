@@ -19,7 +19,8 @@ const steps = [
   ] },
   { label: 'Pay the real invoice', entries: [[records.get('paid').record.summary], ['Sealed locally (demo).']] },
   { label: 'Open evidence', href: '/permissions/evidence' },
-  { label: 'Check the refused payment', href: '/check?sample=genuine' }
+  { label: 'Check the refused payment', href: '/check?sample=genuine' },
+  { label: 'Change one character', href: '/check?sample=edited' }
 ];
 
 let index = 0;
