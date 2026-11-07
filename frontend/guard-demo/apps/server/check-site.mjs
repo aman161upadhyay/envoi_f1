@@ -27,8 +27,8 @@ export async function serveChecker(samples, port = 4173) {
   const rpc = createRpc();
   const server = createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/testnet-rpc' && samples.testnet) {
-      const expectedOrigin = 'http://127.0.0.1:' + server.address().port;
-      if (req.headers.origin !== expectedOrigin || req.headers['content-type'] !== 'application/json') {
+      const allowedOrigins = ['http://127.0.0.1:', 'http://localhost:'].map(host => host + server.address().port);
+      if (!allowedOrigins.includes(req.headers.origin) || req.headers['content-type'] !== 'application/json') {
         return res.writeHead(403).end();
       }
       try {
