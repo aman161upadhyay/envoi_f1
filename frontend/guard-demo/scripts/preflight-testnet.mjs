@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { base58Encode } from '../adapters/near/sign.mjs';
+import { PUBLISHER_METHODS } from '../adapters/near/record.mjs';
 import { nearReaders } from '../adapters/near/read.mjs';
 import { hashJson, verify } from '../packages/core/crypto.mjs';
 import { displayPermission, validAccount } from '../packages/core/policy.mjs';
@@ -59,18 +60,23 @@ if (rpcReady && configured) {
       return hash;
     });
   }
-  for (const [id, publicKey, receiver, method] of [
-    [agent, env.NEAR_AGENT_PUBLIC_KEY, spendContract, 'pay'], [publisher, env.NEAR_PUBLISHER_PUBLIC_KEY, recordContract, 'seal']
+  for (const [id, publicKey, receiver, methods] of [
+    [agent, env.NEAR_AGENT_PUBLIC_KEY, spendContract, ['pay']], [publisher, env.NEAR_PUBLISHER_PUBLIC_KEY, recordContract, PUBLISHER_METHODS]
   ]) {
     await check(id + ' key', async () => {
       const { keys } = await readers.agentAccounts.describe(id);
       const scoped = keys.find(key => key.publicKey === publicKey);
-      requireThat(scoped?.kind === 'function_call' && scoped.receiver === receiver && scoped.methods.length === 1 &&
-        scoped.methods[0] === method && (scoped.allowance == null || BigInt(scoped.allowance) > 0n),
-        'Add the scoped public key and ensure its allowance covers the rehearsal.');
+      requireThat(scoped?.kind === 'function_call' && scoped.receiver === receiver && scoped.methods.length === methods.length &&
+        methods.every(method => scoped.methods.includes(method)) && (scoped.allowance == null || BigInt(scoped.allowance) > 0n),
+        `Add the scoped public key for ${methods.join(' and ')} on ${receiver}, and ensure its allowance covers the rehearsal.`);
       if (id === agent) requireThat(keys.length === 1, 'Milo must have only its pay key before rehearsal.');
     });
   }
+  await check('Record contract evidence keys', async () => {
+    // The redeployed record contract answers evidence_key with null for an unknown ID; the old one has no such method.
+    requireThat(await readers.evidenceRegistry.lookup('preflight-probe') === null, 'Unexpected evidence key preflight-probe.');
+    return 'supported';
+  });
   await check('Owner vault', async () => {
     const response = await rpc('query', { request_type: 'call_function', account_id: spendContract,
       method_name: 'vault_of', args_base64: Buffer.from(JSON.stringify({ owner })).toString('base64'), finality: 'final' });

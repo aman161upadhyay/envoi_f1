@@ -3,6 +3,7 @@ import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { nearReaders } from '../adapters/near/read.mjs';
 import { callWithScopedKey } from '../adapters/near/sign.mjs';
 import { loadScopedKey } from '../adapters/near/key-file.mjs';
+import { sealNextBatch } from '../adapters/near/record.mjs';
 import { hashJson } from '../packages/core/crypto.mjs';
 import { validAccount } from '../packages/core/policy.mjs';
 
@@ -43,13 +44,9 @@ if (outcome?.status !== 'refused' || outcome.reason !== 'not_payee' || outcome.p
     outcome.caseRef !== caseRef || await vault() !== before) throw new Error('Refusal was not verified: ' + txRef);
 console.log('Verified refusal and unchanged vault:', txRef);
 
-const result = await rpc('query', { request_type: 'call_function', account_id: recordContract, finality: 'final',
-  method_name: 'last', args_base64: 'e30=' });
-const [last, previousRoot] = JSON.parse(Buffer.from(result.result));
 const summary = { format: 'envoi.testnet-smoke/v1', outcome, vaultUnchanged: true };
-const batch = { batchId: last + 1, root: await hashJson(summary), previousRoot, count: 1 };
-const sealRef = await callWithScopedKey({ rpc, keys: publisherKey, sender: publisher, receiver: recordContract, method: 'seal',
-  args: { batch_id: batch.batchId, root: batch.root, previous_root: previousRoot, count: batch.count } });
+const { batch, sealRef } = await sealNextBatch({ rpc, keys: publisherKey, publisher, recordContract,
+  root: await hashJson(summary), count: 1 });
 if (!await publicRecord.verifySeal(sealRef, batch)) throw new Error('Smoke seal was not verified: ' + sealRef);
 await writeFile(caseRef + '.json', JSON.stringify({ ...summary, batch, sealRef }, null, 2), { flag: 'wx' });
 console.log('Verified final seal:', sealRef);

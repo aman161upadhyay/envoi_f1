@@ -18,7 +18,7 @@ export async function makeEvidence({ seq, type, agent, counterparty, caseRef, su
     record, recordHash, details, detailsSalt,
     ...(privateCheck ? { privateCheck } : {}),
     envoi: {
-      keyId: 'ev-1',
+      keyId: keys.keyId ?? 'ev-1',
       publicKey: await publicHex(keys.publicKey),
       signature: await sign(keys.privateKey, recordHash)
     }

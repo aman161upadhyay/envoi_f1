@@ -14,6 +14,9 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
     const bytes = new TextEncoder().encode(JSON.stringify(args));
     const args_base64 = btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''));
     const result = await query('call_function', account, { method_name, args_base64 });
+    // A contract that lacks the method (for example a record contract deployed before evidence
+    // keys) answers with an error string instead of bytes.
+    if (result.error || !Array.isArray(result.result)) throw new Error(`${method_name} failed on ${account}: ${result.error ?? 'no result'}`);
     return JSON.parse(new TextDecoder().decode(Uint8Array.from(result.result)));
   }
 

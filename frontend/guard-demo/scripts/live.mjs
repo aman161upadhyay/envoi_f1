@@ -4,6 +4,7 @@ import { nearReaders } from '../adapters/near/read.mjs';
 import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { callWithScopedKey } from '../adapters/near/sign.mjs';
 import { loadScopedKey } from '../adapters/near/key-file.mjs';
+import { newEvidenceKeyId, registerEvidenceKey, sealNextBatch } from '../adapters/near/record.mjs';
 import { buildTree, ZERO_ROOT } from '../packages/core/tree.mjs';
 import { hashJson, publicHex, verify } from '../packages/core/crypto.mjs';
 import { makeEvidence } from '../packages/core/evidence.mjs';
@@ -57,28 +58,39 @@ async function main() {
   });
   if (check.held || !check.flagged) throw new Error('The private check did not verify and flag the attack. Payments stayed on hold.');
 
-  const evidenceKeys = await crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']);
+  // A fresh evidence key per run, listed on the record contract before any record is signed,
+  // so a checker can trust it from NEAR instead of from this run file.
+  const keyId = newEvidenceKeyId();
+  const evidenceKeys = { ...await crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']), keyId };
+  const evidencePublic = await publicHex(evidenceKeys.publicKey);
   const records = [];
+  let evidenceKey = { keyId };
+  let notBeforeMs = 0;
+  const out = env.NEAR_RUN_OUTPUT || 'testnet-run.json';
+  const snapshot = extra => JSON.stringify({ network, evidenceKeys: { [keyId]: evidencePublic }, evidenceKey, records, ...extra }, null, 2);
+  // Reserve a fresh run file before the first broadcast to prevent an accidental replay.
+  await writeFile(out, snapshot({ status: 'started' }), { flag: 'wx' });
+  async function progress(extra) {
+    await writeFile(out, snapshot(extra));
+  }
+  const listed = await registerEvidenceKey({ rpc, keys: publisherKeys, publisher, recordContract, keyId,
+    publicKey: evidencePublic, evidenceRegistry: readers.evidenceRegistry });
+  evidenceKey = { keyId, txRef: listed.txRef, registeredAtMs: listed.registeredAtMs };
+  notBeforeMs = listed.registeredAtMs;
+  await progress({ status: 'evidence-key-listed' });
+
   async function record(type, summary, details, chainRef, privateCheck) {
+    // Never date a record before its key's listing, even if this machine's clock runs behind NEAR's.
     const entry = await makeEvidence({ seq: records.length + 1, agent, counterparty: payee, caseRef, type, summary,
       previousHash: records.at(-1)?.recordHash ?? ZERO_ROOT, permissionHash: hash, details, chainRef, privateCheck,
-      createdAtMs: Date.now() }, evidenceKeys);
+      createdAtMs: Math.max(Date.now(), notBeforeMs) }, evidenceKeys);
+    entry.envoi.registry = { network, contract: recordContract };
     records.push(entry);
   }
   await record('permission_changed', 'Dana signed Milo’s payment limits.', { display: document.display });
   await record('screen_flagged', 'Hidden instructions found in a message from Ledger Co’s agent.',
     { flaggedText: check.quote, redacted: check.redacted, checks: check.checks }, undefined, check.evidence);
-  const out = env.NEAR_RUN_OUTPUT || 'testnet-run.json';
-  const save = async extra => writeFile(out, JSON.stringify({
-    network, evidenceKeys: { 'ev-1': await publicHex(evidenceKeys.publicKey) },
-    records, ...extra
-  }, null, 2), { flag: 'wx' });
-  // Reserve a fresh run file before the first broadcast to prevent an accidental replay.
-  await save({ status: 'started' });
-  async function progress(extra) {
-    await writeFile(out, JSON.stringify({ network, evidenceKeys: { 'ev-1': await publicHex(evidenceKeys.publicKey) },
-      records, ...extra }, null, 2));
-  }
+  await progress({ status: 'started' });
   const transactionRefs = [];
   async function pay(to, amount, expected) {
     const txRef = await callWithScopedKey({ rpc, keys, sender: agent, receiver: spendContract, method: 'pay',
@@ -100,13 +112,9 @@ async function main() {
   await record('paid', 'Milo paid 0.5 NEAR to Ledger Co on testnet.',
     { to: paid.to, amount: paid.amount }, { network, txRef: paid.txRef });
 
-  const tip = await rpc('query', { request_type: 'call_function', finality: 'final', account_id: recordContract,
-    method_name: 'last', args_base64: 'e30=' });
-  const [last, previousRoot] = JSON.parse(Buffer.from(tip.result));
   const tree = await buildTree(records.map(entry => entry.recordHash));
-  const batch = { batchId: last + 1, root: tree.root, previousRoot, count: records.length };
-  const sealRef = await callWithScopedKey({ rpc, keys: publisherKeys, sender: publisher, receiver: recordContract,
-    method: 'seal', args: { batch_id: batch.batchId, root: batch.root, previous_root: previousRoot, count: batch.count } });
+  const { batch, sealRef } = await sealNextBatch({ rpc, keys: publisherKeys, publisher, recordContract,
+    root: tree.root, count: records.length });
   await progress({ status: 'seal-final', sealRef, transactionRefs });
   if (!await readers.publicRecord.verifySeal(sealRef, batch)) throw new Error('Could not verify testnet seal ' + sealRef);
   const permission = { document, ownerKey: signed.publicKey, signature: signed.signature, registry: { network, contract: recordContract } };
