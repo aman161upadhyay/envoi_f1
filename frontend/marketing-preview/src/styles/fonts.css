@@ -1,9 +1,2 @@
-@font-face {
-  font-family: 'Envoi UI';
-  font-style: normal;
-  font-display: swap;
-  font-weight: 300;
-  src: local('Segoe UI Light'), local('SegoeUI-Light');
-}
-
-html { font-synthesis: none; }
+@font-face { font-family:"Figtree Variable"; src:url('/fonts/figtree.woff2') format('woff2'); font-weight:300 900; font-style:normal; font-display:swap; }
+html { font-synthesis:none; }

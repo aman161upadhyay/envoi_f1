@@ -11,57 +11,16 @@ const orbitAgents = [
   {orbitAgents.map((agent, index) => <div class={`ambient-agent ambient-agent-${index + 1}`}><span class="agent-tile"><img src={agent.logo} width="32" height="32" alt="" /></span><span class="agent-label">{agent.name}</span></div>)}
 </div>
 <style>
-  .ambient-agents { position: absolute; inset: 0; pointer-events: none; }
-  .ambient-ring { position: absolute; inset: 5% 3%; border: 1px dashed var(--line-strong); border-radius: 50%; }
-  .ambient-agent { position: absolute; display: flex; flex-direction: column; align-items: center; width: 68px; opacity: .82; transform: translate(-50%, -50%); }
-  .agent-tile { display: grid; place-items: center; width: 56px; height: 56px; border: 1px solid var(--line); border-radius: 16px; background: var(--bg-raised); box-shadow: 0 14px 28px -17px var(--shadow-ink), 0 2px 6px rgba(15,42,67,.08); }
-  .agent-tile img { width: 32px; height: 32px; object-fit: contain; }
-  :global(:root[data-theme="dark"]) .agent-tile img { background: #eef5fb; border-radius: 8px; padding: 3px; }
-  .agent-label { margin-top: 7px; color: var(--ink-muted); font-size: 13px; line-height: 1.2; text-align: center; }
-  .ambient-agent-1 { left: 50%; top: 5%; }
-  .ambient-agent-2 { left: 90.7%; top: 27.5%; }
-  .ambient-agent-3 { left: 90.7%; top: 72.5%; }
-  .ambient-agent-4 { left: 50%; top: 95%; }
-  .ambient-agent-5 { left: 9.3%; top: 72.5%; }
-  .ambient-agent-6 { left: 9.3%; top: 27.5%; }
-  @media (prefers-reduced-motion: no-preference) {
-    .ambient-agent { animation: hero-agent-orbit 84s linear infinite; }
-    .ambient-agent-2 { animation-delay: -14s; }
-    .ambient-agent-3 { animation-delay: -28s; }
-    .ambient-agent-4 { animation-delay: -42s; }
-    .ambient-agent-5 { animation-delay: -56s; }
-    .ambient-agent-6 { animation-delay: -70s; }
-    :global(body.page-hidden) .ambient-agent { animation-play-state: paused; }
-    @keyframes hero-agent-orbit {
-      0%, 100% { left: 50%; top: 5%; }
-      12.5% { left: 83%; top: 18%; }
-      25% { left: 97%; top: 50%; }
-      37.5% { left: 83%; top: 82%; }
-      50% { left: 50%; top: 95%; }
-      62.5% { left: 17%; top: 82%; }
-      75% { left: 3%; top: 50%; }
-      87.5% { left: 17%; top: 18%; }
-    }
-  }
-  @media (max-width: 680px) {
-    .ambient-ring { inset: 5% 2%; border-radius: 38%; }
-    .ambient-agent { width: 56px; }
-    .agent-tile { width: 44px; height: 44px; border-radius: 13px; }
-    .agent-tile img { width: 26px; height: 26px; }
-    .agent-label { font-size: 11px; }
-    .ambient-agent-2, .ambient-agent-3 { left: 98%; }
-    .ambient-agent-5, .ambient-agent-6 { left: 2%; }
-  }
-  @media (max-width: 680px) and (prefers-reduced-motion: no-preference) {
-    @keyframes hero-agent-orbit {
-      0%, 100% { left: 50%; top: 5%; }
-      12.5% { left: 95%; top: 18%; }
-      25% { left: 98%; top: 50%; }
-      37.5% { left: 95%; top: 82%; }
-      50% { left: 50%; top: 95%; }
-      62.5% { left: 5%; top: 82%; }
-      75% { left: 2%; top: 50%; }
-      87.5% { left: 5%; top: 18%; }
-    }
-  }
+.ambient-agents { position:absolute; inset:0; pointer-events:none; }
+.ambient-ring { position:absolute; inset:8%; border:1px dashed var(--line-strong); border-radius:50%; }
+.ambient-ring::after { content:''; position:absolute; inset:15%; border:1px solid var(--line); border-radius:50%; }
+.ambient-agent { position:absolute; width:80px; display:flex; flex-direction:column; align-items:center; left:50%; top:50%; animation:hero-agent-orbit 84s linear infinite; }
+.agent-tile { display:grid; place-items:center; width:64px; height:64px; background:var(--bg-raised); border:1px solid var(--line); border-radius:20px; box-shadow:0 10px 24px -16px var(--shadow-ink); }
+.agent-tile img { width:32px; height:32px; object-fit:contain; }
+.agent-label { margin-top:8px; color:var(--ink-muted); font-size:12px; font-weight:500; }
+.ambient-agent-2 { animation-delay:-14s; } .ambient-agent-3 { animation-delay:-28s; } .ambient-agent-4 { animation-delay:-42s; } .ambient-agent-5 { animation-delay:-56s; } .ambient-agent-6 { animation-delay:-70s; }
+@keyframes hero-agent-orbit { from { transform:translate(-50%,-50%) rotate(0deg) translateX(var(--orbit-radius)) rotate(0deg); } to { transform:translate(-50%,-50%) rotate(360deg) translateX(var(--orbit-radius)) rotate(-360deg); } }
+:global(body.page-hidden) .ambient-agent { animation-play-state:paused; }
+:global(:root[data-theme="dark"]) .agent-tile img { background:#eef5fb; border-radius:6px; padding:3px; }
+@media(prefers-reduced-motion:reduce) { .ambient-agent { animation:none; transform:translate(-50%,-50%) rotate(var(--angle,0deg)) translateX(var(--orbit-radius)) rotate(calc(-1 * var(--angle,0deg))); } .ambient-agent-2 { --angle:60deg; } .ambient-agent-3 { --angle:120deg; } .ambient-agent-4 { --angle:180deg; } .ambient-agent-5 { --angle:240deg; } .ambient-agent-6 { --angle:300deg; } }
 </style>

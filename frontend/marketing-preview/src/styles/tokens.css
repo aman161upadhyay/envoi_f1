@@ -38,7 +38,7 @@
   --soft-white: rgba(255, 255, 255, .7);
   --shadow-ink: rgba(15, 42, 67, .14);
   --header-bg: rgba(246, 249, 252, .95);
-  --display: 'Envoi UI', 'Segoe UI Light', 'Segoe UI', system-ui, sans-serif;
+  --display: "Figtree Variable", system-ui, sans-serif;
   --sans: var(--display);
   --mono: var(--display);
   --radius: 18px;
