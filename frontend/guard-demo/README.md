@@ -99,3 +99,9 @@ A failed full rehearsal can leave durable records awaiting a seal. Recover them 
 API-free validation on November 7 also used a virtual browser authenticator to sign the disposable owner’s real testnet policy, then submitted it with a separate scoped NEAR key. The runner validated that confirmed version 2 policy. The local rehearsal now reads the ignored signed-policy-passkey.json file. A physical-device acceptance run remains outstanding.
 
 The persistent batcher registered a new evidence key and sealed a record using the passkey-signed permission in transaction `6X5bHczCKB6Fn6U4jtAEHH9JS6WLGnrdAf5abNdEAy4F`. Signature, owner registry, policy, batch inclusion and seal checks passed. The record account still has deployment keys, so the locked-contract check remains a failure.
+
+## NEAR AI account readiness
+
+A successful configuration preflight confirms that a key and model are present. The workspace must also have usable credits and a spending limit. NEAR AI currently rejects inference for the supplied hackathon key with HTTP 402 and the message "No spending limit configured. Please contact support to set up credits." The live runner stops before registering a new evidence key or submitting either demo payment.
+
+Use a canonical model ID while x-no-aliasing is enabled. The provider identified z-ai/glm-5.3-flash as the canonical replacement for the earlier GLM alias during the November 8 check; that value is pinned in the ignored local configuration.

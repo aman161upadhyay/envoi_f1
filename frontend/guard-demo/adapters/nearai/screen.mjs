@@ -36,8 +36,18 @@ export function nearAiScreen({ apiKey, model, fetcher = fetch, verifier = verify
       signal: AbortSignal.timeout(45000)
     });
     if (!response.ok) {
-      const error = new Error('NEAR AI returned HTTP ' + response.status);
+      let detail = '';
+      try {
+        const body = await response.json();
+        detail = String(body.error?.message ?? body.message ?? '')
+          .replaceAll(apiKey, '[redacted]').replace(/[\r\n]/g, ' ').slice(0, 500);
+      } catch { /* An HTTP failure can have an empty or non-JSON response. */ }
+      const message = response.status === 402
+        ? 'NEAR AI credits or spending limit are unavailable.'
+        : 'NEAR AI returned HTTP ' + response.status + '.';
+      const error = new Error(message + (detail ? ' ' + detail : ''));
       error.status = response.status;
+      if (response.status === 402) error.code = 'NEAR_AI_CREDITS_UNAVAILABLE';
       throw error;
     }
     return Buffer.from(await response.arrayBuffer());
