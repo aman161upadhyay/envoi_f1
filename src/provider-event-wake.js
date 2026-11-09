@@ -36,7 +36,7 @@ function originSet(value){
   const values=Array.isArray(value)?value:String(value||'').split(',').map(value=>value.trim()).filter(Boolean);
   return new Set(values.map(value=>{let url;try{url=new URL(value);}catch{throw new Error('Invalid provider wake origin');}if(url.protocol!=='https:'||url.port||url.username||url.password||url.pathname!=='/'||url.search||url.hash||net.isIP(url.hostname.replace(/^\[|\]$/g,''))||url.origin!==value)throw new Error('Invalid provider wake origin');return url.origin;}));
 }
-export function createProviderEventWake({httpWake,store,mcpEventsEnabled=false,grokTriggerEnabled=false,key,env=process.env,now=()=>new Date().toISOString(),audit=async()=>{},resolveDestination,authorizeOwner=async()=>{},validateCursor=async()=>{},eventHistory=async()=>({cursor:null,truncated:false,events:[]})}={}){
+export function createProviderEventWake({httpWake,store,mcpEventsEnabled=false,grokTriggerEnabled=false,key,env=process.env,now=()=>new Date().toISOString(),audit=async()=>{},observe=record=>console.error(JSON.stringify(record)),resolveDestination,authorizeOwner=async()=>{},validateCursor=async()=>{},eventHistory=async()=>({cursor:null,truncated:false,events:[]})}={}){
   const dataKey=key||((mcpEventsEnabled||grokTriggerEnabled)&&env.ENVOI_DATA_ENCRYPTION_KEY?crypto.createHash('sha256').update(env.ENVOI_DATA_ENCRYPTION_KEY).digest():null);
   if((mcpEventsEnabled||grokTriggerEnabled)&&(!Buffer.isBuffer(dataKey)||dataKey.length!==32))throw new Error('Provider wake requires the server data encryption key');
   const destination=createWakeDestination({env});const resolve=resolveDestination||destination.resolve;
@@ -93,12 +93,36 @@ export function createProviderEventWake({httpWake,store,mcpEventsEnabled=false,g
         if(!(response.status>=200&&response.status<300)||response.bodyTooLarge||!equal(echoed,challenge))throw callbackError('challenge_failed');
         verified=true;
       }
-      const history=await eventHistory(binding,params.cursor??null);const id=identityId(binding,params.name,url);
-      const priorChanged=existing?.status==='active'&&existing.secretEncrypted&&!equal(existing.secretHash,hash(params.delivery.secret));
-      const sub=await httpWake.createProfile(binding,'mcp_events',{id,url,quotaReserved:true,expiresAt:new Date(time()+(params.ttlMs??604800000)).toISOString(),eventName:params.name,cursor:history.cursor||null,secretHash:hash(params.delivery.secret),secretEncrypted:encode(params.delivery.secret,id),previousSecretEncrypted:priorChanged?existing.secretEncrypted:existing?.previousSecretEncrypted,previousSecretUntil:priorChanged?new Date(time()+600000).toISOString():existing?.previousSecretUntil});
-      if(verified)await store.putJson(cache,{key:oneWayKey,expiresAt:new Date(time()+3600000).toISOString()});
-      for(const event of history.events||[])await httpWake.queueProfile(sub,event.type,event.reason,event.cursor);
-      return {id,refreshBefore:sub.expiresAt,cursor:history.cursor||null,truncated:Boolean(history.truncated)};
+      // Verification performs network I/O without the inbox lock. Activation, its
+      // cache and catch-up queue must then commit together: a later storage failure
+      // must not expose a half-created subscription to the delivery worker.
+      const id=identityId(binding,params.name,url),started=time();let phase='acquire';
+      try{return await store.withTransaction([`inbox:${binding.inboxId}:mutations`],async()=>{
+        phase='history';const history=await eventHistory(binding,params.cursor??null);
+        phase='subscription';
+        const current=(await httpWake.profileRecords(binding,'mcp_events')).find(sub=>sub.id===id);
+        const priorChanged=current?.status==='active'&&current.secretEncrypted&&!equal(current.secretHash,hash(params.delivery.secret));
+        const sub=await httpWake.createProfile(binding,'mcp_events',{id,url,quotaReserved:true,expiresAt:new Date(time()+(params.ttlMs??604800000)).toISOString(),eventName:params.name,cursor:history.cursor||null,secretHash:hash(params.delivery.secret),secretEncrypted:encode(params.delivery.secret,id),previousSecretEncrypted:priorChanged?current.secretEncrypted:current?.previousSecretEncrypted,previousSecretUntil:priorChanged?new Date(time()+600000).toISOString():current?.previousSecretUntil});
+        phase='verification_cache';if(verified)await store.putJson(cache,{key:oneWayKey,expiresAt:new Date(time()+3600000).toISOString()});
+        phase='replay';
+        // With the inbox locked, the lane cannot drain during catch-up. Its first
+        // hint stays queued and later hints overwrite one dirty marker. Preserve
+        // those first/latest hints without hundreds of redundant database writes.
+        const matching=(history.events||[]).filter(event=>event.type===params.name.replace(/^envoi\./,'wake.'));
+        const catchUp=matching.length>1?[matching[0],matching.at(-1)]:matching;
+        for(const event of catchUp)await httpWake.queueProfile(sub,event.type,event.reason,event.cursor);
+        phase='commit';
+        return {id,refreshBefore:sub.expiresAt,cursor:history.cursor||null,truncated:Boolean(history.truncated)};
+      });}catch(error){
+        if(!error?.rpcCode&&(!Number.isInteger(error?.statusCode)||error.statusCode>=500)){
+          // Error messages/stacks can contain SQL values, callback URLs or secrets.
+          // Only fixed stages/classes/codes and the opaque subscription id leave here.
+          const errorClass=['Error','TypeError','RangeError','SyntaxError','AbortError','TimeoutError'].includes(error?.name)?error.name:'Error';
+          const code=['40001','40P01','53300','57014','55P03','08006','57P01','ETIMEDOUT','ECONNRESET','ENOSPC','EPERM','EBUSY','LOCK_TIMEOUT'].includes(error?.code)?error.code:'unexpected';
+          try{observe({event:'envoi.mcp_events_subscribe_failed',subscriptionId:id,phase,errorClass,code,durationMs:Math.max(0,time()-started)});}catch{/* Diagnostics must preserve the original error. */}
+        }
+        throw error;
+      }
     },
     async unsubscribe(identity,params,version){requireEvents(identity,version);params=eventParams(params);paramsValid(params,false);const binding=bound(identity);let url;try{url=destination.canonical(params.delivery.url);}catch{throw invalid();}const id=identityId(binding,params.name,url);const sub=(await httpWake.profileRecords(binding,'mcp_events')).find(sub=>sub.id===id);if(sub)await httpWake.endProfile(binding,id);await store.deleteJson(cachePath(binding,url));return {};},
     async putGrok(identity,params){

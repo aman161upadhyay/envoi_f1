@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import http from 'node:http';
 import {mkdtemp,rm,readFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import path from 'node:path';
@@ -9,8 +10,9 @@ import {createHttpWake} from '../src/http-wake.js';
 import {createProviderEventWake,signProviderWebhook} from '../src/provider-event-wake.js';
 import {createMcpWakeTools,mcpWakeTools} from '../src/mcp-wake-tools.js';
 import {createWakeTransport} from '../src/http-wake-transport.js';
-import {EventEmitter} from 'node:events';
-import {wakeSubscriptionPath,wakeQueueDir} from '../src/http-wake-paths.js';
+import {EventEmitter,once} from 'node:events';
+import {handleAgentMcp} from '../src/agent-mcp.js';
+import {wakeSubscriptionPath,wakeSubscriptionIndexDir,wakeQueueDir,wakeLiveDir} from '../src/http-wake-paths.js';
 
 const pair=crypto.generateKeyPairSync('ed25519');
 const keys=JSON.stringify([{kid:'provider_test',privateKey:pair.privateKey.export({type:'pkcs8',format:'der'}).toString('base64'),activeFrom:'2026-01-01T00:00:00Z'}]);
@@ -27,15 +29,15 @@ async function harness(t,kind='file',overrides={},providerOverrides={}){
     store={withTransaction:base.withTransaction.bind(base),getJson:(p,d)=>base.getJson(`${prefix}/${p}`,d),putJson:(p,v)=>base.putJson(`${prefix}/${p}`,v),listJson:p=>base.listJson(`${prefix}/${p}`),deleteJson:p=>base.deleteJson(`${prefix}/${p}`)};t.after(async()=>{try{await base.deleteJsonTree(prefix);}finally{await base.close();}});
   }else{const dir=await mkdtemp(path.join(process.cwd(),'.provider-wake-test-'));store=new FileStore(dir);await store.init();t.after(()=>rm(dir,{recursive:true,force:true}));}
   let clock=Date.parse('2026-10-24T12:00:00Z'),response={status:202,failureClass:null},beforeResolve,beforeSend,verificationResponse;
-  const sent=[],audits=[],state={family:{refreshExpiresAt:'2027-01-01T00:00:00Z'},agent:{status:'active',onboardingStatus:'approved',permissions:['receive_agent_messages']},installation:{status:'active'}};
+  const sent=[],audits=[],diagnostics=[],state={family:{refreshExpiresAt:'2027-01-01T00:00:00Z'},agent:{status:'active',onboardingStatus:'approved',permissions:['receive_agent_messages']},installation:{status:'active'}};
   const now=()=>new Date(clock).toISOString();
   const resolveDestination=async url=>{await beforeResolve?.();return {url,addresses:['192.0.43.11']};};
   const options={store,enabled:true,installationsEnabled:true,mcpWakeEnabled:true,mcpEventsEnabled:true,grokTriggerEnabled:true,env:{ENVOI_WAKE_SIGNING_KEYS:keys},facts:async()=>state,now,random:()=>0.5,resolveDestination,observe:()=>{},audit:async(...args)=>audits.push(args),transport:async request=>{sent.push(request);await beforeSend?.(request);const body=JSON.parse(request.bodyText);return body.type==='verification'?(verificationResponse||{status:200,failureClass:null,bodyText:JSON.stringify({challenge:body.challenge})}):response;},...overrides};
   const http=createHttpWake(options);
-  const providerOptions={httpWake:http,store,mcpEventsEnabled:options.mcpEventsEnabled,grokTriggerEnabled:options.grokTriggerEnabled,key:Buffer.alloc(32,7),env:{ENVOI_MCP_EVENTS_CALLBACK_ORIGINS:'https://callbacks.envoi-provider.com',ENVOI_GROK_TRIGGER_ORIGINS:'https://triggers.envoi-provider.com'},now,resolveDestination,audit:options.audit,eventHistory:async()=>({cursor:'00000000000000000012',truncated:false,events:[]}),...providerOverrides};
+  const providerOptions={httpWake:http,store,mcpEventsEnabled:options.mcpEventsEnabled,grokTriggerEnabled:options.grokTriggerEnabled,key:Buffer.alloc(32,7),env:{ENVOI_MCP_EVENTS_CALLBACK_ORIGINS:'https://callbacks.envoi-provider.com',ENVOI_GROK_TRIGGER_ORIGINS:'https://triggers.envoi-provider.com'},now,resolveDestination,audit:options.audit,observe:record=>diagnostics.push(record),eventHistory:async()=>({cursor:'00000000000000000012',truncated:false,events:[]}),...providerOverrides};
   const provider=createProviderEventWake(providerOptions);await http.startup();
   const tx=fn=>store.withTransaction([`inbox:${identity.inboxId}:mutations`],fn);
-  return {store,http,provider,options,providerOptions,now,tx,state,sent,audits,advance:ms=>clock+=ms,response:r=>response=r,beforeResolve:fn=>beforeResolve=fn,beforeSend:fn=>beforeSend=fn,verificationResponse:r=>verificationResponse=r};
+  return {store,http,provider,options,providerOptions,now,tx,state,sent,audits,diagnostics,advance:ms=>clock+=ms,response:r=>response=r,beforeResolve:fn=>beforeResolve=fn,beforeSend:fn=>beforeSend=fn,verificationResponse:r=>verificationResponse=r};
 }
 function parity(name,operation){for(const kind of ['file','postgres'])test(`${kind}: ${name}`,{skip:kind==='postgres'&&!process.env.DATABASE_URL},t=>operation(t,kind));}
 const verifyHmac=(request,key=secret,index=0)=>{
@@ -58,6 +60,97 @@ parity('MCP events verify, renew deterministically, rotate secrets and reuse the
 });
 parity('provider retry preserves event identity and raw bytes with a fresh signing clock',async(t,kind)=>{
   const h=await harness(t,kind);await h.provider.subscribe(identity,parameters(),protocol);await h.tx(()=>h.http.trigger({...binding,reason:'message_delivered'}));h.response({status:429,failureClass:'http_retryable',retryAfterSeconds:60});await h.http.runOnce();const first=h.sent.at(-1);h.advance(59000);assert.equal(await h.http.runOnce(),false);h.advance(1000);h.response({status:202,failureClass:null});await h.http.runOnce();const second=h.sent.at(-1);assert.equal(second.bodyText,first.bodyText);assert.equal(second.headers['webhook-id'],first.headers['webhook-id']);assert.notEqual(second.headers['webhook-timestamp'],first.headers['webhook-timestamp']);verifyHmac(second);
+});
+parity('post-verification persistence failure rolls back subscription activation and catch-up notifications',async(t,kind)=>{
+  const h=await harness(t,kind,{}, {eventHistory:async()=>({cursor:'00000000000000000012',truncated:false,events:[{type:'wake.work_available',reason:'message_delivered',cursor:'00000000000000000012'}]})});
+  const put=h.store.putJson.bind(h.store),failure=new Error('Injected notification index write failure');
+  h.store.putJson=async(p,value)=>{if(p.startsWith(`${wakeLiveDir}${path.sep}`))throw failure;return put(p,value);};
+  await assert.rejects(h.provider.subscribe(identity,parameters(),protocol),error=>error===failure);
+  assert.equal(JSON.parse(h.sent[0].bodyText).type,'verification');
+  assert.equal(h.diagnostics.length,1);assert.equal(h.diagnostics[0].phase,'replay');
+  assert.deepEqual(await h.http.profileRecords(binding,'mcp_events'),[]);
+  for(const dir of [wakeSubscriptionIndexDir,wakeQueueDir,wakeLiveDir,'http-wake/verification'])assert.deepEqual(await h.store.listJson(dir),[]);
+  assert.equal(await h.http.runOnce(),false);
+  h.store.putJson=put;
+  const retry=await h.provider.subscribe(identity,parameters(),protocol);
+  assert.equal((await h.http.profileRecords(binding,'mcp_events')).length,1);
+  assert.equal((await h.store.listJson(wakeQueueDir)).length,1);
+  assert.equal(await h.http.runOnce(),true);
+  assert.equal(JSON.parse(h.sent.at(-1).bodyText).name,'envoi.work_available');
+  assert.equal((await h.store.getJson(wakeSubscriptionPath(binding.agentId,retry.id))).delivery.state,'healthy');
+});
+parity('failed secret renewal preserves the working subscription and its queued notification',async(t,kind)=>{
+  const h=await harness(t,kind);const created=await h.provider.subscribe(identity,parameters(),protocol);
+  await h.tx(()=>h.http.trigger({...binding,reason:'message_delivered',cursor:'00000000000000000013'}));
+  const before=await h.store.getJson(wakeSubscriptionPath(binding.agentId,created.id));
+  const queued=await h.store.listJson(wakeQueueDir),put=h.store.putJson.bind(h.store),failure=new Error('Injected verification cache write failure');
+  h.store.putJson=async(p,value)=>{if(p.startsWith('http-wake/verification/'))throw failure;return put(p,value);};
+  h.advance(1000);
+  await assert.rejects(h.provider.subscribe(identity,parameters({delivery:{...parameters().delivery,secret:secondSecret}}),protocol),error=>error===failure);
+  assert.equal(h.diagnostics[0].phase,'verification_cache');
+  assert.deepEqual(await h.store.getJson(wakeSubscriptionPath(binding.agentId,created.id)),before);
+  assert.deepEqual(await h.store.listJson(wakeQueueDir),queued);
+  h.store.putJson=put;
+  assert.equal(await h.http.runOnce(),true);verifyHmac(h.sent.at(-1),secret);
+});
+test('subscription diagnostics expose only bounded failure facts and cannot replace the error',async t=>{
+  const failure=Object.assign(new Error(`${secret} https://callbacks.envoi-provider.com/private SQL_VALUE`),{code:'57014'});
+  const h=await harness(t,'file',{}, {eventHistory:async()=>{throw failure;}});
+  await assert.rejects(h.provider.subscribe(identity,parameters({_meta:{private:'META_NOT_LOGGED'}}),protocol),error=>error===failure);
+  assert.deepEqual(h.diagnostics,[{event:'envoi.mcp_events_subscribe_failed',subscriptionId:h.diagnostics[0].subscriptionId,phase:'history',errorClass:'Error',code:'57014',durationMs:0}]);
+  assert.match(h.diagnostics[0].subscriptionId,/^evtsub_[0-9a-f]{20}$/);
+  for(const marker of [secret,'callbacks.envoi-provider.com','SQL_VALUE','META_NOT_LOGGED'])assert.equal(JSON.stringify(h.diagnostics).includes(marker),false);
+  const brokenObserver=createProviderEventWake({...h.providerOptions,httpWake:createHttpWake(h.options),observe:()=>{throw new Error('Observer failed');}});
+  await assert.rejects(brokenObserver.subscribe(identity,parameters(),protocol),error=>error===failure);
+});
+for(const eventName of ['envoi.work_available','envoi.control_changed'])parity(`${eventName}: maximum retained history uses bounded storage work and preserves catch-up hints`,async(t,kind)=>{
+  const cursor=n=>String(n).padStart(20,'0');
+  const events=Array.from({length:1000},(_,n)=>({type:n%2?'wake.control_changed':'wake.work_available',reason:n%2?'agent_paused':n===0?'agent_resumed':'message_delivered',cursor:cursor(n+1)}));
+  const h=await harness(t,kind,{}, {eventHistory:async()=>({cursor:cursor(1000),truncated:true,events})});
+  let writes=0;const put=h.store.putJson.bind(h.store);h.store.putJson=(p,value)=>{writes++;return put(p,value);};
+  const created=await h.provider.subscribe(identity,parameters({name:eventName,cursor:cursor(0)}),protocol);
+  assert.equal(created.cursor,cursor(1000));assert.equal(created.truncated,true);
+  assert.ok(writes<40,`Retained history caused ${writes} writes before subscribe returned`);
+  assert.equal(await h.http.runOnce(),true);
+  const first=JSON.parse(h.sent.at(-1).bodyText);assert.equal(first.name,eventName);assert.equal(first.data.reason,eventName==='envoi.work_available'?'agent_resumed':'agent_paused');assert.equal(first.cursor,cursor(1000));
+  assert.equal(await h.http.runOnce(),true);
+  const last=JSON.parse(h.sent.at(-1).bodyText);assert.equal(last.name,eventName);assert.equal(last.data.reason,eventName==='envoi.work_available'?'message_delivered':'agent_paused');assert.equal(last.cursor,cursor(1000));
+  assert.equal(await h.http.runOnce(),false);
+});
+parity('dispatcher cannot send catch-up events before the subscribe transaction commits',async(t,kind)=>{
+  const h=await harness(t,kind,{}, {eventHistory:async()=>({cursor:'00000000000000000012',truncated:false,events:[{type:'wake.work_available',reason:'message_delivered',cursor:'00000000000000000012'}]})});
+  let reached,release,stagedPath;const ready=new Promise(resolve=>reached=resolve),gate=new Promise(resolve=>release=resolve);
+  const put=h.store.putJson.bind(h.store);
+  h.store.putJson=async(p,value)=>{await put(p,value);if(p.startsWith(`${wakeLiveDir}${path.sep}`)){stagedPath=p;reached();await gate;}};
+  const pending=h.provider.subscribe(identity,parameters(),protocol);
+  try{
+    await Promise.race([ready,pending.then(()=>{throw new Error('Subscribe completed before the commit barrier');})]);
+    // FileStore serializes outside readers behind the transaction; its index is
+    // not on disk yet. PostgreSQL readers can observe the committed empty index.
+    if(kind==='file')await assert.rejects(readFile(h.store.file(stagedPath)),{code:'ENOENT'});
+    else assert.equal(await h.http.runOnce(),false);
+    assert.equal(h.sent.length,1);
+  }finally{release();await pending;h.store.putJson=put;}
+  assert.equal(await h.http.runOnce(),true);
+  assert.equal(JSON.parse(h.sent.at(-1).bodyText).name,'envoi.work_available');
+});
+test('retained catch-up returns its HTTP subscribe result before the socket idle timeout',async t=>{
+  const events=Array.from({length:200},(_,n)=>({type:'wake.work_available',reason:'message_delivered',cursor:String(n+1).padStart(20,'0')}));
+  const h=await harness(t,'file',{}, {eventHistory:async()=>({cursor:events.at(-1).cursor,truncated:false,events})});
+  const put=h.store.putJson.bind(h.store);
+  // Model database round-trip latency. Per-row replay used to outlive the HTTP
+  // idle deadline even though verification succeeded and delivery had started.
+  h.store.putJson=async(p,value)=>{await new Promise(resolve=>setTimeout(resolve,25));return put(p,value);};
+  let handling=Promise.resolve();
+  const server=http.createServer((req,res)=>{
+    req.setTimeout(2000);
+    handling=handleAgentMcp(req,res,{identity,providerEvents:h.provider,eventsEnabled:true,callRest:async()=>{throw new Error('Not a tool call');}}).catch(()=>{if(!res.destroyed){res.writeHead(500);res.end();}});
+  });
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  try{
+    const response=await fetch(`http://127.0.0.1:${server.address().port}/mcp`,{method:'POST',headers:{'content-type':'application/json',accept:'application/json, text/event-stream','mcp-protocol-version':protocol},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'events/subscribe',params:parameters()}),signal:AbortSignal.timeout(10000)});
+    assert.equal(response.status,200);const body=await response.json();assert.match(body.result.id,/^evtsub_[0-9a-f]{20}$/);assert.equal(body.result.cursor,events.at(-1).cursor);
+  }finally{await handling;server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
 parity('unsubscribe deletes secrets, invalidates verification and fences previous generations',async(t,kind)=>{
   const h=await harness(t,kind);const first=await h.provider.subscribe(identity,parameters(),protocol);await h.tx(()=>h.http.trigger({...binding,reason:'message_delivered'}));
