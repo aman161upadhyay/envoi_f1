@@ -1,7 +1,7 @@
 {
   "$id": "provider-connector-tools/schemas.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "provider-connector-tools v1: the classification of every existing /mcp tool by effect and scope, and the rules a reviewed provider connector must follow. Derived from the live tool table; adds no tool, scope, route or flag.",
+  "description": "provider-connector-tools v2: the classification of every existing /mcp tool by effect and scope, and the rules a reviewed provider connector must follow. Derived from the live tool table, including the group case tools.",
   "x-tool-classification": [
     {
       "name": "envoi_agent_info",
@@ -72,6 +72,42 @@
       "outwardEffect": true,
       "proposedPerUseProviderApproval": true,
       "minimumSubmissionRole": "reply",
+      "leaseFenced": false,
+      "idempotencyKeyRequired": true
+    },
+    {
+      "name": "envoi_start_group_case",
+      "permission": "send_agent_messages",
+      "scope": "envoi.send",
+      "effect": "sensitive_write",
+      "stateChange": "case_created",
+      "outwardEffect": true,
+      "proposedPerUseProviderApproval": true,
+      "minimumSubmissionRole": null,
+      "leaseFenced": false,
+      "idempotencyKeyRequired": true
+    },
+    {
+      "name": "envoi_read_group_case",
+      "permission": "read",
+      "scope": "envoi.agent or envoi.send",
+      "effect": "read",
+      "stateChange": "none",
+      "outwardEffect": false,
+      "proposedPerUseProviderApproval": false,
+      "minimumSubmissionRole": null,
+      "leaseFenced": false,
+      "idempotencyKeyRequired": false
+    },
+    {
+      "name": "envoi_send_group_message",
+      "permission": "send_agent_messages",
+      "scope": "envoi.send",
+      "effect": "sensitive_write",
+      "stateChange": "message_sent",
+      "outwardEffect": true,
+      "proposedPerUseProviderApproval": true,
+      "minimumSubmissionRole": null,
       "leaseFenced": false,
       "idempotencyKeyRequired": true
     },
@@ -265,7 +301,10 @@
       "envoi_begin_asset_upload",
       "envoi_complete_asset_upload",
       "envoi_asset_download",
-      "envoi_grant_asset"
+      "envoi_grant_asset",
+      "envoi_start_group_case",
+      "envoi_read_group_case",
+      "envoi_send_group_message"
     ],
     "note": "Adding a tool needs its own review by Meta and a revision of this contract."
   },
@@ -275,6 +314,7 @@
       "envoi_list_cases",
       "envoi_read_case",
       "envoi_list_messages",
+      "envoi_read_group_case",
       "envoi_claim_work",
       "envoi_renew_work",
       "envoi_acknowledge_work",
@@ -290,6 +330,9 @@
       "envoi_list_messages",
       "envoi_start_case",
       "envoi_send_message",
+      "envoi_start_group_case",
+      "envoi_read_group_case",
+      "envoi_send_group_message",
       "envoi_send_proposal",
       "envoi_send_decision",
       "envoi_send_completion",

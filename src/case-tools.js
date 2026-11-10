@@ -85,6 +85,9 @@ export function createCaseTools({ store, codec, withSession, load, send, evaluat
     if (!proposal.options.some(o => o.id === value.id && !o.expired) || proposal.expiresAt && proposal.expiresAt <= store.now()) throw caseToolError('OPTION_NOT_LIVE');
     return value;
   };
+  const groupReplyTarget = (ctx, reference) => reference
+    ? resolve(ctx, 'm', reference, ctx.messages)
+    : requireValue(ctx.messages.find(message => message.id === ctx.workMessage.groupCase.messageId));
   const methods = {
     envoi_case_snapshot: async (ctx, args) => snapshot(ctx, args),
     envoi_case_reply: async (ctx, args, id) => {
@@ -93,13 +96,18 @@ export function createCaseTools({ store, codec, withSession, load, send, evaluat
         if (args.inReplyTo) throw caseToolError('NOT_SUPPORTED_FOR_WORK');
         if (args.intent !== 'message') throw caseToolError('NOT_SUPPORTED_FOR_WORK');
         target = ctx.workMessage;
+      } else if (ctx.workMessage.groupCase) {
+        target = groupReplyTarget(ctx, args.inReplyTo);
       } else {
         target = args.inReplyTo ? resolve(ctx, 'm', args.inReplyTo, ctx.messages) : ctx.session.workKind === 'human_decision'
           ? requireValue(ctx.messages.filter(m => m.senderAgentId === ctx.session.counterpartyAgentId && m.senderType === 'agent').sort(byTime).at(-1)) : ctx.workMessage;
         if (target.senderAgentId !== ctx.session.counterpartyAgentId || target.kind === 'humanInstruction' || target.kind === 'humanInstructionReply' || target.kind === 'humanDecision') throw caseToolError('REF_NOT_FOUND');
       }
-      const message = await send(ctx, { id, type: 'message', intent: args.intent, text: args.text, inReplyTo: target.id });
-      return { messageRef: refs(ctx, 'm', message.id), status: ctx.session.workKind === 'human_instruction' ? 'delivered' : 'queued', recipient: ctx.session.counterparty, inReplyTo: refs(ctx, 'm', target.id), createdAt: message.createdAt, replayed: false };
+      const message = await send(ctx, { id, type: 'message', intent: args.intent, text: args.text, inReplyTo: target.id,
+        ...(args.assigneeAgentIds?.length ? { assigneeAgentIds: args.assigneeAgentIds } : {}) });
+      const group = Boolean(ctx.workMessage.groupCase);
+      return { messageRef: refs(ctx, 'm', message.id), status: group || ctx.session.workKind === 'human_instruction' ? 'delivered' : 'queued',
+        recipient: group ? { kind: 'group' } : ctx.session.counterparty, inReplyTo: refs(ctx, 'm', target.id), createdAt: message.createdAt, replayed: false };
     },
     envoi_case_propose: async (ctx, args, id) => {
       if (currentProposal(ctx)) throw caseToolError('PROPOSAL_EXISTS');
@@ -178,9 +186,17 @@ export function createCaseTools({ store, codec, withSession, load, send, evaluat
           const args = { ...input };
           if (tool.name === 'envoi_case_reply') {
             args.intent ??= 'message';
+            if (args.assigneeAgentIds) {
+              if (!ctx.workMessage.groupCase) throw caseToolError('NOT_SUPPORTED_FOR_WORK');
+              if (args.assigneeAgentIds.some(agentId => agentId === ctx.agent.id || !ctx.workMessage.groupCase.memberAgentIds.includes(agentId))) {
+                throw caseToolError('REF_NOT_FOUND');
+              }
+              args.assigneeAgentIds = [...args.assigneeAgentIds].sort();
+            }
             // Resolve defaults before the digest, across sessions/reclaims.
             if (ctx.session.workKind !== 'human_instruction' && !args.inReplyTo) {
-              const target = ctx.session.workKind === 'human_decision' ? ctx.messages.filter(m => m.senderAgentId === ctx.session.counterpartyAgentId).sort(byTime).at(-1) : ctx.workMessage;
+              const target = ctx.workMessage.groupCase ? groupReplyTarget(ctx) : ctx.session.workKind === 'human_decision'
+                ? ctx.messages.filter(m => m.senderAgentId === ctx.session.counterpartyAgentId).sort(byTime).at(-1) : ctx.workMessage;
               if (target) args.inReplyTo = refs(ctx, 'm', target.id);
             }
           }
@@ -189,7 +205,7 @@ export function createCaseTools({ store, codec, withSession, load, send, evaluat
             if (args.inReplyTo) {
               if (ctx.session.workKind === 'human_instruction') throw caseToolError('NOT_SUPPORTED_FOR_WORK');
               const target = resolve(ctx, 'm', args.inReplyTo, ctx.messages);
-              if (target.senderAgentId !== ctx.session.counterpartyAgentId || target.kind) throw caseToolError('REF_NOT_FOUND');
+              if ((!ctx.workMessage.groupCase && target.senderAgentId !== ctx.session.counterpartyAgentId) || target.kind) throw caseToolError('REF_NOT_FOUND');
             }
             if (args.proposalRef) resolve(ctx, 'p', args.proposalRef, ctx.caseRecord.proposals);
             if (args.optionRef) resolve(ctx, 'o', args.optionRef, ctx.caseRecord.proposals.flatMap(p => p.options));

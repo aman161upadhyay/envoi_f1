@@ -127,6 +127,7 @@ export function projectCaseSnapshot(context, input = {}) {
     || input.eventLimit !== undefined && (!Number.isInteger(input.eventLimit) || input.eventLimit < 1 || input.eventLimit > 50)) throw fail('INVALID_ARGUMENTS', 'Invalid snapshot arguments');
   if (caseRecord.id !== session.caseId || agent.id !== session.agentId) throw new TypeError('Projection scope mismatch');
   const caseEvents = context.caseEvents || caseRecord.events || [];
+  const groupMembers = workMessage?.groupCase && caseRecord.members.map(({ agentId, address }) => ({ agentId, address }));
   const humanIds = new Set(ownHumanIds);
   const counterpartyAgentId = session.counterpartyAgentId || caseRecord.participants?.find(id => id !== session.agentId);
   const actorOf = id => id === session.agentId ? 'you' : id === counterpartyAgentId ? 'other_agent' : humanIds.has(id) ? 'your_human' : 'system';
@@ -141,14 +142,17 @@ export function projectCaseSnapshot(context, input = {}) {
       : ['instruction', 'instruction_reply'].includes(kind) ? null : intents.has(message.intent) ? message.intent : 'other';
     const text = truncateJsonText(message.text, snapshotLimits.eventTextMaxBytes);
     return { ref: ref('m', message.id), kind, actor, at: message.createdAt, intent, ...text,
+      ...(groupMembers ? { actorAgentId: message.senderAgentId } : {}),
       deliveryStatus: actor === 'you' ? delivery[message.status] || null : null };
   };
   let requestedResponse;
   if (input.eventsBefore === undefined) {
-    const message = visibleMessages.find(item => item.id === workMessage?.id);
+    const requestedMessageId = workMessage?.groupCase?.messageId ?? workMessage?.id;
+    const message = visibleMessages.find(item => item.id === requestedMessageId);
     if (!message) throw new TypeError('Work message is absent from the authorized inbox records');
     const event = messageEvent(message);
     requestedResponse = { ref: event.ref, from: event.actor === 'your_human' ? 'your_human' : 'other_agent',
+      ...(groupMembers ? { actorAgentId: message.senderAgentId } : {}),
       kind: event.kind, intent: event.intent, ...truncateJsonText(message.text, snapshotLimits.requestedTextMaxBytes), receivedAt: message.deliveredAt };
   }
   const events = visibleMessages.map(message => ({ id: message.id, createdAt: message.createdAt, value: messageEvent(message) }));
@@ -197,6 +201,7 @@ export function projectCaseSnapshot(context, input = {}) {
     case: { objective: truncateJsonText(Array.from(caseRecord.objective).slice(0, 500).join(''), 2000).text, collaborationMode: caseRecord.collaborationMode,
       status: caseRecord.state, deadline: caseRecord.deadline || null, createdAt: caseRecord.createdAt, updatedAt: caseRecord.updatedAt },
     you: { address: agent.address }, counterparty: session.counterparty.kind === 'human' ? { kind: 'human' } : { kind: 'agent', address: session.counterparty.address },
+    ...(groupMembers ? { groupMembers } : {}),
     ...(requestedResponse ? { requestedResponse } : {}), recentEvents: [], page: { hasOlder: false, olderCursor: null }, proposal, authority,
     allowedActions: [], assets: visibleAssets.slice(0, 10), assetsHasMore: visibleAssets.length > 10, limits: { ...snapshotLimits } };
   result.allowedActions = snapshotAllowedActions(result, allowedTools);

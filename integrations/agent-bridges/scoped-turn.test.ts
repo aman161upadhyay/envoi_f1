@@ -12,10 +12,12 @@ function harness(run: (turn: ScopedModelTurn) => Promise<void>, objective = 'Cur
   session?: string;
   snapshot?: string;
   results?: Record<string, string>;
+  groupMemberAgentIds?: string[];
   beforeEndTurn?: (host: Readonly<{ workId?: string }>) => Promise<void>;
 } = {}) {
   const source = loadContractFixture(sessionContract, options.session ?? 'session-created.json') as Record<string, any>;
   const session = source.response.body.session;
+  if (options.groupMemberAgentIds) session.allowedTools = ['envoi_case_snapshot', 'envoi_case_reply'];
   const requests: any[] = [];
   const fetcher = vi.fn(async (_url, requestOptions) => {
     const request = JSON.parse(requestOptions.body); requests.push(request);
@@ -23,16 +25,27 @@ function harness(run: (turn: ScopedModelTurn) => Promise<void>, objective = 'Cur
     const target = fixture(options.results?.[name] ?? (name === 'envoi_case_snapshot' ? options.snapshot ?? 'snapshot-agent-work' : name === 'envoi_request_human' ? 'request-human' : 'reply-agent-work'));
     const body = target.response.body;
     body.id = request.id;
-    if (name === 'envoi_case_snapshot') {
+    if (name === 'envoi_case_snapshot' || options.groupMemberAgentIds && name === 'envoi_case_reply') {
       const payload = JSON.parse(body.result.content[0].text);
-      payload.result.case.objective = objective;
+      if (name === 'envoi_case_snapshot') {
+        payload.result.case.objective = objective;
+        if (options.groupMemberAgentIds) {
+          payload.result.allowedActions = ['envoi_case_reply'];
+          payload.result.groupMembers = options.groupMemberAgentIds.map(agentId => ({ agentId, address: `${agentId}@envoi.example` }));
+          payload.result.requestedResponse.actorAgentId = options.groupMemberAgentIds[0];
+        }
+      } else {
+        payload.result.recipient = { kind: 'group' };
+        payload.result.status = 'delivered';
+      }
       body.result.content[0].text = JSON.stringify(payload);
     }
     return Response.json(body);
   });
   const channel = new CaseSessionChannel(source.response.body, {
     agentId: session.agentId, workId: session.workId, caseId: session.caseId, workKind: session.workKind,
-    counterpartyAddress: session.counterparty.address, agentAddress: source.client.modelVisible.agentAddress
+    counterpartyAddress: session.counterparty.address, agentAddress: source.client.modelVisible.agentAddress,
+    groupMemberAgentIds: options.groupMemberAgentIds
   }, { origin: 'https://envoi.example', fetch: fetcher as typeof fetch });
   channels.push(channel);
   const admit = vi.fn(async () => {});
@@ -62,6 +75,21 @@ describe('trusted scoped adapter turn boundary', () => {
     const test = harness(async () => 'Untrusted provider text' as never);
     await test.process();
     expect(test.requests.map(request => request.params.name)).toEqual(['envoi_case_snapshot']);
+  });
+
+  it('presents group work and forwards a follow-up assignment through the scoped reply tool', async () => {
+    const groupMemberAgentIds = ['agent_first', 'agent_second', 'agent_third'];
+    const args = { text: 'Please check the result', idempotencyKey: 'follow-up', assigneeAgentIds: ['agent_third'] };
+    const test = harness(async turn => {
+      expect(turn.context.groupMemberAgentIds).toEqual(groupMemberAgentIds);
+      expect(turn.snapshot.groupMembers?.map(member => member.agentId)).toEqual(groupMemberAgentIds);
+      expect(turn.snapshot.requestedResponse?.actorAgentId).toBe(groupMemberAgentIds[0]);
+      expect(turn.instruction).toContain('shared conversation for all members');
+      expect(turn.tools.map(tool => tool.name)).toEqual(['envoi_case_snapshot', 'envoi_case_reply']);
+      expect(await turn.callTool('envoi_case_reply', args)).toMatchObject({ recipient: { kind: 'group' }, status: 'delivered' });
+    }, undefined, { groupMemberAgentIds });
+    await test.process();
+    expect(test.requests[1].params.arguments).toEqual(args);
   });
 
   it('passes durable work identity only to the trusted host callback, never to model context', async () => {

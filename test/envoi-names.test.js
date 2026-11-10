@@ -66,7 +66,7 @@ test('envoi-names: MCP lists only Envoi tool names and refuses the retired sinal
   const listed = await mcp(baseUrl, alice.agentApiToken, 'tools/list');
   assert.equal(listed.status, 200, listed.text);
   assertSchema('mcpToolsList', listed.payload);
-  assert.deepEqual(listed.payload.result.tools.map(tool => tool.name), Object.values(toolNames));
+  assert.deepEqual(listed.payload.result.tools.map(tool => tool.name), schemas.definitions.toolEntry.properties.name.enum);
   assert.doesNotMatch(JSON.stringify(listed.payload), /sinaloa/i);
 
   const issued = await api(baseUrl, '/api/agent/mcp-read-token', { token: alice.agentApiToken, body: { caseId } });

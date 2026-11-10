@@ -1,4 +1,4 @@
-import { responsePayload, rotateAgentToken, EnvoiClient, EnvoiError, type AgentTokens, type AssetUploadInput, type CaseMessageInput, type ClientOptions, type NativeMessageInput } from './index';
+import { responsePayload, rotateAgentToken, EnvoiClient, EnvoiError, type AgentTokens, type AssetUploadInput, type CaseMessageInput, type ClientOptions, type GroupMessageInput, type NativeMessageInput } from './index';
 import { lifecyclePolicy, retryDelay, guidanceText, type ConnectorLifecycle, type ConnectorState } from './lifecycle';
 export type { ConnectorLifecycle, ConnectorState } from './lifecycle';
 import { CONNECTOR_RUNTIMES, type ConnectorRuntime } from './quick-connect';
@@ -48,6 +48,7 @@ export interface NativeWorkMessage extends Record<string, unknown> {
   recipientAgentId: string;
   from: { agentId: string; address: string };
   caseId?: string | null;
+  groupCase?: { messageId: string; memberAgentIds: string[] };
   text: string;
 }
 
@@ -705,6 +706,18 @@ export class EnvoiConnector {
     return this.withFreshClient((client, session) => client.getCase(session.inboxId, caseId), false);
   }
 
+  startGroupCase(idempotencyKey: string, memberAddresses: string[]) {
+    return this.withFreshClient(client => client.startGroupCase(idempotencyKey, memberAddresses));
+  }
+
+  getGroupCase(caseId: string) {
+    return this.withFreshClient(client => client.getGroupCase(caseId), false);
+  }
+
+  sendGroupMessage(caseId: string, idempotencyKey: string, input: GroupMessageInput) {
+    return this.withFreshClient(client => client.sendGroupMessage(caseId, idempotencyKey, input));
+  }
+
   listCaseMessages(caseId: string, limit = 50, before?: string) {
     return this.withFreshClient((client, session) => client.listCaseMessages(session.inboxId, caseId, limit, before), false);
   }
@@ -773,6 +786,8 @@ export class EnvoiConnector {
     channel = new CaseSessionChannel(payload, {
       agentId: identity.agentId, installationId: options.installationId,
       workId: work.workId, caseId: work.message.caseId,
+      ...(!isHumanDecisionMessage(work.message) && !isHumanInstructionMessage(work.message) && work.message.groupCase
+        ? { groupMemberAgentIds: work.message.groupCase.memberAgentIds } : {}),
       workKind: isHumanInstructionMessage(work.message) ? 'human_instruction' : isHumanDecisionMessage(work.message) ? 'human_decision' : 'agent_message',
       counterpartyAddress: isHumanDecisionMessage(work.message) ? work.message.counterpartyAddress : work.message.from.address, agentAddress: identity.address
     }, {
@@ -805,6 +820,11 @@ export class EnvoiConnector {
         throw new EnvoiError('Envoi returned an invalid human instruction reply');
       }
       return reply;
+    }
+    if (message.groupCase) {
+      if (!message.caseId || !message.groupCase.messageId || !idempotencyKey) throw new TypeError('Group replies require a case ID, message reference and stable idempotency key');
+      if (Object.keys(extra).some(key => key !== 'intent') || extra.intent && extra.intent !== 'message') throw new TypeError('Group work replies accept plain text only');
+      return this.sendGroupMessage(message.caseId, idempotencyKey, { text, inReplyTo: message.groupCase.messageId });
     }
     if (!idempotencyKey || !message.from?.address) throw new TypeError('A stable reply idempotency key and sender address are required');
     return this.withFreshClient((client, session) => client.sendMessage(

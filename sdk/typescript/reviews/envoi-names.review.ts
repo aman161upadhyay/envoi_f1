@@ -30,11 +30,13 @@ describe('envoi-names v1 fixture-only consumer review', () => {
       expect(policy).toMatchObject({ lifecycle: fixture.client.lifecycle, retry: fixture.client.retry, guidance: fixture.client.guidance });
     }
   });
-  it('maps all 19 tools uniquely and preserves the exact case-read allowlist', () => {
+  it('maps legacy tools uniquely and verifies the full and case-read catalogs', () => {
     const map = schemas['x-tool-names']; const names = Object.values(map);
     expect(fixtures).toHaveLength(8); expect(names).toHaveLength(19); expect(new Set(names).size).toBe(19);
     for (const [old, next] of Object.entries(map)) expect(next).toBe(old.replace(/^sinaloa_/, 'envoi_'));
-    expect(byId('mcp-tools-list').response.body.result.tools.map((tool: any) => tool.name).sort()).toEqual([...names].sort());
+    const groupTools = ['envoi_start_group_case', 'envoi_read_group_case', 'envoi_send_group_message'];
+    expect(byId('mcp-tools-list').response.body.result.tools.map((tool: any) => tool.name).sort())
+      .toEqual([...names, ...groupTools].sort());
     expect(byId('mcp-tools-list-case-read').response.body.result.tools.map((tool: any) => tool.name).sort())
       .toEqual(['envoi_agent_info', 'envoi_read_case', 'envoi_list_messages'].sort());
     const full = structuredClone(byId('mcp-tools-list').response.body); full.result.tools[0].name = 'sinaloa_agent_info';

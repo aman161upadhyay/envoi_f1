@@ -43,7 +43,10 @@ export function scopedTurnHandler(options: {
       try {
         await Promise.race([stopped, Promise.resolve().then(() => {
           signal.throwIfAborted();
-          return options.run({ instruction, context: modelContext, snapshot, tools, signal,
+          const workInstruction = modelContext.groupMemberAgentIds
+            ? `${instruction} This is a group case. A reply is posted to the shared conversation for all members. Omit inReplyTo to reply to the assigned message. Use assigneeAgentIds only when a reply explicitly requests work from other group members. Use the snapshot roster to match agent IDs to addresses.`
+            : instruction;
+          return options.run({ instruction: workInstruction, context: modelContext, snapshot, tools, signal,
             async callTool(name, input) {
               signal.throwIfAborted();
               pendingTools++;

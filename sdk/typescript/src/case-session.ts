@@ -71,6 +71,7 @@ export interface CaseSessionBinding {
   workKind: 'agent_message' | 'human_instruction' | 'human_decision';
   counterpartyAddress?: string;
   agentAddress: string;
+  groupMemberAgentIds?: readonly string[];
 }
 
 export interface CaseSessionModelContext {
@@ -79,6 +80,7 @@ export interface CaseSessionModelContext {
   allowedTools: readonly string[];
   sessionExpiresInSeconds: number;
   agentAddress: string;
+  groupMemberAgentIds?: readonly string[];
 }
 
 interface SessionRecord {
@@ -151,7 +153,7 @@ export class CaseSessionChannel {
     if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 300_000)) throw new RangeError('Invalid case session timeout');
     if (!/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(binding.agentAddress)) throw new TypeError('Invalid agent address');
     this.#session = parseSession(payload, binding, options.origin);
-    this.#binding = { ...binding };
+    this.#binding = { ...binding, ...(binding.groupMemberAgentIds ? { groupMemberAgentIds: Object.freeze([...binding.groupMemberAgentIds]) } : {}) };
     this.#options = { ...options };
     this.#expiryTimer = setTimeout(() => this.invalidate(new EnvoiError('Case session expired', 401, 'CASE_SESSION_EXPIRED')), Date.parse(this.#session.expiresAt) - Date.now());
     this.#parentAbort = () => this.invalidate(new EnvoiError('Case session was interrupted', undefined, 'REQUEST_CANCELLED'));
@@ -171,6 +173,7 @@ export class CaseSessionChannel {
     this.#check();
     return Object.freeze({
       counterpartyKind: this.#session.counterparty.kind,
+      ...(this.#binding.groupMemberAgentIds ? { groupMemberAgentIds: this.#binding.groupMemberAgentIds } : {}),
       ...(this.#session.counterparty.kind === 'agent' ? { counterpartyAddress: this.#session.counterparty.address } : {}),
       allowedTools: Object.freeze([...this.#session.allowedTools]),
       sessionExpiresInSeconds: Math.max(0, Math.floor((Date.parse(this.#session.expiresAt) - Date.now()) / 1000)),

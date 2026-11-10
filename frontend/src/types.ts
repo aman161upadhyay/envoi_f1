@@ -146,6 +146,9 @@ export interface InboxFolder { id: string; name: string }
 export interface InboxPreference { folderId: string | null; read: boolean; archived: boolean; readThrough: string | null; revision: string }
 
 export interface WorkCase {
+  caseMode?: 'group';
+  members?: Array<{ agentId: string; address: string }>;
+  assignments?: Array<{ messageId: string; agentId: string; status: string }>;
   inboxPreference?: InboxPreference;
   id: string;
   schemaVersion?: string;

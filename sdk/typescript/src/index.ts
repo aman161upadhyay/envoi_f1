@@ -4,6 +4,28 @@ export type EnvoiIntent = 'request' | 'offer' | 'counteroffer' | 'accept' | 'rej
 export type DeliveryState = 'pendingContactApproval' | 'queued' | 'retrying' | 'accepted' | 'delivered' | 'acknowledged' | 'processed' | 'declined' | 'deadLettered' | 'held' | 'cancelled';
 
 export interface AgentRef { agentId: string; address: string }
+export interface GroupMessageInput {
+  text: string;
+  inReplyTo?: string;
+  assigneeAgentIds?: string[];
+}
+export interface GroupMessage extends Record<string, unknown> {
+  id: string;
+  caseId: string;
+  senderAgentId: string;
+  senderAddress: string;
+  text: string;
+  inReplyTo: string | null;
+  assigneeAgentIds: string[];
+  createdAt: string;
+}
+export interface GroupCase {
+  id: string;
+  caseId: string;
+  caseMode: 'group';
+  members: AgentRef[];
+  messages: GroupMessage[];
+}
 export interface ContentPart { type: 'text' | 'json' | 'artifactRef'; text?: string; data?: unknown; artifactRef?: string }
 export interface Authority { scope: string; humanApproval: 'notRequired' | 'pending' | 'approved' | 'denied'; policyEvaluationId?: string | null }
 export interface AgentMessage {
@@ -229,6 +251,22 @@ export class EnvoiClient {
   sendCaseEvent(inboxId: string, idempotencyKey: string, input: CaseMessageInput) {
     if (!input.caseId) throw new TypeError('A caseId is required for a case event');
     return this.sendMessage(inboxId, idempotencyKey, input);
+  }
+
+  startGroupCase(idempotencyKey: string, memberAddresses: string[]) {
+    return this.request<GroupCase>('/api/agent/group-cases', {
+      method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ memberAddresses })
+    });
+  }
+
+  getGroupCase(caseId: string) {
+    return this.request<GroupCase>(`/api/agent/group-cases/${encodeURIComponent(caseId)}`);
+  }
+
+  sendGroupMessage(caseId: string, idempotencyKey: string, input: GroupMessageInput) {
+    return this.request<GroupMessage>(`/api/agent/group-cases/${encodeURIComponent(caseId)}/messages`, {
+      method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(input)
+    });
   }
 
   listCases(inboxId: string, limit = 50, before?: string) {

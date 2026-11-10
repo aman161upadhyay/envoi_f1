@@ -19,6 +19,7 @@ const sendFields = {
   intent: { type: 'string', enum: ['request', 'offer', 'counteroffer', 'accept', 'reject', 'clarify', 'commit', 'cancel', 'status', 'receipt', 'message'] }
 };
 const structuredValue = { type: 'object', minProperties: 1, maxProperties: 32 };
+const distinctArray = (items, minItems) => ({ type: 'array', items, minItems, uniqueItems: true });
 
 export const agentMcpTools = Object.freeze([
   { name: 'envoi_agent_info', description: 'Return the authenticated agent address and permissions. The agent and inbox are selected from the bearer credential.', inputSchema: empty, permission: null },
@@ -27,6 +28,9 @@ export const agentMcpTools = Object.freeze([
   { name: 'envoi_list_messages', description: 'List messages in this agent’s own inbox, optionally for a case.', inputSchema: schema({ caseId: identifier, limit: { type: 'integer', minimum: 1, maximum: 100 }, before: { type: 'string', minLength: 1, maxLength: 256 } }), permission: 'read' },
   { name: 'envoi_start_case', description: 'Start a new case and send its first native agent message to an exact known Envoi address. Retries with the same idempotency key reuse the same case.', inputSchema: schema(sendFields, ['recipientAddress', 'text', 'idempotencyKey']), permission: 'send_agent_messages' },
   { name: 'envoi_send_message', description: 'Send a native agent message in an existing case to an exact known Envoi address.', inputSchema: schema({ ...sendFields, caseId: identifier }, ['recipientAddress', 'text', 'caseId', 'idempotencyKey']), permission: 'send_agent_messages' },
+  { name: 'envoi_start_group_case', description: 'Create a shared case with at least two other Envoi agents.', inputSchema: schema({ memberAddresses: distinctArray(address, 2), idempotencyKey }, ['memberAddresses', 'idempotencyKey']), permission: 'send_agent_messages' },
+  { name: 'envoi_read_group_case', description: 'Read the roster and shared conversation of a group case you belong to.', inputSchema: schema({ caseId: identifier }, ['caseId']), permission: 'read' },
+  { name: 'envoi_send_group_message', description: 'Post to an existing group case. Set inReplyTo to reply to a message and assigneeAgentIds to request work from specific members.', inputSchema: schema({ caseId: identifier, text, inReplyTo: identifier, assigneeAgentIds: distinctArray(identifier, 0), idempotencyKey }, ['caseId', 'text', 'idempotencyKey']), permission: 'send_agent_messages' },
   { name: 'envoi_send_proposal', description: 'Send a structured, agent-authored proposal in an existing shared case. This is a native collaboration message, not a server-attested approval.', inputSchema: schema({ recipientAddress: address, caseId: identifier, text, proposal: structuredValue, idempotencyKey }, ['recipientAddress', 'caseId', 'text', 'proposal', 'idempotencyKey']), permission: 'send_agent_messages' },
   { name: 'envoi_send_decision', description: 'Send a structured, agent-authored accept, reject, counteroffer, or clarification message in an existing shared case. This does not execute an external action.', inputSchema: schema({ recipientAddress: address, caseId: identifier, text, decision: { type: 'string', enum: ['accept', 'reject', 'counteroffer', 'clarify'] }, proposalMessageId: identifier, details: structuredValue, idempotencyKey }, ['recipientAddress', 'caseId', 'text', 'decision', 'idempotencyKey']), permission: 'send_agent_messages' },
   { name: 'envoi_send_completion', description: 'Send a typed completion in an existing shared case. The canonical server validates any claimed human decision and creates the shared receipt.', inputSchema: schema({ recipientAddress: address, caseId: identifier, text, result: text, authorityBasis: identifier, evidenceRefs: { type: 'array', items: identifier, maxItems: 32 }, idempotencyKey }, ['recipientAddress', 'caseId', 'text', 'result', 'idempotencyKey']), permission: 'send_agent_messages' },
@@ -119,6 +123,13 @@ async function invokeTool(name, args, identity, callRest) {
   if (name === 'envoi_complete_asset_upload') return callRest('POST', `${base}/assets/${args.assetId}/complete`, {});
   if (name === 'envoi_grant_asset') return callRest('POST', `${base}/assets/${args.assetId}/grants`, { caseId: args.caseId, recipientAgentId: args.recipientAgentId }, args.idempotencyKey);
   if (name === 'envoi_asset_download') return callRest('GET', `${base}/assets/${args.assetId}/download`);
+  const groupCases = '/api/agent/group-cases';
+  if (name === 'envoi_start_group_case') return callRest('POST', groupCases, { memberAddresses: args.memberAddresses }, args.idempotencyKey);
+  if (name === 'envoi_read_group_case') return callRest('GET', `${groupCases}/${args.caseId}`);
+  if (name === 'envoi_send_group_message') {
+    const { caseId, idempotencyKey: key, ...post } = args;
+    return callRest('POST', `${groupCases}/${caseId}/messages`, post, key);
+  }
   if (['envoi_start_case', 'envoi_send_message', 'envoi_send_proposal', 'envoi_send_decision', 'envoi_send_completion'].includes(name)) {
     const caseId = name === 'envoi_start_case'
       ? `case_${crypto.createHash('sha256').update(`${identity.agent.id}:${args.idempotencyKey}`).digest('hex').slice(0, 32)}`

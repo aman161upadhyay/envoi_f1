@@ -1169,14 +1169,15 @@ export function CaseRow({ workCase, view, showOwner, selected, onSelect }: { wor
   const events = timelineForCase(workCase, view.messages);
   const counterpartId = participantIds(workCase, events).find(id => id !== localAgentId(workCase, view) && id !== workCase.principal);
   const counterparty = resolveParticipant(workCase, counterpartId, view.agents, view.participantDirectory, localAgentId(workCase, view));
+  const senderLabel = workCase.caseMode === 'group' ? `Group · ${workCase.participants?.length || 0} agents` : counterparty.displayName;
   const owner = view.agents.find(item => item.id === localAgentId(workCase, view));
   const today = new Date(updated).toDateString() === new Date().toDateString();
   const counterpartyColor = AGENT_COLORS[Math.abs(Array.from(counterparty.id).reduce((sum, char) => sum + char.charCodeAt(0), 0)) % AGENT_COLORS.length];
   const ownerColor = AGENT_COLORS[Math.max(0, view.agents.findIndex(item => item.id === owner?.id)) % AGENT_COLORS.length];
   return (
 <button role="option" aria-selected={selected} className={`case-row inbox-message-row ${selected ? 'selected' : ''} ${(workCase.inboxPreference ? !workCase.inboxPreference.read : workCase.needsAttention) ? 'is-unread' : ''} ${caseState(workCase) === 'completed' ? 'is-done' : ''}`} onClick={() => onSelect(workCase)}>
-      <span className="counterparty-avatar" style={{ '--avatar-color': counterpartyColor } as React.CSSProperties}>{initials(counterparty.displayName)}{showOwner && owner && <span className="owner-badge" style={{ '--owner-color': ownerColor } as React.CSSProperties} title={owner.name}>{initials(owner.name)[0]}</span>}</span>
-      <span className="case-row-copy"><span className="thread-sender">{counterparty.displayName}</span><span className="thread-summary"><strong>{caseSubject(workCase, view.messages)}</strong><small className="case-preview"> — {conversationPreview(workCase)}</small></span></span>
+      <span className="counterparty-avatar" style={{ '--avatar-color': counterpartyColor } as React.CSSProperties}>{workCase.caseMode === 'group' ? 'G' : initials(counterparty.displayName)}{showOwner && owner && <span className="owner-badge" style={{ '--owner-color': ownerColor } as React.CSSProperties} title={owner.name}>{initials(owner.name)[0]}</span>}</span>
+      <span className="case-row-copy"><span className="thread-sender">{senderLabel}</span><span className="thread-summary"><strong>{caseSubject(workCase, view.messages)}</strong><small className="case-preview"> — {conversationPreview(workCase)}</small></span></span>
       <span className="case-row-meta">{workCase.needsAttention && <span className="case-chip">Needs you</span>}<time dateTime={updated}>{today ? formatTime(updated) : formatDate(updated)}</time></span>
     </button>
   );
@@ -1201,6 +1202,15 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
   const local = resolveParticipant(workCase, localAgentId(workCase, view), view.agents, view.participantDirectory, localAgentId(workCase, view));
   const counterpartyId = participantIds(workCase, events).find(id => id !== localAgentId(workCase, view) && id !== workCase.principal);
   const counterparty = resolveParticipant(workCase, counterpartyId, view.agents, view.participantDirectory, localAgentId(workCase, view));
+  const isGroup = workCase.caseMode === 'group';
+  const messageEvents = new Map<string, CaseEvent>();
+  if (isGroup) {
+    for (const event of events) {
+      if (event.type === 'message' && typeof event.payload.messageId === 'string') {
+        messageEvents.set(event.payload.messageId, event);
+      }
+    }
+  }
 
   async function act(actionKey: HumanActionKey) {
     setBusy(actionKey);
@@ -1210,7 +1220,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
     } catch (caught) { notify(errorMessage(caught)); } finally { setBusy(null); }
   }
 
-  const hasOpenDecision = Boolean(workCase.schemaVersion) && !['completed', 'expired', 'revoked'].includes(state);
+  const hasOpenDecision = !isGroup && Boolean(workCase.schemaVersion) && !['completed', 'expired', 'revoked'].includes(state);
   const canAct = canManageInbox && hasOpenDecision;
   const canOrganize = Boolean(workCase.inboxPreference && view.folders);
   const ownAgent = view.agents.find(agent => agent.id === localAgentId(workCase, view));
@@ -1253,18 +1263,24 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
         <div className="thread-scroll"><div className="thread-inner">
           <h1 className="thread-subject">{caseSubject(workCase, view.messages)}</h1>
           <div className="thread-meta"><StatusBadge workCase={workCase} /><button className="add-folder" disabled={!canOrganize || preferenceBusy} onClick={() => { setPreferenceError(''); setMoveOpen(true); }}><Folder size={13} />{view.folders?.find(folder => folder.id === workCase.inboxPreference?.folderId)?.name || 'Folder'}</button></div>
-          <div className="participant-duo">
+          {isGroup ? <section aria-label="Group members" className="participant-duo participant-group">
+            {workCase.participants?.map(id => {
+              const member = groupParticipant(workCase, view, id);
+              return <ParticipantCard key={id} participant={member} label={member.relationship === 'localAgent' ? 'Your agent' : 'Group member'} />;
+            })}
+          </section> : <div className="participant-duo">
             <ParticipantCard participant={local} label={local.relationship === 'localAgent' ? 'Your agent' : 'Local identity unavailable'} />
             <ArrowLeftRight size={18} className="participant-swap" aria-hidden="true" />
             <ParticipantCard participant={counterparty} label={`Agent for ${counterparty.orgRef || 'another organization'}`} nativeControl={Boolean(localAgentId(workCase, view)) && canManageInbox && counterparty.type === 'externalAgent' ? { inboxId: view.inbox.id, onRefresh, notify } : undefined} />
-          </div>
+          </div>}
           {workCase.decision && hasOpenDecision && <DecisionCard workCase={workCase} view={view} events={events} policy={policy} canManageInbox={canManageInbox} busy={busy} onAction={key => key === 'decline' ? setConfirm(key) : void act(key)} onPolicy={() => policy && setDrawer({ type: 'policy', item: policy })} />}
           {state === 'unknownExternalResult' && <InlineNotice title="Result unknown" body="The external service did not confirm the result. Do not retry with a new key." tone="unknown" />}
           {state === 'revoked' && <InlineNotice title="Authority revoked" body="New agent work for this case is blocked." tone="danger" />}
-          <div className="conversation" aria-label="Conversation">{events.length ? events.map((event, index) => <ConversationEntry key={event.id} event={event} previous={events[index - 1]} workCase={workCase} view={view} />) : <div className="empty-list"><Inbox size={20} /><strong>No messages yet</strong></div>}</div>
+          <div className="conversation" aria-label="Conversation">{events.length ? events.map((event, index) => <ConversationEntry key={event.id} event={event} previous={events[index - 1]} workCase={workCase} view={view} replyTarget={messageEvents.get(event.payload.inReplyTo)} />) : <div className="empty-list"><Inbox size={20} /><strong>No messages yet</strong></div>}</div>
           {workCase.receipt && <ReceiptCard workCase={workCase} />}
+          {isGroup && <FormError message={preferenceError} />}
         </div></div>
-        <div className="thread-composer"><form className="composer-box" onSubmit={event => void sendInstruction(event)}><input aria-label={local.relationship === 'localAgent' ? `Instructions for ${local.displayName}` : 'Instructions unavailable: local identity unknown'} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={15000} placeholder={canInstruct ? 'Send an instruction to your agent' : 'Instructions require an active agent and conversation'} disabled={!canInstruct || instructionBusy} /><button aria-label="Send instruction" disabled={!canInstruct || instructionBusy || !instruction.trim()}><ArrowRight size={16} /></button></form><FormError message={instructionError || preferenceError} /></div>
+        {!isGroup && <div className="thread-composer"><form className="composer-box" onSubmit={event => void sendInstruction(event)}><input aria-label={local.relationship === 'localAgent' ? `Instructions for ${local.displayName}` : 'Instructions unavailable: local identity unknown'} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={15000} placeholder={canInstruct ? 'Send an instruction to your agent' : 'Instructions require an active agent and conversation'} disabled={!canInstruct || instructionBusy} /><button aria-label="Send instruction" disabled={!canInstruct || instructionBusy || !instruction.trim()}><ArrowRight size={16} /></button></form><FormError message={instructionError || preferenceError} /></div>}
       </div>
       {moveOpen && <Modal title="Move conversation" dismissible={!preferenceBusy} onClose={() => setMoveOpen(false)}><MoveInboxCaseContent folders={view.folders || []} currentFolderId={workCase.inboxPreference?.folderId || null} busy={preferenceBusy} error={preferenceError} onClose={() => setMoveOpen(false)} onMove={folderId => void updatePreference({ folderId })} /></Modal>}
       {railOpen && <aside className="case-details" aria-label="Case details"><div className="details-heading"><strong>Details</strong><button className="icon-button" aria-label="Close details" onClick={onRailToggle}><X size={16} /></button></div><h2>{ownAgent ? `${local.displayName} can` : 'Local permissions unavailable'}</h2>{ownAgent?.permissions.map(permission => <div className="details-row" key={permission}><Check size={14} />{humanize(permission)}</div>) || <p>No permissions listed</p>}{ownAgent && <><h2>{local.displayName} asks you before</h2><p>Actions outside its permissions</p></>}<h2>Files</h2>{view.assets.filter(item => item.caseId === workCase.id).map(asset => <AssetRow key={asset.id} asset={asset} inboxId={view.inbox.id} notify={notify} />)}<h2>Case</h2><dl><dt>Deadline</dt><dd>{workCase.deadline ? formatDate(workCase.deadline) : 'None'}</dd><dt>ID</dt><dd className="case-id">{workCase.id}</dd></dl></aside>}
@@ -1274,20 +1290,45 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
   );
 }
 
-export function ConversationEntry({ event, previous, workCase, view }: { event: CaseEvent; previous?: CaseEvent; workCase: WorkCase; view: HumanView }) {
+function groupParticipant(workCase: WorkCase, view: HumanView, agentId: string) {
+  const participant = resolveParticipant(workCase, agentId, view.agents, view.participantDirectory, localAgentId(workCase, view));
+  const member = workCase.members?.find(item => item.agentId === agentId);
+  return participant.address || !member ? participant : { ...participant, displayName: member.address, address: member.address };
+}
+
+export function ConversationEntry({ event, previous, workCase, view, replyTarget }: { event: CaseEvent; previous?: CaseEvent; workCase: WorkCase; view: HumanView; replyTarget?: CaseEvent }) {
   view = caseSourceView(workCase, view);
   const ownHuman = Boolean(event.payload.senderHumanId && event.payload.senderHumanId === view.requester?.id);
   const ownerInstruction = String(event.payload.messageType || '').toLowerCase() === 'instruction' && Boolean(event.payload.senderHumanId || event.payload.senderType === 'human');
   const senderId = event.payload.senderAgentId || event.payload.senderHumanId || event.actor;
   const mine = Boolean(localAgentId(workCase, view) && senderId === localAgentId(workCase, view)) || ownHuman;
-  const participant = resolveParticipant(workCase, event.payload.senderAgentId || event.payload.senderHumanId || event.actor, view.agents, view.participantDirectory, localAgentId(workCase, view));
+  const isGroup = workCase.caseMode === 'group';
+  const participant = isGroup ? groupParticipant(workCase, view, senderId) : resolveParticipant(workCase, senderId, view.agents, view.participantDirectory, localAgentId(workCase, view));
   const date = new Date(event.createdAt);
   const priorDate = previous ? new Date(previous.createdAt) : null;
   const showDay = !priorDate || date.toDateString() !== priorDate.toDateString();
   const delivery = String(event.payload.deliveryState || 'unknown');
   const deliveryLabel = delivery === 'delivered' ? 'Delivered' : ['acknowledged', 'processed'].includes(delivery) ? 'Read' : ['queued', 'retrying', 'deadLettered'].includes(delivery) ? 'Not sent' : 'Unknown';
   const color = AGENT_COLORS[Math.abs(Array.from(participant.id).reduce((sum, char) => sum + char.charCodeAt(0), 0)) % AGENT_COLORS.length];
-return <>{showDay && <div className="conversation-day">{date.toDateString() === new Date().toDateString() ? 'Today' : formatDate(event.createdAt)}</div>}{isExchangeEvent(event) ? <div className={`conversation-message ${mine ? 'mine' : 'theirs'}${ownerInstruction ? ' owner-instruction' : ''}`}><span className="counterparty-avatar" style={{ '--avatar-color': color } as React.CSSProperties}>{ownerInstruction ? <UserRound size={15} aria-hidden="true" /> : initials(participant.displayName)}</span><div className="message-content"><div className="message-meta"><strong>{ownHuman ? 'You' : participant.displayName}</strong><span>{ownerInstruction ? 'Owner instruction' : exchangeEventLabel(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div><div className="message-bubble">{ownerInstruction && event.payload.text ? String(event.payload.text) : eventSummary(event)}</div>{mine && <div className={`message-delivery ${deliveryLabel === 'Not sent' || deliveryLabel === 'Unknown' ? 'warning' : ''}`}>{deliveryLabel}</div>}</div></div> : <div className="conversation-event"><Sparkles size={13} /><span>{eventSummary(event)}</span></div>}</>;
+  const assigneeIds: string[] = isGroup && Array.isArray(event.payload.assigneeAgentIds) ? event.payload.assigneeAgentIds : [];
+  const replyAuthor = replyTarget ? groupParticipant(workCase, view, replyTarget.payload.senderAgentId || replyTarget.actor) : null;
+  return <>
+    {showDay && <div className="conversation-day">{date.toDateString() === new Date().toDateString() ? 'Today' : formatDate(event.createdAt)}</div>}
+    {isExchangeEvent(event) ? <div id={isGroup && typeof event.payload.messageId === 'string' ? `message-${event.payload.messageId}` : undefined} className={`conversation-message ${mine ? 'mine' : 'theirs'}${ownerInstruction ? ' owner-instruction' : ''}`}>
+      <span className="counterparty-avatar" style={{ '--avatar-color': color } as React.CSSProperties}>{ownerInstruction ? <UserRound size={15} aria-hidden="true" /> : initials(participant.displayName)}</span>
+      <div className="message-content">
+        <div className="message-meta"><strong>{ownHuman ? 'You' : participant.displayName}</strong><span>{ownerInstruction ? 'Owner instruction' : exchangeEventLabel(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>
+        {isGroup && typeof event.payload.inReplyTo === 'string' && <div className="group-reply">{replyAuthor ? <a href={`#message-${encodeURIComponent(event.payload.inReplyTo)}`}>Reply to {replyAuthor.displayName}</a> : 'Reply to an earlier message'}</div>}
+        <div className="message-bubble">{ownerInstruction && event.payload.text ? String(event.payload.text) : eventSummary(event)}</div>
+        {assigneeIds.length > 0 && <ul className="group-assignments" aria-label="Assignments">{assigneeIds.map(agentId => {
+          const assignee = groupParticipant(workCase, view, agentId);
+          const assignment = workCase.assignments?.find(item => item.messageId === event.payload.messageId && item.agentId === agentId);
+          return <li key={agentId}>Assigned to {assignee.displayName}{assignment && <> · {humanize(assignment.status)}</>}</li>;
+        })}</ul>}
+        {mine && !isGroup && <div className={`message-delivery ${deliveryLabel === 'Not sent' || deliveryLabel === 'Unknown' ? 'warning' : ''}`}>{deliveryLabel}</div>}
+      </div>
+    </div> : <div className="conversation-event"><Sparkles size={13} /><span>{eventSummary(event)}</span></div>}
+  </>;
 }
 
 function NegotiationParticipants({ workCase, view, events, canManageInbox, onRefresh, notify }: { workCase: WorkCase; view: HumanView; events: CaseEvent[]; canManageInbox: boolean; onRefresh: () => Promise<unknown>; notify: (message: string) => void }) {

@@ -58,7 +58,7 @@ export async function createOpenClawBridge(config: BridgeConfiguration, options:
     allowEnvoiMcpWrites: writeEnabled,
     assetHandles: [...approvedAssets.values()].map(({ handle, filename }) => ({ handle, filename })),
     ...(options.fetch ? { fetch: options.fetch } : {}),
-    history: caseId => connector.listCaseMessages(caseId, 20)
+    history: async (caseId, group) => group ? (await connector.getGroupCase(caseId)).messages : connector.listCaseMessages(caseId, 20)
   });
   const turn = writeEnabled ? withRecordedMcpReply(gatewayTurn, messageId => store.mcpReplySent(messageId)) : gatewayTurn;
   let humanWorkActive = false;
