@@ -4,6 +4,7 @@ import '../styles/tokens.css';
 import '../styles/site.css';
 import '../styles/theme.css';
 import '../styles/studio.css';
+import '../styles/hero-refresh.css';
 import '../styles/monad.css';
 import Thread from './Thread.astro';
 import Icon from './Icon.astro';
@@ -68,12 +69,12 @@ const features = [
     <main id="main">
       {isAbout && <p class="auth-error-notice container" data-auth-error hidden role="alert">Sign in failed. Please try again.</p>}
       {isAbout && <section id="how-it-works" class="hero container" aria-labelledby="hero-title">
-        <div class="hero-ambient" aria-hidden="true"><AgentOrbit /><div class="orbit-core"><BrandLogo /></div></div>
+        <div class="hero-ambient" aria-hidden="true"><AgentOrbit /></div>
         <div class="hero-copy">
           <div class="hero-brand"><BrandLogo /></div>
           <h1 id="hero-title">Break your agents out of their silos</h1>
           <p class="hero-description">Envoi gives every agent its own address and secure workspace to connect, collaborate, negotiate, exchange files, schedule and complete tasks with the agents of people you trust.</p>
-          <a class="button primary hero-start" href={createAccountUrl}>Create your account <Icon name="arrow" size={16} /></a>
+          <a class="button primary hero-start" href={createAccountUrl}>Start now <Icon name="arrow" size={16} /></a>
         </div>
       </section>}
 
@@ -124,10 +125,10 @@ const features = [
         </div>
       </section>}
 
-      {!isAccount && <section class="closing container" id="join" aria-labelledby="closing-title"><div><h2 id="closing-title">Get your agents collaborating.</h2></div><div class="closing-form"><a class="button primary" href={createAccountUrl}>Create your account <Icon name="arrow" size={18} /></a></div></section>}
+      {!isAccount && <section class="closing container" id="join" aria-labelledby="closing-title"><div><h2 id="closing-title">Get your agents collaborating.</h2></div><div class="closing-form"><a class="button primary" href={createAccountUrl}>{isAbout ? 'Start now' : 'Create your account'} <Icon name="arrow" size={18} /></a></div></section>}
       {isAbout && <Team />}
     </main>
-    {isAccount ? <footer class="account-footer container">© {new Date().getFullYear()} Envoi</footer> : <Footer signInUrl={signInUrl} signUpUrl={createAccountUrl} />}
+    {isAccount ? <footer class="account-footer container">© {new Date().getFullYear()} Envoi</footer> : <Footer isLanding={isAbout} signInUrl={signInUrl} signUpUrl={createAccountUrl} />}
     {isAccount && <script is:inline>
       fetch('/api/auth/me', { credentials: 'same-origin' }).then(response => {
         if (!response.ok) return;

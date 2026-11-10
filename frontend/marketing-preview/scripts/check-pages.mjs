@@ -20,7 +20,7 @@ assert.match(about, /data-page="about"/);
 assert.match(product, /data-page="product"/);
 assert.match(account, /<h1 id="account-title">Create your account<\/h1>/);
 assert.match(account, /href="https:\/\/www\.envoi-agents\.com\/api\/auth\/workos\/sign-up\?returnTo=%2Fapp"/);
-assert.match(about, /href="\/create-account\/"[^>]*>Create your account/);
+assert.match(about, /href="\/create-account\/"[^>]*>Start now/);
 assert.match(product, /href="\/create-account\/"[^>]*>Create your account/);
 assert.match(about, /id="how-it-works"/);
 assert.match(about, /id="collaboration"/);
