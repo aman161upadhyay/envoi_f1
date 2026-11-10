@@ -897,6 +897,8 @@ const browserObjectUrl = (value, req) => {
 };
 const eventCursor = event => event.cursor || (event.sequence ? String(event.sequence).padStart(20, '0') : `${event.createdAt}|${event.id}`);
 const normalizeStreamEvent = event => ({ ...event, cursor: eventCursor(event) });
+const visibleInboxEvent = (event, agentId, human = false) => human || !event.groupCase
+  || Boolean(agentId && (event.memberAgentIds?.includes(agentId) || event.agentId === agentId || event.recipientAgentId === agentId));
 const sendStreamEvent = (subscription, event) => {
   // Serialize authorization and delivery so replay/live events retain cursor order.
   subscription.pendingWrites = (subscription.pendingWrites || 0) + 1;
@@ -909,6 +911,10 @@ const sendStreamEvent = (subscription, event) => {
     }
     if (subscription.res.writableEnded || subscription.res.destroyed) return;
     const normalized = normalizeStreamEvent(event);
+    if (!visibleInboxEvent(normalized, subscription.agentId, Boolean(subscription.humanId))) {
+      if (normalized.cursor > (subscription.cursor || '')) subscription.cursor = normalized.cursor;
+      return;
+    }
     if (subscription.sentIds.has(normalized.id)) return;
     subscription.sentIds.add(normalized.id);
     if (subscription.sentIds.size > 500) subscription.sentIds.delete(subscription.sentIds.values().next().value);
@@ -961,6 +967,7 @@ async function failAgentWorkPermanently(message, claim, reasonCode, at, writeAud
   const receipt = {
     id: `delivery_receipt_${message.id}_failed`, type: 'delivery', messageId: message.id,
     ...workSenderFields(message), recipientAgentId: message.recipientAgentId,
+    ...(message.groupCase ? { groupCase: true, caseId: message.caseId } : {}),
     state: 'failed', reasonCode, attempts: agentWorkAttempts(claim), createdAt: at
   };
   const documents = [document(workClaimPath(claim.inboxId, message.id), claim), ...await workCaseDocuments(message, failed, 'failed', at)];
@@ -968,9 +975,11 @@ async function failAgentWorkPermanently(message, claim, reasonCode, at, writeAud
     const targetInbox = await store.getJson(path.join('inboxes', targetInboxId, 'inbox.json'));
     if (!targetInbox) continue;
     documents.push(document(messagePath(targetInboxId, message.id), failed), document(deliveryReceiptPath(targetInboxId, receipt.id), receipt));
-    await writeAudit('message.failed', { messageId: message.id, caseId: message.caseId, ...workSenderFields(message), recipientAgentId: message.recipientAgentId, reasonCode }, at, targetInboxId);
+    await writeAudit('message.failed', { messageId: message.id, caseId: message.caseId, ...workSenderFields(message), recipientAgentId: message.recipientAgentId, reasonCode,
+      ...(message.groupCase ? { groupCase: true } : {}) }, at, targetInboxId);
   }
   await store.putJsonBatch(documents);
+  if (message.groupCase) await auditGroupAssignment(message, claim.status, at, writeAudit);
   await caseSessions.endForWork(claim.inboxId, message.id, 'work_settled', at, writeAudit);
   return receipt;
 }
@@ -978,9 +987,9 @@ const workSenderFields = message => isHumanDecision(message) && message.senderTy
   : isHumanInstruction(message) || isHumanDecision(message)
   ? { senderType: 'human', senderHumanId: message.senderHumanId }
   : { senderAgentId: message.senderAgentId };
-const workInboxIds = message => new Set(isHumanInstruction(message) || isHumanDecision(message)
+const workInboxIds = message => new Set(message.groupCase || isHumanInstruction(message) || isHumanDecision(message)
   ? [message.recipientInboxId] : [message.senderInboxId, message.recipientInboxId]);
-const workCaseDocuments = async (current, updated, state, at) => isHumanDecision(current) ? [] : isHumanInstruction(current)
+const workCaseDocuments = async (current, updated, state, at) => current.groupCase || isHumanDecision(current) ? [] : isHumanInstruction(current)
   ? humanInstructionCaseDocuments(store, current, state, at)
   : (await nativeCaseDocuments(updated, state, at, { revealRecipient: true })).documents;
 async function assertHumanInstructionAuthority(message, identity) {
@@ -1202,6 +1211,7 @@ async function withInboxMutation(inboxId, operation, relatedInboxIds = [], addit
 
 async function withCaseMutation(inboxId, caseId, operation, { allowPaused = false } = {}) {
   const binding = await store.getJson(caseBindingPath(caseId));
+  if (binding?.mode === 'group') throw codedError(409, 'GROUP_OPERATION_UNSUPPORTED', 'Use group case operations for this case.');
   const related = binding?.inboxIds?.filter(id => id !== inboxId) || [];
   return withInboxMutation(inboxId, async writeAudit => {
     const current = await store.getJson(caseBindingPath(caseId));
@@ -1563,6 +1573,7 @@ async function assetReadAccess(asset, inbox, reader) {
 async function saveCase(inboxId, value) {
   const binding = await store.getJson(caseBindingPath(value.id));
   if (!binding) return store.putJson(caseRecordPath(inboxId, value.id), value);
+  if (binding.mode === 'group') throw codedError(409, 'GROUP_OPERATION_UNSUPPORTED', 'Use group case operations for this case.');
   if (!binding.inboxIds.includes(inboxId) || JSON.stringify(pairIds(value.participants)) !== JSON.stringify(binding.agentIds)) throw caseParticipantMismatch();
   const documents = [document(sharedCasePath(value.id), value)];
   for (const participantInboxId of binding.inboxIds) {
@@ -1579,6 +1590,220 @@ const getCase = async (inboxId, caseId) => {
   return value?.schemaVersion && !value.collaborationMode ? { ...value, collaborationMode: 'collaboration' } : value;
 };
 const isCaseParticipant = (value, agentId) => Boolean(agentId && (value?.actingAgent === agentId || value?.participants?.includes(agentId)));
+
+const groupCaseRoute = /^\/api\/agent\/group-cases(?:\/(case_[a-f0-9]{32})(?:\/(messages))?)?$/;
+const groupMember = (binding, identity) => binding?.mode === 'group'
+  && binding.members.some(member => member.agentId === identity.agent.id && member.inboxId === identity.inboxId);
+const groupMemberView = ({ agentId, address }) => ({ agentId, address });
+const groupCaseView = value => ({
+  id: value.id, caseId: value.id, caseMode: 'group', objective: value.objective,
+  members: value.members, messages: value.events.filter(event => event.type === 'message')
+    .map(({ payload: { messageId, messageType, deliveryState, ...message } }) => message)
+});
+const groupAssignmentId = (messageId, agentId) => `msg_${hashSecret(`${messageId}:${agentId}`).slice(0, 32)}`;
+
+async function auditGroupAssignment(message, status, at, writeAudit) {
+  const binding = await store.getJson(caseBindingPath(message.caseId));
+  for (const inboxId of binding.inboxIds) {
+    await writeAudit('group.assignment_updated', { groupCase: true, caseId: message.caseId,
+      messageId: message.groupCase.messageId, recipientAgentId: message.recipientAgentId,
+      memberAgentIds: binding.agentIds, status }, at, inboxId);
+  }
+}
+
+async function groupAssignments(value) {
+  const binding = await store.getJson(caseBindingPath(value.id));
+  if (binding?.mode !== 'group') return [];
+  const members = new Map(binding.members.map(member => [member.agentId, member]));
+  return Promise.all(groupCaseView(value).messages.flatMap(message => message.assigneeAgentIds.map(async agentId => {
+    const inboxId = members.get(agentId).inboxId;
+    const id = groupAssignmentId(message.id, agentId);
+    const [claim, work] = await Promise.all([store.getJson(workClaimPath(inboxId, id)), store.getJson(messagePath(inboxId, id))]);
+    return { messageId: message.id, agentId, status: claim?.status || (work ? 'pending' : 'unavailable') };
+  })));
+}
+
+async function groupInboxReadable(req, inbox, caseId) {
+  const agent = await getAgentPrincipal(req, inbox.id);
+  if (agent) return groupAgentReadable({ agent, inboxId: inbox.id }, caseId);
+  return canAccessInbox(await auth.getHuman(req), inbox);
+}
+
+async function groupAgentReadable(identity, caseId) {
+  const binding = await store.getJson(caseBindingPath(caseId));
+  if (!canReceive(identity.agent) || !groupMember(binding, identity)) return false;
+  try { await verifyGroupMembers(binding.members); }
+  catch (error) { if (error.code === 'GROUP_MEMBER_UNAVAILABLE') return false; throw error; }
+  return true;
+}
+
+async function verifyGroupMembers(members, assignees = []) {
+  const inboxes = await Promise.all(members.map(async member => {
+    const [agent, inbox] = await Promise.all([
+      store.getJson(path.join('inboxes', member.inboxId, 'agents', `${member.agentId}.json`)),
+      store.getJson(path.join('inboxes', member.inboxId, 'inbox.json'))
+    ]);
+    if (!canReceive(agent) || agent.address !== member.address || !inbox || inbox.status === 'removed' || inbox.historyDeleted) {
+      throw codedError(403, 'GROUP_MEMBER_UNAVAILABLE', 'A group member is unavailable.');
+    }
+    if (assignees.includes(member.agentId) && !agent.permissions.includes('send_agent_messages')) {
+      throw codedError(403, 'GROUP_ASSIGNEE_UNAVAILABLE', 'An assigned agent needs permission to post a result.');
+    }
+    return inbox;
+  }));
+  await Promise.all(members.flatMap((member, index) => members.slice(index + 1).map(async (other, offset) => {
+    const [forward, reverse] = await Promise.all([
+      store.getJson(path.join('inboxes', member.inboxId, 'contacts', `${other.agentId}.json`)),
+      store.getJson(path.join('inboxes', other.inboxId, 'contacts', `${member.agentId}.json`))
+    ]);
+    const organizationId = inboxes[index].organizationId;
+    const sameOrg = organizationId && organizationId === inboxes[index + offset + 1].organizationId;
+    if (forward?.blocked || reverse?.blocked || forward?.approved === false || reverse?.approved === false
+      || (member.inboxId !== other.inboxId && !sameOrg && (!forward?.approved || !reverse?.approved))) {
+      throw codedError(403, 'GROUP_MEMBER_UNAVAILABLE', 'Group members must be permitted to collaborate.');
+    }
+  })));
+  return inboxes[0];
+}
+
+async function writeGroupMessage(binding, identity, input, messageId, writeAudit) {
+  if (!groupMember(binding, identity)) throw codedError(404, 'GROUP_CASE_NOT_FOUND', 'Group case not found.');
+  if (!canAct(identity.agent, 'send_agent_messages')) throw codedError(403, 'INSUFFICIENT_SCOPE', 'Message send permission required.');
+  const { text, inReplyTo = null, assigneeAgentIds = [] } = input;
+  if (typeof text !== 'string' || !text.trim() || text.length > 16000
+    || (inReplyTo !== null && typeof inReplyTo !== 'string') || !Array.isArray(assigneeAgentIds)
+    || new Set(assigneeAgentIds).size !== assigneeAgentIds.length
+    || assigneeAgentIds.some(id => id === identity.agent.id || !binding.agentIds.includes(id))) {
+    throw codedError(400, 'GROUP_MESSAGE_INVALID', 'A message requires text and may assign distinct other group members.');
+  }
+  await verifyGroupMembers(binding.members, assigneeAgentIds);
+  const caseId = binding.caseId;
+  const value = await getCase(identity.inboxId, caseId);
+  if (value?.state !== 'inProgress') throw codedError(409, 'CASE_CONTROLLED', 'This group case is unavailable.');
+  const assignees = [...assigneeAgentIds].sort();
+  const requestHash = semanticDigest({ caseId, text, inReplyTo, assignees });
+  const requestPath = path.join('group-message-requests', `${messageId}.json`);
+  const previous = await store.getJson(requestPath);
+  if (previous) {
+    if (previous.requestHash !== requestHash) throw nativeIdempotencyConflict();
+    return { message: previous.message, replayed: true };
+  }
+  if (inReplyTo !== null && !value.events.some(event => event.type === 'message' && event.payload?.id === inReplyTo)) {
+    throw codedError(404, 'GROUP_REPLY_NOT_FOUND', 'Reply target is not in this group case.');
+  }
+  const at = store.now();
+  const message = { id: messageId, caseId, senderAgentId: identity.agent.id, senderAddress: identity.agent.address,
+    text, inReplyTo, assigneeAgentIds: assignees, createdAt: at };
+  appendEvent(value, { id: `evt_${messageId}`, type: 'message', actor: identity.agent.id, createdAt: at,
+    payload: { ...message, messageId, messageType: 'message', deliveryState: 'delivered' } });
+  value.updatedAt = at;
+  const documents = [
+    document(requestPath, { requestHash, message }),
+    document(sharedCasePath(caseId), value),
+    ...binding.inboxIds.map(inboxId => document(caseRecordPath(inboxId, caseId), value))
+  ];
+  for (const member of binding.members.filter(entry => assignees.includes(entry.agentId))) {
+    const id = groupAssignmentId(messageId, member.agentId);
+    documents.push(document(messagePath(member.inboxId, id), {
+      ...message, id, conversationId: caseId, senderInboxId: identity.inboxId,
+      recipientInboxId: member.inboxId, recipientAgentId: member.agentId, recipientEmail: member.address,
+      from: { agentId: identity.agent.id, address: identity.agent.address },
+      senderType: 'agent', type: 'message', intent: 'request', transport: 'native',
+      status: 'delivered', deliveredAt: at, groupCase: { messageId, memberAgentIds: binding.agentIds }
+    }));
+  }
+  await store.putJsonBatch(documents);
+  for (const inboxId of binding.inboxIds) {
+    await writeAudit('group.message_posted', { caseId, messageId, senderAgentId: identity.agent.id, groupCase: true, memberAgentIds: binding.agentIds }, at, inboxId);
+  }
+  for (const member of binding.members.filter(entry => assignees.includes(entry.agentId))) {
+    const event = await writeAudit('work.available', { caseId, agentId: member.agentId, reason: 'group_assignment', groupCase: true }, at, member.inboxId);
+    if (httpWakeEnabled) await httpWake.trigger({ inboxId: member.inboxId, agentId: member.agentId, reason: 'message_delivered', cursor: event.cursor });
+  }
+  return { message, replayed: false };
+}
+
+async function handleGroupCaseRoute(req, res, route) {
+  res.setHeader('cache-control', 'no-store');
+  const identity = await getAgentWorkIdentity(req);
+  if (!identity) throw credentialError('AUTHENTICATION_REQUIRED');
+  if (!canReceive(identity.agent)) throw codedError(403, 'INSUFFICIENT_SCOPE', 'Message receive permission required.');
+  const [, caseId, messages] = route;
+  const binding = caseId ? await store.getJson(caseBindingPath(caseId)) : null;
+  if (caseId && !groupMember(binding, identity)) throw codedError(404, 'GROUP_CASE_NOT_FOUND', 'Group case not found.');
+  if (req.method === 'GET' && caseId && !messages) {
+    await verifyGroupMembers(binding.members);
+    const value = await getCase(identity.inboxId, caseId);
+    if (!value) throw codedError(404, 'GROUP_CASE_NOT_FOUND', 'Group case not found.');
+    return json(res, 200, groupCaseView(value));
+  }
+  if (req.method !== 'POST' || (caseId && !messages)) return fail(res, 405, 'Method not allowed');
+  if (!canAct(identity.agent, 'send_agent_messages')) throw codedError(403, 'INSUFFICIENT_SCOPE', 'Message send permission required.');
+  const input = await body(req, 65536);
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw codedError(400, 'GROUP_INPUT_INVALID', 'Provide a JSON object.');
+  const key = validateIdempotencyKey(req.headers['idempotency-key'] || input.idempotencyKey, { required: true });
+  const freshIdentity = async () => {
+    const current = await getAgentWorkIdentity(req);
+    if (!current || current.agent.id !== identity.agent.id || current.familyId !== identity.familyId) throw credentialError('CREDENTIAL_REVOKED');
+    if (!canReceive(current.agent) || !canAct(current.agent, 'send_agent_messages')) throw codedError(403, 'INSUFFICIENT_SCOPE', 'Message send and receive permission required.');
+    return current;
+  };
+  if (caseId) {
+    const messageId = `msg_${hashSecret(JSON.stringify(['group', identity.agent.id, caseId, key])).slice(0, 32)}`;
+    const result = await withInboxMutation(identity.inboxId, async writeAudit =>
+      writeGroupMessage(binding, await freshIdentity(), input, messageId, writeAudit),
+    binding.inboxIds, [caseMutationKey(caseId)]);
+    return json(res, result.replayed ? 200 : 201, result.message);
+  }
+  if (!Array.isArray(input.memberAddresses) || input.memberAddresses.length < 2 || input.memberAddresses.length > 19
+    || input.memberAddresses.some(address => typeof address !== 'string' || !validEmail(normalizedEmail(address)))
+    || (input.objective !== undefined && (typeof input.objective !== 'string' || !input.objective.trim() || input.objective.length > 160))) {
+    throw codedError(400, 'GROUP_CASE_INVALID', 'Provide two to nineteen other exact agent addresses and an optional objective.');
+  }
+  const addresses = input.memberAddresses.map(normalizedEmail).sort();
+  if (new Set(addresses).size !== addresses.length || addresses.includes(identity.agent.address)) {
+    throw codedError(400, 'GROUP_CASE_INVALID', 'Group members must be distinct and exclude the creating agent.');
+  }
+  const objective = input.objective?.trim() || 'Group collaboration';
+  const id = `case_${hashSecret(JSON.stringify(['group', identity.agent.id, key])).slice(0, 32)}`;
+  const requestHash = semanticDigest({ addresses, objective });
+  const resolveMembers = async () => Promise.all(addresses.map(async address => {
+    const entry = await store.getJson(nativeAddressDirectoryPath(address));
+    if (!entry?.verified || entry.address !== address) throw codedError(404, 'GROUP_MEMBER_NOT_FOUND', 'A group member was not found.');
+    return { agentId: entry.agentId, inboxId: entry.inboxId, address };
+  }));
+  const members = [{ agentId: identity.agent.id, inboxId: identity.inboxId, address: identity.agent.address }, ...await resolveMembers()];
+  const inboxIds = pairIds(members.map(member => member.inboxId));
+  const result = await withInboxMutation(identity.inboxId, async writeAudit => {
+    await freshIdentity();
+    const existing = await store.getJson(caseBindingPath(id));
+    if (existing && (existing.mode !== 'group' || existing.requestHash !== requestHash)) throw nativeIdempotencyConflict();
+    if (existing) {
+      await verifyGroupMembers(existing.members);
+      return { replayed: true, value: await getCase(identity.inboxId, id) };
+    }
+    if (semanticDigest(members.slice(1)) !== semanticDigest(await resolveMembers())) {
+      throw codedError(409, 'GROUP_MEMBER_CHANGED', 'Group membership changed while creating the case. Retry.');
+    }
+    const inbox = await verifyGroupMembers(members);
+    const at = store.now();
+    const agentIds = pairIds(members.map(member => member.agentId));
+    if (agentIds.length !== members.length) throw codedError(400, 'GROUP_CASE_INVALID', 'Group members must be distinct.');
+    const value = transitionCase(createAgentCase({ id, objective, principal: inbox.ownerHumanId,
+      actingAgent: identity.agent.id, participants: agentIds, createdAt: at }),
+    'inProgress', { actor: identity.agent.id, at, reasonCode: 'caseStarted' });
+    value.caseMode = 'group';
+    value.members = members.map(groupMemberView);
+    await store.putJsonBatch([
+      document(caseBindingPath(id), { caseId: id, mode: 'group', agentIds, inboxIds, members, requestHash, createdAt: at }),
+      document(sharedCasePath(id), value),
+      ...inboxIds.map(inboxId => document(caseRecordPath(inboxId, id), value))
+    ]);
+    for (const inboxId of inboxIds) await writeAudit('group.case_created', { caseId: id, agentId: identity.agent.id, groupCase: true, memberAgentIds: agentIds }, at, inboxId);
+    return { replayed: false, value };
+  }, inboxIds, [caseMutationKey(id)]);
+  return json(res, result.replayed ? 200 : 201, groupCaseView(result.value));
+}
 
 function proposalFromInput(input, now) {
   const options = Array.isArray(input.options) ? input.options.map(item => ({
@@ -1792,6 +2017,9 @@ async function validatedPolicyBinding(inboxId, caseRecord, principal, evaluation
 
 async function ensureStructuredCase(inbox, input, actorAgentId, at) {
   const caseId = input.caseId ? assertSafeIdentifier(input.caseId, 'caseId') : store.id('case');
+  if ((await store.getJson(caseBindingPath(caseId)))?.mode === 'group') {
+    throw codedError(409, 'GROUP_OPERATION_UNSUPPORTED', 'Use group case operations for this case.');
+  }
   const existing = await getCase(inbox.id, caseId);
   if (existing?.schemaVersion) return existing;
   let value = createAgentCase({
@@ -1812,6 +2040,7 @@ async function ensureStructuredCase(inbox, input, actorAgentId, at) {
 async function nativeCaseDocuments(message, state, at, { revealRecipient = false, scopedAccept = false, scopedReject = false, scopedCompletion = null } = {}) {
   const bindingPath = caseBindingPath(message.caseId);
   let binding = await store.getJson(bindingPath);
+  if (binding?.mode === 'group') throw codedError(409, 'GROUP_OPERATION_UNSUPPORTED', 'Use group case operations for this case.');
   if (binding && !matchesCasePair(binding, message)) throw caseParticipantMismatch();
   let current = binding ? await store.getJson(sharedCasePath(message.caseId)) : null;
   if (binding && !current) throw Object.assign(new Error('Bound case has no canonical record'), { statusCode: 409 });
@@ -2350,7 +2579,8 @@ async function humanView(inboxId, inbox, cursors = {}) {
   }
   const visibleAssets = [...assets, ...sharedAssets];
   const visibleHistory = { ...history, assets: { ...history.assets, total: history.assets.total + sharedAssets.length } };
-  const projection = projectWorkspaceForHuman(cases);
+  const projection = projectWorkspaceForHuman(await Promise.all(cases.map(async value => value?.caseMode === 'group'
+    ? { ...value, assignments: await groupAssignments(value) } : value)));
   const participantDirectory = await participantDirectoryForHuman(inbox, agents, cases);
   const projectedInvitations = invitations
     .map(invitation => ({
@@ -2394,6 +2624,10 @@ async function agentView(inboxId, inbox, agentId) {
     store.listJson(path.join('inboxes', inboxId, 'delivery-receipts')),
     store.listJson(path.join('inboxes', inboxId, 'calendar-connectors'))
   ]);
+  const groupCaseIds = cases.filter(item => item.caseMode === 'group' && isCaseParticipant(item, agentId)).map(item => item.id);
+  const groupVisibility = await Promise.all(groupCaseIds.map(caseId => groupAgentReadable({ agent, inboxId }, caseId)));
+  const visibleGroups = new Set(groupCaseIds.filter((_id, index) => groupVisibility[index]));
+  const visibleMessages = messages.filter(message => !message.groupCase || visibleGroups.has(message.caseId));
   return {
     inbox,
     mode: 'agent-operator',
@@ -2401,14 +2635,15 @@ async function agentView(inboxId, inbox, agentId) {
     capabilities: [...new Set((Array.isArray(agent.permissions) ? agent.permissions : [])
       .filter(permission => allowedPermissions.has(permission) && canAct(agent, permission)))],
     queue: {
-      assignedMessages: messages.filter((item) => item.recipientAgentId === agentId),
-      authoredMessages: messages.filter((item) => item.senderAgentId === agentId),
+      assignedMessages: visibleMessages.filter((item) => item.recipientAgentId === agentId),
+      authoredMessages: visibleMessages.filter((item) => item.senderAgentId === agentId),
       activeCases: cases.filter(item => item.schemaVersion
-        ? isActiveCase(item) && isCaseParticipant(item, agentId)
+        ? isActiveCase(item) && isCaseParticipant(item, agentId) && (item.caseMode !== 'group' || visibleGroups.has(item.id))
         : item.status === 'active' && item.participantAgentIds?.includes(agentId)),
       createdAssets: assets.filter((item) => item.createdByAgentId === agentId),
       calendarConnectors: calendarConnectors.map(publicCalendarConnector),
-      deliveryReceipts: deliveryReceipts.filter(item => item.senderAgentId === agentId || item.recipientAgentId === agentId)
+      deliveryReceipts: deliveryReceipts.filter(item => (item.senderAgentId === agentId || item.recipientAgentId === agentId)
+        && (!item.groupCase || visibleGroups.has(item.caseId)))
     }
   };
 }
@@ -3077,6 +3312,15 @@ async function handleAgentRegistration(req, res, registrationRoute, claimRoute) 
 // case-session v1 §3: why claimed work can no longer be handled, or null. The same checks the
 // claim applies, for the work's counterparty and this agent.
 async function workIneligibility(message, identity) {
+  if (message?.groupCase) {
+    const binding = await store.getJson(caseBindingPath(message.caseId));
+    if (!groupMember(binding, identity)) return 'group_member_unavailable';
+    try { await verifyGroupMembers(binding.members, [identity.agent.id]); }
+    catch (error) {
+      if (['GROUP_MEMBER_UNAVAILABLE', 'GROUP_ASSIGNEE_UNAVAILABLE'].includes(error.code)) return 'group_member_unavailable';
+      throw error;
+    }
+  }
   const workKind = workKindOf(message, isHumanInstruction);
   if (workKind === 'human_instruction') {
     try { await assertHumanInstructionAuthority(message, identity); }
@@ -3146,11 +3390,14 @@ const caseToolCompletionNeedsHuman = (value, agentId) => value.proposals.some(p 
 async function loadCaseToolContext(session) {
   const facts = await caseSessionFacts(session);
   const binding = await store.getJson(caseBindingPath(session.caseId));
-  const counterpartyAgentId = binding?.agentIds.find(id => id !== session.agentId);
+  const counterpartyAgentId = facts.message?.groupCase ? facts.message.senderAgentId : binding?.agentIds.find(id => id !== session.agentId);
   const counterpartyDirectory = counterpartyAgentId ? await store.getJson(path.join('directory', 'agents', `${counterpartyAgentId}.json`)) : null;
   const enrichedSession = { ...session, counterpartyAgentId, counterpartyInboxId: counterpartyDirectory?.inboxId };
   const inbox = await store.getJson(path.join('inboxes', session.inboxId, 'inbox.json'));
-  const messages = (await store.listJson(path.join('inboxes', session.inboxId, 'messages'))).filter(m => m.caseId === session.caseId).map(m => ({ ...m, inboxId: session.inboxId }));
+  const messages = facts.message?.groupCase
+    ? groupCaseView(facts.caseRecord).messages.map(message => ({ ...message, inboxId: session.inboxId, senderType: 'agent', recipientAgentId: session.agentId,
+      from: { agentId: message.senderAgentId, address: message.senderAddress }, type: 'message', status: 'delivered', deliveredAt: message.createdAt }))
+    : (await store.listJson(path.join('inboxes', session.inboxId, 'messages'))).filter(m => m.caseId === session.caseId).map(m => ({ ...m, inboxId: session.inboxId }));
   const assets = [];
   // Only this inbox's own asset records and this case's grants: object storage keeps a per-inbox
   // copy of every record, and the canonical record is re-read, so nothing system-wide is listed.
@@ -3215,9 +3462,15 @@ async function withLiveCaseTool(scope, operation) {
   }
 }
 
-async function sendCaseToolMessage(ctx, { id, type, intent, text, payload = null, inReplyTo = null }, caseOptions = {}) {
+async function sendCaseToolMessage(ctx, { id, type, intent, text, payload = null, inReplyTo = null, assigneeAgentIds = [] }, caseOptions = {}) {
   await assertLiveToolSession(ctx.session);
   const at = store.now(), session = ctx.session;
+  if (ctx.workMessage.groupCase) {
+    if (type !== 'message') throw caseToolError('NOT_SUPPORTED_FOR_WORK');
+    const binding = await store.getJson(caseBindingPath(session.caseId));
+    const result = await writeGroupMessage(binding, { inboxId: session.inboxId, agent: ctx.agent }, { text, inReplyTo, assigneeAgentIds }, id, ctx.writeAudit);
+    return { ...result.message, status: 'delivered' };
+  }
   if (session.workKind === 'human_instruction') {
     const reply = { id, kind: 'humanInstructionReply', inboxId: session.inboxId, caseId: session.caseId,
       senderType: 'agent', senderAgentId: session.agentId, senderInboxId: session.inboxId, recipientInboxId: session.inboxId,
@@ -3479,6 +3732,7 @@ async function mintCaseSession(req, res, identity, workId, leaseTokenHash) {
       inboxId: identity.inboxId, agentId: identity.agent.id, familyId: identity.familyId, installationId: installation.id,
       workId, workKind, caseId: requestedCaseId, fence: claim.fence, leaseTokenHash, counterparty,
       allowedTools: allowedCaseTools(current.agent.permissions, workKind, caseSessionMcp.implemented)
+        .filter(name => !message.groupCase || ['envoi_case_snapshot', 'envoi_case_reply'].includes(name))
     }, at, writeAudit);
     return { ...created, leaseExpiresAt: claim.leaseExpiresAt };
   }, related, requestedCaseId ? [caseMutationKey(requestedCaseId)] : []);
@@ -3634,7 +3888,7 @@ async function claimCanonicalAgentWork(identity, currentIdentity, input, claimCa
     if (isHumanInstruction(message)) {
       try { await assertHumanInstructionAuthority(message, currentIdentity); }
       catch (error) { if ([400, 403, 404, 409, 422].includes(error.statusCode)) continue; throw error; }
-    } else if (isHumanDecision(message)) {
+    } else if (isHumanDecision(message) || message.groupCase) {
       if (await workIneligibility(message, currentIdentity)) continue;
     } else {
       const senderAgent = await store.getJson(path.join('inboxes', message.senderInboxId, 'agents', `${message.senderAgentId}.json`));
@@ -3682,6 +3936,7 @@ async function claimCanonicalAgentWork(identity, currentIdentity, input, claimCa
       updatedAt: now
     };
     await store.putJson(claimPath, claim);
+    if (message.groupCase) await auditGroupAssignment(message, claim.status, now, writeAudit);
     await caseSessions.endForWork(identity.inboxId, message.id, 'lease_lost', now, writeAudit);
     await writeAudit('agent.work_claimed', { workId: message.id, agentId: identity.agent.id, fence: claim.fence, attempts: claim.attempts, credentialFamilyId: claim.credentialFamilyId }, now);
     return { status: 200, payload: { work: { workId: message.id, message, leaseToken, leaseExpiresAt }, state: 'claimed' } };
@@ -3732,6 +3987,7 @@ async function settleCanonicalAgentWork({ identity, workId, currentMessage, clai
     messageId: currentMessage.id,
     ...workSenderFields(currentMessage),
     recipientAgentId: currentMessage.recipientAgentId,
+    ...(currentMessage.groupCase ? { groupCase: true, caseId: currentMessage.caseId } : {}),
     state,
     createdAt: now
   };
@@ -3740,7 +3996,8 @@ async function settleCanonicalAgentWork({ identity, workId, currentMessage, clai
     const targetInbox = await store.getJson(path.join('inboxes', targetInboxId, 'inbox.json'));
     if (!targetInbox) continue;
     documents.push(document(messagePath(targetInboxId, currentMessage.id), updated), document(deliveryReceiptPath(targetInboxId, receipt.id), receipt));
-    await writeAudit(`message.${state}`, { messageId: currentMessage.id, caseId: currentMessage.caseId, ...workSenderFields(currentMessage), recipientAgentId: currentMessage.recipientAgentId }, now, targetInboxId);
+    await writeAudit(`message.${state}`, { messageId: currentMessage.id, caseId: currentMessage.caseId, ...workSenderFields(currentMessage), recipientAgentId: currentMessage.recipientAgentId,
+      ...(currentMessage.groupCase ? { groupCase: true } : {}) }, now, targetInboxId);
   }
   claim.status = state === 'processed' ? 'completed' : 'acknowledged';
   claim.updatedAt = now;
@@ -3748,6 +4005,7 @@ async function settleCanonicalAgentWork({ identity, workId, currentMessage, clai
   const response = { workId, status: state, receipt };
   await store.putJsonBatch(documents);
   await store.putJson(claimPath, claim);
+  if (currentMessage.groupCase) await auditGroupAssignment(currentMessage, claim.status, now, writeAudit);
   if (state === 'processed') await caseSessions.endForWork(identity.inboxId, workId, 'work_settled', now, writeAudit);
   if (idempotencyPath) await store.putJson(idempotencyPath, { principalId: identity.agent.id, requestDigest, status: 'completed', response, createdAt: now });
   return { status: 201, payload: response };
@@ -3883,7 +4141,7 @@ const gatewayNativeAdapter = {
     const identity = await gatewayWorkIdentity(binding);
     if (identity.paused) throw agentPausedError();
     const candidates = (await store.listJson(path.join('inboxes', binding.inboxId, 'messages')))
-      .filter(message => !isHumanDecision(message) && !options.excludeWorkIds.includes(message.id));
+      .filter(message => !message.groupCase && !isHumanDecision(message) && !options.excludeWorkIds.includes(message.id));
     gatewayDeadline(options);
     const result = await claimCanonicalAgentWork(identity, identity, { acceptHumanInstructions: true }, candidates, gatewayAudit(options), { leaseMs: options.leaseSeconds * 1000 });
     const work = result.payload.work;
@@ -4030,6 +4288,8 @@ async function route(req, res) {
   // case-session v1 §6: a session token is checked by its own rules, before any other credential.
   if (url.pathname === '/mcp' && String(bearerToken(req) || '').startsWith(caseSessionTokenPrefix)) return handleCaseSessionMcp(req, res, url);
   await enforceAgentCredential(req, url, res);
+  const groupRoute = url.pathname.match(groupCaseRoute);
+  if (groupRoute) return handleGroupCaseRoute(req, res, groupRoute);
   if (wakeRoute) return handleHttpWakeRoute(req, res, url);
   if (caseSessionRoute) return handleCaseSessionRoute(req, res, caseSessionRoute);
   const grokTargetRoute = url.pathname.match(/^\/api\/inboxes\/([^/]+)\/agents\/([^/]+)\/wake-targets\/grok$/);
@@ -4190,10 +4450,10 @@ async function route(req, res) {
     const claimCandidates = action === 'claim' ? (await store.listJson(path.join('inboxes', identity.inboxId, 'messages')))
       .filter(message => !isHumanInstruction(message) || input.acceptHumanInstructions === true) : [];
     const ownCandidates = claimCandidates.filter(message => message.recipientInboxId === identity.inboxId && message.recipientAgentId === identity.agent.id && ['delivered', 'acknowledged'].includes(message.status));
-    const humanCaseIds = [...new Set([requestedMessage, ...ownCandidates].filter(m => isHumanInstruction(m) || isHumanDecision(m)).map(message => assertSafeIdentifier(message.caseId, 'caseId')))];
-    const humanBindings = await Promise.all(humanCaseIds.map(caseId => store.getJson(caseBindingPath(caseId))));
-    const relatedWorkInboxes = [...new Set([requestedMessage?.senderInboxId, ...ownCandidates.map(message => message.senderInboxId), ...humanBindings.flatMap(binding => binding?.inboxIds || [])].filter(Boolean))];
-    const workLockKeys = [...new Set([...(requestedMessage?.caseId ? [caseMutationKey(requestedMessage.caseId)] : []), ...humanCaseIds.map(caseMutationKey)])];
+    const sharedWorkCaseIds = [...new Set([requestedMessage, ...ownCandidates].filter(m => m?.groupCase || isHumanInstruction(m) || isHumanDecision(m)).map(message => assertSafeIdentifier(message.caseId, 'caseId')))];
+    const sharedWorkBindings = await Promise.all(sharedWorkCaseIds.map(caseId => store.getJson(caseBindingPath(caseId))));
+    const relatedWorkInboxes = [...new Set([requestedMessage?.senderInboxId, ...ownCandidates.map(message => message.senderInboxId), ...sharedWorkBindings.flatMap(binding => binding?.inboxIds || [])].filter(Boolean))];
+    const workLockKeys = [...new Set([...(requestedMessage?.caseId ? [caseMutationKey(requestedMessage.caseId)] : []), ...sharedWorkCaseIds.map(caseMutationKey)])];
     if (action !== 'claim' && (typeof input.leaseToken !== 'string' || !input.leaseToken)) return fail(res, 400, 'leaseToken is required');
     if (action === 'fail' && typeof input.retryable !== 'boolean') return fail(res, 400, 'retryable must be a boolean');
     let idempotencyKey = null;
@@ -4219,7 +4479,7 @@ async function route(req, res) {
         return { status: 200, payload: { work: null, state: 'paused' } };
       }
       if (!canAct(currentIdentity.agent, 'receive_agent_messages')) throw Object.assign(new Error('Agent is not approved to receive messages'), { statusCode: 403 });
-      for (const caseId of humanCaseIds) {
+      for (const caseId of sharedWorkCaseIds) {
         const binding = await store.getJson(caseBindingPath(caseId));
         if (binding?.inboxIds?.some(id => id !== identity.inboxId && !relatedWorkInboxes.includes(id))) throw Object.assign(new Error('Case participants changed while acquiring the mutation lock; retry'), { statusCode: 409 });
       }
@@ -4232,7 +4492,7 @@ async function route(req, res) {
       await assertCaseProgressAllowed(identity.inboxId, currentMessage.caseId);
       if (isHumanInstruction(currentMessage)) {
         await assertHumanInstructionAuthority(currentMessage, currentIdentity);
-      } else if (isHumanDecision(currentMessage)) {
+      } else if (isHumanDecision(currentMessage) || currentMessage.groupCase) {
         if (action === 'reply') throw Object.assign(new Error('Human instruction required'), { statusCode: 404 });
         if (await workIneligibility(currentMessage, currentIdentity)) throw Object.assign(new Error('Work no longer eligible'), { statusCode: 403 });
       } else {
@@ -4308,6 +4568,7 @@ async function route(req, res) {
           claim.leaseExpiresAt = null;
           claim.updatedAt = now;
           await store.putJson(claimPath, claim);
+          if (currentMessage.groupCase) await auditGroupAssignment(currentMessage, claim.status, now, writeAudit);
         } else await failAgentWorkPermanently(currentMessage, claim, reasonCode || 'MAX_ATTEMPTS_EXCEEDED', now, writeAudit);
         await caseSessions.endForWork(identity.inboxId, workId, 'work_settled', now, writeAudit);
         await writeAudit('agent.work_failed', { workId, agentId: identity.agent.id, retryable, reasonCode, attempts: agentWorkAttempts(claim), retryAt: retryable ? claim.retryAt : null }, now);
@@ -5334,7 +5595,8 @@ async function route(req, res) {
     const limit = rawLimit === null ? 100 : Number(rawLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw codedError(400, 'EVENT_LIMIT_INVALID', 'The event page limit must be an integer from 1 to 200.');
     const { cursor } = await resumeEventCursor(inboxId, url.searchParams.get('cursor') || '');
-    return json(res, 200, await eventPage(inboxId, { cursor, limit }));
+    const page = await eventPage(inboxId, { cursor, limit });
+    return json(res, 200, { ...page, events: page.events.filter(event => visibleInboxEvent(event, agent?.id, Boolean(human))) });
   }
 
   if (req.method === 'GET' && suffix === 'events') {
@@ -5849,6 +6111,7 @@ async function route(req, res) {
   const caseRoute = suffix.match(/^cases\/([^/]+)(?:\/(events|actions|policy-evaluations|proposals|receipt))?$/);
   if (req.method === 'GET' && caseRoute && !caseRoute[2]) {
     const value = await getCase(inboxId, caseRoute[1]);
+    if (value?.caseMode === 'group' && !await groupInboxReadable(req, inbox, value.id)) return fail(res, 404, 'Case not found');
     return value ? json(res, 200, value) : fail(res, 404, 'Case not found');
   }
 
@@ -6083,11 +6346,19 @@ async function route(req, res) {
     return json(res, 201, receipt);
   }
 
-  if (req.method === 'GET' && suffix === 'cases') return json(res, 200, await listCases(inboxId, { limit: url.searchParams.get('limit'), before: url.searchParams.get('before') }));
-  if (req.method === 'GET' && suffix === 'messages') return json(res, 200, await listMessages(inboxId, url.searchParams.get('caseId'), { limit: url.searchParams.get('limit'), before: url.searchParams.get('before') }));
+  if (req.method === 'GET' && suffix === 'cases') {
+    const cases = await listCases(inboxId, { limit: url.searchParams.get('limit'), before: url.searchParams.get('before') });
+    const visible = await Promise.all(cases.map(async value => value.caseMode !== 'group' || await groupInboxReadable(req, inbox, value.id)));
+    return json(res, 200, cases.filter((_value, index) => visible[index]));
+  }
+  if (req.method === 'GET' && suffix === 'messages') {
+    const caseId = url.searchParams.get('caseId');
+    const messages = await listMessages(inboxId, caseId, { limit: url.searchParams.get('limit'), before: url.searchParams.get('before') });
+    return json(res, 200, messages.filter(message => !message.groupCase));
+  }
   if (req.method === 'GET' && suffix === 'delivery-receipts') {
     const receipts = await store.listJson(path.join('inboxes', inboxId, 'delivery-receipts'));
-    return json(res, 200, receipts.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))));
+    return json(res, 200, receipts.filter(receipt => !receipt.groupCase).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))));
   }
   if (req.method === 'GET' && suffix === 'deliveries') {
     const human = await auth.getHuman(req);
@@ -6423,8 +6694,8 @@ async function route(req, res) {
     if (contact.blocked) return fail(res, 403, 'Recipient is blocked');
     if (contact.approved === false) return fail(res, 403, 'Recipient is not an approved human contact');
     const message = { id: store.id('msg'), inboxId, caseId: input.caseId ? assertSafeIdentifier(input.caseId, 'caseId') : store.id('case'), senderType: 'human', senderHumanId: human.id, recipientAgentId, type: input.type || 'message', text: input.text, payload: input.payload || null, createdAt: store.now(), status: 'received' };
-    await store.putJson(path.join('inboxes', inboxId, 'messages', `${message.id}.json`), message);
     const caseRecord = await ensureStructuredCase(inbox, { ...input, caseId: message.caseId }, message.recipientAgentId, message.createdAt);
+    await store.putJson(path.join('inboxes', inboxId, 'messages', `${message.id}.json`), message);
     appendEvent(caseRecord, { id: `evt_${message.id}`, type: 'message', actor: human.id, createdAt: message.createdAt, payload: { messageId: message.id, messageType: message.type, text: message.text, data: message.payload, senderHumanId: human.id, recipientAgentId: message.recipientAgentId, deliveryState: message.status }, linkedPolicyEvaluation: null, precedingEventRef: caseRecord.events.at(-1)?.id || null });
     await saveCase(inboxId, caseRecord);
     await audit(inboxId, 'message.created', { messageId: message.id, caseId: message.caseId, senderType: 'human', senderHumanId: message.senderHumanId, recipientAgentId: message.recipientAgentId });

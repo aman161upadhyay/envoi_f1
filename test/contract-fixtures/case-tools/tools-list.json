@@ -99,6 +99,17 @@
                 "inReplyTo": {
                   "type": "string",
                   "pattern": "^[m]_[a-z2-7]{16}$"
+                },
+                "assigneeAgentIds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 31,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^agent_[A-Za-z0-9_-]+$",
+                    "maxLength": 128
+                  }
                 }
               }
             }

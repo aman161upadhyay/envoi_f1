@@ -67,6 +67,15 @@
             "name": "envoi_send_message"
           },
           {
+            "name": "envoi_start_group_case"
+          },
+          {
+            "name": "envoi_read_group_case"
+          },
+          {
+            "name": "envoi_send_group_message"
+          },
+          {
             "name": "envoi_send_proposal"
           },
           {

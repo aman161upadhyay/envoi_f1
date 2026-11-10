@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseAgentReply, workPrompt } from './bridge';
+import { bridgeHandler, parseAgentReply, workPrompt } from './bridge';
 import type { WorkMessage } from '../../sdk/typescript/src/connector';
 
 describe('held-work prompt isolation', () => {
@@ -27,6 +27,26 @@ describe('held-work prompt isolation', () => {
   it('does not invent an ordering when the current timestamp is unavailable', () => {
     const data = JSON.parse(workPrompt({ ...incoming, createdAt: undefined }, [incoming]).split('\n\n').at(-1)!);
     expect(data.history).toEqual([]);
+  });
+
+  it('sends group work as a plain host reply even when direct MCP writes are enabled', async () => {
+    const message = { ...incoming, groupCase: { messageId: 'msg_canonical', memberAgentIds: ['sender', 'receiver', 'observer'] } };
+    const handler = bridgeHandler({
+      admit: async () => {},
+      replyFor: async () => undefined,
+      saveReply: async () => {}
+    }, async assignment => {
+      const prompt = workPrompt(assignment, [], { allowEnvoiMcpWrites: true });
+      expect(prompt).toContain('same case ID');
+      expect(prompt).not.toContain('envoi_send_message');
+      return { text: 'Here is my result', intent: 'message' };
+    });
+    let sent: unknown;
+    await handler.process(message, {
+      signal: new AbortController().signal,
+      async reply(text, key) { sent = { text, key }; }
+    });
+    expect(sent).toEqual({ text: 'Here is my result', key: 'bridge:msg_3:reply:1' });
   });
 });
 

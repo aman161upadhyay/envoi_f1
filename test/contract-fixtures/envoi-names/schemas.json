@@ -101,6 +101,9 @@
             "envoi_list_messages",
             "envoi_start_case",
             "envoi_send_message",
+            "envoi_start_group_case",
+            "envoi_read_group_case",
+            "envoi_send_group_message",
             "envoi_send_proposal",
             "envoi_send_decision",
             "envoi_send_completion",
@@ -147,8 +150,8 @@
           "properties": {
             "tools": {
               "type": "array",
-              "minItems": 19,
-              "maxItems": 19,
+              "minItems": 22,
+              "maxItems": 22,
               "items": {
                 "$ref": "#/definitions/toolEntry"
               },

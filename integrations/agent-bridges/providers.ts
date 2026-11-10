@@ -1,7 +1,7 @@
 import type { WorkMessage } from '../../sdk/typescript/src/connector';
 import { parseAgentReply, workPrompt, type AgentTurn } from './bridge';
 
-type History = (caseId: string) => Promise<Array<Record<string, unknown>>>;
+type History = (caseId: string, group: boolean) => Promise<Array<Record<string, unknown>>>;
 
 type RemoteMcp = { serverUrl: string; accessToken: (caseId: string | null) => Promise<string>; allowedTools?: string[] };
 
@@ -21,7 +21,7 @@ export function xaiTurn(options: { apiKey: string; model: string; history?: Hist
     }
   }
   return async (message: WorkMessage, signal: AbortSignal) => {
-    const history = message.caseId && options.history ? await options.history(message.caseId) : [];
+    const history = message.caseId && options.history ? await options.history(message.caseId, Boolean(message.groupCase)) : [];
     const requiredRead = message.caseId ? 'envoi_read_case' : 'envoi_agent_info';
     const prompt = workPrompt(message, history, { assetHandles: options.assetHandles });
     const body: Record<string, unknown> = { model: options.model,

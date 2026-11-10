@@ -51,7 +51,7 @@ export async function createGrokBridge(config: GrokBridgeConfiguration,
   const turn = xaiTurn({
     apiKey: config.apiKey, model: config.model,
     ...(options.fetch ? { fetch: options.fetch } : {}),
-    history: caseId => connector.listCaseMessages(caseId, 20),
+    history: async (caseId, group) => group ? (await connector.getGroupCase(caseId)).messages : connector.listCaseMessages(caseId, 20),
     assetHandles: [...approvedAssets.values()].map(({ handle, filename }) => ({ handle, filename })),
     ...(mcpUrl ? { mcp: {
       serverUrl: mcpUrl,

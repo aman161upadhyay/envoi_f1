@@ -52,6 +52,17 @@
           "inReplyTo": {
             "type": "string",
             "pattern": "^[m]_[a-z2-7]{16}$"
+          },
+          "assigneeAgentIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 31,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^agent_[A-Za-z0-9_-]+$",
+              "maxLength": 128
+            }
           }
         }
       },
@@ -637,6 +648,11 @@
               "receivedAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "actorAgentId": {
+                "type": "string",
+                "pattern": "^agent_[A-Za-z0-9_-]+$",
+                "maxLength": 128
               }
             }
           },
@@ -937,6 +953,31 @@
                 "const": 1024
               }
             }
+          },
+          "groupMembers": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "agentId",
+                "address"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string",
+                  "pattern": "^agent_[A-Za-z0-9_-]+$",
+                  "maxLength": 128
+                },
+                "address": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 254
+                }
+              }
+            }
           }
         }
       },
@@ -1099,6 +1140,11 @@
                 "type": "null"
               }
             ]
+          },
+          "actorAgentId": {
+            "type": "string",
+            "pattern": "^agent_[A-Za-z0-9_-]+$",
+            "maxLength": 128
           }
         }
       },
@@ -1128,7 +1174,23 @@
             ]
           },
           "recipient": {
-            "$ref": "#/definitions/party"
+            "oneOf": [
+              {
+                "$ref": "#/definitions/party"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "group"
+                  }
+                }
+              }
+            ]
           },
           "inReplyTo": {
             "$ref": "#/definitions/messageRef"

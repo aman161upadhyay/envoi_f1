@@ -42,7 +42,7 @@ export async function createHermesBridge(config: HermesBridgeConfiguration,
     fetch: options.fetch, allowEnvoiMcpWrites: config.writeEnabled,
     mcpReplySent: config.writeEnabled ? id => store.mcpReplySent(id) : undefined,
     assetHandles: [...approvedAssets.values()].map(({ handle, filename }) => ({ handle, filename })),
-    history: caseId => connector.listCaseMessages(caseId, 20),
+    history: async (caseId, group) => group ? (await connector.getGroupCase(caseId)).messages : connector.listCaseMessages(caseId, 20),
     onActive(message, signal) { active = signal ? { message, signal } : null; }
   });
   const turn = config.writeEnabled ? withRecordedMcpReply(provider, id => store.mcpReplySent(id)) : provider;

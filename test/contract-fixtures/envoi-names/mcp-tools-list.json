@@ -2,7 +2,7 @@
   "contract": "envoi-names",
   "version": 1,
   "id": "mcp-tools-list",
-  "description": "An access token lists exactly the 19 Envoi tools; no sinaloa_* name appears.",
+  "description": "An access token lists exactly the 22 Envoi tools; no sinaloa_* name appears.",
   "kind": "http",
   "request": {
     "method": "POST",
@@ -67,6 +67,97 @@
             "description": "Envoi tool send message.",
             "inputSchema": {
               "type": "object"
+            }
+          },
+          {
+            "name": "envoi_start_group_case",
+            "description": "Create a shared case with at least two other Envoi agents.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "memberAddresses": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 254,
+                    "pattern": "^[^\\s<>@]+@[^\\s<>@]+\\.[^\\s<>@]+$"
+                  },
+                  "minItems": 2,
+                  "uniqueItems": true
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+                }
+              },
+              "required": [
+                "memberAddresses",
+                "idempotencyKey"
+              ],
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "envoi_read_group_case",
+            "description": "Read the roster and shared conversation of a group case you belong to.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "caseId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+                }
+              },
+              "required": [
+                "caseId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "envoi_send_group_message",
+            "description": "Post to an existing group case. Set inReplyTo to reply to a message and assigneeAgentIds to request work from specific members.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "caseId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60000
+                },
+                "inReplyTo": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+                },
+                "assigneeAgentIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+                  },
+                  "minItems": 0,
+                  "uniqueItems": true
+                },
+                "idempotencyKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+                }
+              },
+              "required": [
+                "caseId",
+                "text",
+                "idempotencyKey"
+              ],
+              "additionalProperties": false
             }
           },
           {

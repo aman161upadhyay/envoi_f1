@@ -11,7 +11,7 @@ type Keyed = { idempotencyKey: string };
 type Terms = Record<string, unknown>;
 export interface CaseToolInputs {
   envoi_case_snapshot: { eventLimit?: number; eventsBefore?: string };
-  envoi_case_reply: Keyed & { text: string; intent?: 'message' | 'clarify' | 'status'; inReplyTo?: string };
+  envoi_case_reply: Keyed & { text: string; intent?: 'message' | 'clarify' | 'status'; inReplyTo?: string; assigneeAgentIds?: string[] };
   envoi_case_propose: Keyed & { text: string; terms: Terms };
   envoi_case_decide: Keyed & { proposalRef: string; text: string } & (
     { decision: 'accept'; optionRef: string; authorityRef: string; terms?: never }
@@ -36,8 +36,9 @@ export interface CaseSnapshot {
   case: { objective: string; collaborationMode: string; status: string; deadline: string | null; createdAt: string; updatedAt: string };
   you: { address: string };
   counterparty: CaseParty;
-  requestedResponse?: { ref: string; from: 'other_agent' | 'your_human'; kind: string; intent: string | null; text: string; truncated: boolean; receivedAt: string };
-  recentEvents: Array<{ ref: string; kind: string; actor: string; at: string; intent: string | null; text: string | null; truncated: boolean; deliveryStatus: string | null }>;
+  groupMembers?: Array<{ agentId: string; address: string }>;
+  requestedResponse?: { ref: string; from: 'other_agent' | 'your_human'; actorAgentId?: string; kind: string; intent: string | null; text: string; truncated: boolean; receivedAt: string };
+  recentEvents: Array<{ ref: string; kind: string; actor: string; actorAgentId?: string; at: string; intent: string | null; text: string | null; truncated: boolean; deliveryStatus: string | null }>;
   page: { hasOlder: boolean; olderCursor: string | null };
   proposal: null | { ref: string; kind: string; status: string; lastActor: string; options: Array<{ ref: string; value: unknown; truncated: boolean }>; expiresAt: string | null };
   authority: { pendingHumanDecision: boolean; lastPolicyDecision: null | { authorityRef: string; action: string; decision: string; humanApproval: string; optionRef: string | null; expiresAt: string } };
@@ -50,7 +51,7 @@ type Replayed = { replayed: boolean };
 type DeliveredTo = { recipient: CaseParty };
 export interface CaseToolResults {
   envoi_case_snapshot: CaseSnapshot;
-  envoi_case_reply: Replayed & DeliveredTo & { messageRef: string; status: 'queued' | 'delivered'; inReplyTo: string | null; createdAt: string };
+  envoi_case_reply: Replayed & { recipient: CaseParty | { kind: 'group' }; messageRef: string; status: 'queued' | 'delivered'; inReplyTo: string | null; createdAt: string };
   envoi_case_propose: Replayed & DeliveredTo & { messageRef: string; proposalRef: string; optionRef: string; status: 'queued' };
   envoi_case_decide: Replayed & DeliveredTo & { decision: 'accept' | 'counter' | 'reject'; messageRef: string; proposalRef: string; optionRef: string | null; proposalStatus: string; caseStatus: string };
   envoi_authority_check: Replayed & { action: 'accept_proposal' | 'complete_case'; authorityRef: string; decision: 'allow' | 'deny' | 'needsHuman'; humanApproval: 'not_required' | 'pending' | 'approved'; expiresAt: string; proposalRef: string | null; optionRef: string | null };
@@ -174,10 +175,21 @@ export class CaseToolsClient {
         || snapshot.allowedActions.some(tool => !context.allowedTools.includes(tool))
         || Object.hasOwn(snapshot, 'requestedResponse') === Object.hasOwn(input, 'eventsBefore')
         || !snapshotWithinLimits(snapshot)) throw invalidResponse();
+      const groupMemberIds = new Set(context.groupMemberAgentIds);
+      if (snapshot.groupMembers) {
+        const snapshotIds = new Set(snapshot.groupMembers.map(member => member.agentId));
+        if (snapshotIds.size !== groupMemberIds.size || snapshotIds.size !== snapshot.groupMembers.length
+          || snapshot.groupMembers.some(member => !groupMemberIds.has(member.agentId))
+          || snapshot.recentEvents.some(event => event.actorAgentId && !groupMemberIds.has(event.actorAgentId))
+          || (snapshot.requestedResponse && !groupMemberIds.has(snapshot.requestedResponse.actorAgentId || ''))) throw invalidResponse();
+      } else if (groupMemberIds.size) throw invalidResponse();
       if (!Object.hasOwn(input, 'eventsBefore')) this.#initialized = true;
     } else if (object(value) && 'recipient' in value) {
       const recipient = value.recipient;
-      if (!object(recipient) || recipient.kind !== context.counterpartyKind || recipient.kind === 'agent' && recipient.address !== context.counterpartyAddress) throw invalidResponse();
+      if (!object(recipient)) throw invalidResponse();
+      if (name === 'envoi_case_reply' && context.groupMemberAgentIds) {
+        if (recipient.kind !== 'group') throw invalidResponse();
+      } else if (recipient.kind !== context.counterpartyKind || recipient.kind === 'agent' && recipient.address !== context.counterpartyAddress) throw invalidResponse();
     }
     if (name === 'envoi_authority_check') {
       const request = input as CaseToolInputs['envoi_authority_check'];

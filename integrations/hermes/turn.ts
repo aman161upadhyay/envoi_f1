@@ -3,7 +3,7 @@ import { isHumanInstructionMessage, type WorkMessage } from '../../sdk/typescrip
 import { parseAgentReply, workPrompt, type AgentTurn, type BridgeLedger } from '../agent-bridges/bridge';
 import { HermesRunStore } from './run-store';
 
-type History = (caseId: string) => Promise<Array<Record<string, unknown>>>;
+type History = (caseId: string, group: boolean) => Promise<Array<Record<string, unknown>>>;
 
 export interface HermesTurnOptions {
   apiUrl: string;
@@ -69,7 +69,7 @@ export function hermesTurn(options: HermesTurnOptions): AgentTurn {
     options.onActive?.(message, signal);
     let runId: string | undefined;
     try {
-      const history = message.caseId && options.history ? await options.history(message.caseId) : [];
+      const history = message.caseId && options.history ? await options.history(message.caseId, Boolean(message.groupCase)) : [];
       const request = {
         input: workPrompt(message, history, {
           allowEnvoiMcpWrites: options.allowEnvoiMcpWrites,

@@ -165,6 +165,10 @@
 .app-shell .thread-meta .status-badge { position: static; display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 11px; font-size: 12px; box-shadow: none; }
 .app-shell .add-folder { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border: 0; background: none; color: var(--ink3); font-size: 12px; }
 .app-shell .participant-duo { display: grid; grid-template-columns: minmax(0,1fr) 28px minmax(0,1fr); gap: 8px; align-items: center; margin-bottom: 22px; }
+.app-shell .participant-duo.participant-group { grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); }
+.app-shell .group-reply, .app-shell .group-assignments { color: var(--ink2); font-size: 12px; }
+.app-shell .group-reply { margin-bottom: 4px; }
+.app-shell .group-assignments { margin: 6px 0 0; padding-inline-start: 16px; }
 .app-shell .participant-duo .participant-card { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 11px 12px; border: 0; border-radius: 12px; background: var(--fill); }
 .app-shell .participant-duo .participant-card.mine { background: var(--accent-soft); }
 .app-shell .participant-duo .counterparty-avatar { width: 36px; height: 36px; font-size: 14px; }

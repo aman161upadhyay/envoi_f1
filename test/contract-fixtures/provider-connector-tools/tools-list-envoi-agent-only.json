@@ -59,6 +59,9 @@
             "name": "envoi_list_messages"
           },
           {
+            "name": "envoi_read_group_case"
+          },
+          {
             "name": "envoi_claim_work"
           },
           {

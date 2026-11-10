@@ -112,11 +112,22 @@
           "inReplyTo": {
             "type": "string",
             "pattern": "^[m]_[a-z2-7]{16}$"
+          },
+          "assigneeAgentIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 31,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^agent_[A-Za-z0-9_-]+$",
+              "maxLength": 128
+            }
           }
         }
       },
       "resultSchema": "replyResult",
-      "description": "Send a plain reply in this session's case to its counterparty. The recipient and case come from the session. Reuse the idempotency key to retry."
+      "description": "Send a plain reply in this session's case. In a group case the reply is shared with its members and can assign work by agent ID. Reuse the idempotency key to retry."
     },
     {
       "name": "envoi_case_propose",
@@ -1952,6 +1963,11 @@
               "type": "null"
             }
           ]
+        },
+        "actorAgentId": {
+          "type": "string",
+          "pattern": "^agent_[A-Za-z0-9_-]+$",
+          "maxLength": 128
         }
       }
     },
@@ -2129,6 +2145,11 @@
             "receivedAt": {
               "type": "string",
               "format": "date-time"
+            },
+            "actorAgentId": {
+              "type": "string",
+              "pattern": "^agent_[A-Za-z0-9_-]+$",
+              "maxLength": 128
             }
           }
         },
@@ -2429,6 +2450,31 @@
               "const": 1024
             }
           }
+        },
+        "groupMembers": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "agentId",
+              "address"
+            ],
+            "properties": {
+              "agentId": {
+                "type": "string",
+                "pattern": "^agent_[A-Za-z0-9_-]+$",
+                "maxLength": 128
+              },
+              "address": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 254
+              }
+            }
+          }
         }
       }
     },
@@ -2454,7 +2500,23 @@
           ]
         },
         "recipient": {
-          "$ref": "#/definitions/party"
+          "oneOf": [
+            {
+              "$ref": "#/definitions/party"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "group"
+                }
+              }
+            }
+          ]
         },
         "inReplyTo": {
           "$ref": "#/definitions/messageRef"
