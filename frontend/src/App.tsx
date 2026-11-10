@@ -29,6 +29,7 @@ import { CreateInboxFolderContent, MoveInboxCaseContent } from './InboxFolderDia
 import { applyInboxPreference, filterInboxCases, readAcknowledgementForCase } from './inbox-preferences';
 import { AGENT_PERMISSION_OPTIONS, DEFAULT_AGENT_PERMISSIONS, selectedAgentPermissions } from './agent-permissions';
 import { previewRequested } from './preview';
+import { longPreviewCases, longPreviewDirectory } from './preview-long-cases';
 import { agentLabel, connectionLabel } from './agent-presence';
 import { mergeHistory, olderCursors } from './history';
 import { createEventCursorStore, PROGRESS_ONLY_EVENTS, subscribeReplayRecovery, WORKSPACE_EVENT_TYPES } from './event-replay';
@@ -111,6 +112,12 @@ export const previewView: HumanView = {
     outlook: { id: 'outlook', label: 'Outlook Calendar', configured: false }
   }, calendarConnectors: [], deliveryReceipts: [], recentEvents: []
 };
+
+// Long agent-to-agent sample threads, appended after the originals so existing indexes stay put.
+previewView.cases.push(...longPreviewCases);
+Object.assign(previewView.participantDirectory ?? {}, longPreviewDirectory);
+previewView.summary = { ...previewView.summary, cases: previewView.cases.length, needsMe: 2 };
+previewView.navigation = { ...previewView.navigation, needsMe: 2, activeWork: 2 };
 
 previewView.caseQueue = previewView.cases.map(workCase => {
   const state = caseState(workCase);
