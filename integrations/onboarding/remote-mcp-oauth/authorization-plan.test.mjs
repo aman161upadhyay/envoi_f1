@@ -124,6 +124,21 @@ for (const row of cimdCases) {
   });
 }
 
+const grantEntry = cimdRegistry.contracts.find(contract => contract.id === 'agent-remote-auth-cimd-grants');
+for (const file of grantEntry.fixtures) {
+  const row = JSON.parse(await readFile(new URL('../../../test/contract-fixtures/' + grantEntry.dir + '/' + file, import.meta.url), 'utf8'));
+  test('approved CIMD grant client planner: ' + row.id, async () => {
+    const { expected: _expected, ...input } = await inputs();
+    const current = { ...input, clientMetadata: row.document, redirectUri: row.document.redirect_uris[0] };
+    if (!row.expected.valid) return assert.throws(() => planRemoteMcpAuthorization(current), /Invalid remote MCP authorization setup/);
+    const params = new URL(planRemoteMcpAuthorization(current).authorizationUrl).searchParams;
+    assert.equal(params.get('response_type'), 'code');
+    assert.equal(params.get('code_challenge_method'), 'S256');
+    assert.equal(params.get('scope'), 'envoi.agent envoi.send');
+    assert.equal(params.has('client_assertion'), false);
+  });
+}
+
 test('modern public capabilities do not relax trusted issuer, redirect, PKCE or scope checks', async () => {
   const { expected: _expected, ...input } = await inputs();
   const document = cimdCases.find(row => row.id === 'modern-chatgpt-preference').document;

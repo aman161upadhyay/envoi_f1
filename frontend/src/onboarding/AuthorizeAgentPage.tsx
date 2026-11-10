@@ -2,7 +2,7 @@ import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import type { Inbox } from '../types';
 import { ClaimProblemNotice, useClaimClock } from './ClaimPage';
 import { ConsentTargetForm } from './ConsentTargetForm';
-import { ConsentController, consentOutcomeText } from './consent-state';
+import { ConsentController, consentOutcomeText, authorizationStartMessage, type AuthorizationStartError } from './consent-state';
 import { remoteAuthApi } from './remote-auth-api';
 import { permissionLabel, routeLabel, type ClaimAgent, type OnboardingApi } from './types';
 import type { RemoteAuthApi } from './remote-auth-types';
@@ -10,9 +10,15 @@ import type { RemoteAuthApi } from './remote-auth-types';
 export interface AuthorizeAgentPageProps {
   humanId: string; handle: string | null; workspaces: Inbox[]; agents: ClaimAgent[];
   client?: RemoteAuthApi; controller?: ConsentController; replacementClient?: OnboardingApi;
+  startError?: AuthorizationStartError | null;
 }
 const navigate = (url: string) => window.location.replace(url);
 export function AuthorizeAgentPage(props: AuthorizeAgentPageProps) {
+  if (props.startError && !props.handle) return <section className="onboarding-page claim-page" aria-labelledby="oauth-title">
+    <header className="onboarding-heading"><h1 id="oauth-title">Connect your assistant</h1></header>
+    <p className="onboarding-notice" role="alert">{authorizationStartMessage(props.startError)}</p>
+    <a className="button secondary" href="/app">Back to workspace</a>
+  </section>;
   return <AuthorizeAgentSession key={props.humanId + ':' + props.handle} {...props} />;
 }
 function AuthorizeAgentSession({ humanId, handle, workspaces, agents, client = remoteAuthApi, controller: supplied, replacementClient }: AuthorizeAgentPageProps) {

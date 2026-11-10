@@ -195,8 +195,12 @@ export function clientMetadataRejection(document, clientId) {
   const uris = document.redirect_uris;
   if (!Array.isArray(uris) || uris.length < 1 || uris.length > remoteAuthLimits.clientMetadata.redirectUrisMax || uris.some(uri => redirectUriRejection(uri))) return 'redirect_uris_invalid';
   if (!supportsPublicClientAuthentication(document)) return 'auth_method_not_none';
+  // Client capabilities may exceed the server's supported grants. This does not
+  // enable those grants at /oauth/token; that endpoint's allowlist stays separate.
   const grants = document.grant_types;
-  if (grants !== undefined && (!Array.isArray(grants) || !grants.includes('authorization_code') || grants.some(grant => !['authorization_code', 'refresh_token'].includes(grant)))) return 'grant_types_invalid';
+  if (grants !== undefined && (!Array.isArray(grants) || grants.length < 1 || grants.length > 16
+    || !grants.includes('authorization_code') || new Set(grants).size !== grants.length
+    || !Array.from(grants).every(grant => typeof grant === 'string' && grant.length >= 1 && grant.length <= 256 && /^[!-~]+$/.test(grant)))) return 'grant_types_invalid';
   const responses = document.response_types;
   if (responses !== undefined && (!Array.isArray(responses) || responses.length !== 1 || responses[0] !== 'code')) return 'response_types_invalid';
   for (const field of ['client_uri', 'logo_uri']) if (document[field] !== undefined && !httpsUrl(document[field])) return 'not_json';
@@ -254,20 +258,28 @@ export function createClientMetadataFetch({ destination, request = https.request
 
 // §3: resolves a client_id to a client, or to null for an unknown or invalid client. Metadata documents
 // are cached per exact client_id; a failed fetch is never cached.
-export function createClientResolver({ origin, flags, preRegistered = new Map(), fetchClientMetadata, now = () => Date.now(), cacheLimit = 1000 }) {
+export function createClientResolver({ origin, flags, preRegistered = new Map(), fetchClientMetadata, now = () => Date.now(), cacheLimit = 1000, observe = record => console.warn(JSON.stringify(record)) }) {
   const cache = new Map();
+  const fetchReasons = new Set(['fetch_failed', 'not_json', 'body_too_large', 'http_wake_address_rules', 'http_wake_name_rules']);
+  const reject = (clientId, stage, reason) => {
+    try { observe({ event: 'envoi.oauth_client_rejected', stage, reason,
+      clientIdHash: typeof clientId === 'string' ? crypto.createHash('sha256').update(clientId).digest('hex') : null }); } catch { /* Diagnostics cannot alter authorization. */ }
+    return null;
+  };
   return async clientId => {
-    if (typeof clientId !== 'string' || !clientId) return null;
+    if (typeof clientId !== 'string' || !clientId) return reject(clientId, 'client_id', 'client_id_invalid');
     if (/^client_/.test(clientId)) {
       const client = preRegistered.get(clientId);
-      return client && routeFlagOn(flags, client.connectionRoute) ? client : null;
+      return client && routeFlagOn(flags, client.connectionRoute) ? client : reject(clientId, 'client_id', 'client_unavailable');
     }
-    if (!flags.remoteMcpOAuth || clientIdUrlRejection(clientId, origin)) return null;
+    if (!flags.remoteMcpOAuth || clientIdUrlRejection(clientId, origin)) return reject(clientId, 'client_id', 'client_id_invalid');
     const cached = cache.get(clientId);
     if (cached && cached.expiresAt > now()) return cached.client;
     cache.delete(clientId);
     const fetched = await fetchClientMetadata(clientId);
-    if (!fetched || fetched.rejection || clientMetadataRejection(fetched.document, clientId)) return null;
+    if (!fetched || fetched.rejection) return reject(clientId, 'fetch', fetchReasons.has(fetched?.rejection) ? fetched.rejection : 'fetch_failed');
+    const rejection = clientMetadataRejection(fetched.document, clientId);
+    if (rejection) return reject(clientId, 'metadata', rejection);
     const document = fetched.document;
     const client = Object.freeze({
       clientId, clientName: document.client_name, connectionRoute: 'remote_mcp_oauth', redirectUris: Object.freeze([...document.redirect_uris]),

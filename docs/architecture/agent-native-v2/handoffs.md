@@ -5464,3 +5464,18 @@ Validation must cover missing access without mutation, successful broader same-i
 The human approved this metadata correction in the Dots chat on 2026-11-05: "Approve this recovery-metadata correction". Approved proposal SHA256: `25f66dfebcd992d459501199b60210b1b6d6c1c137862f646ea93f069c532767`. This supersedes only revision1's declared two-scope prerequisite for `envoi_request_message_access`.
 
 The action checks the authenticated existing connection and therefore requires only `envoi.agent`. It must not declare the unavailable Send scope as a prerequisite for requesting that scope. A receive-only token must cover every scope declared for this read-only action. The returned insufficient-scope challenge remains exactly `envoi.agent envoi.send`; owner approval is still mandatory before Send is granted. Send-tool declarations and filtering, all identity/policy checks, existing403 envelopes and response fixtures remain unchanged. Local descriptor/token reachability checks establish the metadata invariant, not an assertion about the host's undocumented filtering internals. Native owner consent and the real message exchange remain hosted acceptance.
+
+
+## agent-remote-auth-cimd-grants v1
+
+**Status:** human-approved in this chat on November 9, 2026 Eastern time. The human replied "approved" to the exact bounded proposal at https://github.com/rachelgonsalves821/Envoi/issues/34#issuecomment-6757060504, including this additive contract/fixture ownership exception. This is an approval receipt, not an agent granting approval.
+
+This amends only agent-remote-auth v1 revision4 section3.1 client grant_types acceptance, alongside the already-approved agent-remote-auth-cimd v1 authentication-method amendment. Frozen earlier contract/fixture bytes are retained.
+
+If grant_types is absent, retain existing behavior. If present, require an array of1–16 unique nonempty printable ASCII strings (characters U+0021–U+007E), each1–256 characters, containing authorization_code. Additional well-formed CLIENT grant capabilities are accepted as metadata and ignored for SERVER authorization. The captured current ChatGPT document additionally advertises urn:ietf:params:oauth:grant-type:jwt-bearer.
+
+Server grant support remains authorization_code/refresh_token plus the existing separately gated provider bootstrap grant. Unsupported token grants still return unsupported_grant_type. No JWT bearer, client credentials, password grants, private_key_jwt, scopes, permissions or identity authority is enabled by this amendment. All client ID/name/redirect/auth-method/response checks, public-address SSRF rules, TLS/HTTPS/no-redirect policy,5s/5120byte fetch limits, caching, PKCE, resource/scope binding and refresh/replay protection remain.
+
+Client-rejection diagnostics may contain only fixed reason/stage and a hash of client ID. Never log raw client IDs/documents, credentials, authorization parameters, callback/redirect URLs, error text or stacks; observer failures cannot change authorization outcomes. Public OAuth errors retain their wire shape. The authorization UI may distinguish a single allowlisted pre-consent error with fixed guidance, never render raw query error_description or call consent without a handle.
+
+Canonical fixtures: test/contract-fixtures/agent-remote-auth-cimd-grants/,21 independent metadata vectors. Validate amended grant fields against its schema and unchanged non-grant fields against the frozen original after normalizing only the two approved auth/grant amendments. Retain malformed/count/length/duplicate/missing-code refusals and unsupported token-grant tests. Local mocks/source checks do not establish production owner authentication or native processing acceptance.

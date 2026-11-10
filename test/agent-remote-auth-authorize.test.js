@@ -253,7 +253,7 @@ test('client metadata URL and document rules (x-client-metadata-checks)', () => 
     [[], 'not_json'], [{ ...good, client_id: `${id}/` }, 'client_id_mismatch'], [{ ...good, client_name: '' }, 'client_name_invalid'], [{ ...good, client_name: 'x'.repeat(81) }, 'client_name_invalid'],
     [{ ...good, client_name: 'A‮evil' }, 'client_name_invalid'], [{ ...good, redirect_uris: [] }, 'redirect_uris_invalid'], [{ ...good, redirect_uris: Array(11).fill('https://a.example/cb') }, 'redirect_uris_invalid'],
     [{ ...good, redirect_uris: ['http://localhost/cb'] }, 'redirect_uris_invalid'], [{ ...good, token_endpoint_auth_method: 'client_secret_basic' }, 'auth_method_not_none'],
-    [{ ...good, grant_types: ['refresh_token'] }, 'grant_types_invalid'], [{ ...good, grant_types: ['authorization_code', 'implicit'] }, 'grant_types_invalid'],
+    [{ ...good, grant_types: ['refresh_token'] }, 'grant_types_invalid'], [{ ...good, grant_types: ['authorization_code', 'bad grant'] }, 'grant_types_invalid'],
     [{ ...good, response_types: ['code', 'token'] }, 'response_types_invalid'], [{ ...good, logo_uri: 'http://a.example/l.png' }, 'not_json']
   ];
   for (const [document, reason] of bad) assert.equal(clientMetadataRejection(document, id), reason, JSON.stringify(document).slice(0, 60));

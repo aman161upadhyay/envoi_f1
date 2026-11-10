@@ -967,6 +967,37 @@
         "message-access-required.json",
         "message-access-ready.json"
       ]
+    },
+    {
+      "id": "agent-remote-auth-cimd-grants",
+      "version": 1,
+      "status": "approved",
+      "handoff": "docs/architecture/agent-native-v2/handoffs.md#agent-remote-auth-cimd-grants-v1",
+      "dir": "agent-remote-auth-cimd-grants",
+      "schemas": "schemas.json",
+      "fixtures": [
+        "current-chatgpt-extra-grant.json",
+        "authorization-code-only.json",
+        "code-and-refresh.json",
+        "omitted-grants.json",
+        "extra-client-credentials-capability.json",
+        "maximum-grant-count.json",
+        "too-many-grants.json",
+        "maximum-grant-length.json",
+        "overlong-grant.json",
+        "missing-authorization-code.json",
+        "empty-list.json",
+        "null-list.json",
+        "string-list.json",
+        "object-list.json",
+        "duplicate-grants.json",
+        "number-item.json",
+        "null-item.json",
+        "empty-item.json",
+        "space-item.json",
+        "control-item.json",
+        "non-ascii-item.json"
+      ]
     }
   ]
 }

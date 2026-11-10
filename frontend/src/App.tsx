@@ -18,7 +18,7 @@ import { agentCatalog, productAsset } from './onboarding/agent-catalog';
 import { canReconnectAgent } from './onboarding/types';
 import { ClaimPage } from './onboarding/ClaimPage';
 import { AuthorizeAgentPage } from './onboarding/AuthorizeAgentPage';
-import { authorizationHandle, authorizationSignInPath } from './onboarding/consent-state';
+import { authorizationHandle, authorizationSignInPath, authorizationStartError } from './onboarding/consent-state';
 import { OwnerClaims } from './onboarding/OwnerClaims';
 import { AgentInstallations } from './onboarding/AgentInstallations';
 import { DotsPermissionRecovery, DotsSetupGuide } from './onboarding/DotsSetupGuide';
@@ -1110,7 +1110,7 @@ export function AppShell(props: ShellProps) {
 
 function ClaimWorkspace({ humanId, workspaces, entries, onRefresh, onSelectAgent, authorizationSearch }: { authorizationSearch?: string; humanId: string; workspaces: Workspace[]; entries: AgentEntry[]; onRefresh: () => Promise<unknown>; onSelectAgent: (agentId: string, address?: string) => Promise<void> }) {
   const [revision, setRevision] = useState(0);
-  return <>{authorizationSearch !== undefined ? <AuthorizeAgentPage humanId={humanId} handle={authorizationHandle(authorizationSearch)} workspaces={workspaces} agents={entries.filter(entry => entry.inbox.kind === 'agent' && entry.view.canManageInbox).map(entry => ({ ...entry.agent, inboxId: entry.inbox.id }))} /> : <ClaimPage humanId={humanId} workspaces={workspaces} agents={entries.filter(entry => entry.inbox.kind === 'agent').map(entry => ({ ...entry.agent, inboxId: entry.inbox.id }))} onComplete={async () => { setRevision(value => value + 1); await onRefresh(); }} onBack={() => window.location.assign('/app')} />}<OwnerClaims key={`${humanId}:${revision}`} humanId={humanId} onSelectAgent={(agentId, address) => { void onSelectAgent(agentId, address); }} /></>;
+  return <>{authorizationSearch !== undefined ? <AuthorizeAgentPage humanId={humanId} handle={authorizationHandle(authorizationSearch)} startError={authorizationStartError(authorizationSearch)} workspaces={workspaces} agents={entries.filter(entry => entry.inbox.kind === 'agent' && entry.view.canManageInbox).map(entry => ({ ...entry.agent, inboxId: entry.inbox.id }))} /> : <ClaimPage humanId={humanId} workspaces={workspaces} agents={entries.filter(entry => entry.inbox.kind === 'agent').map(entry => ({ ...entry.agent, inboxId: entry.inbox.id }))} onComplete={async () => { setRevision(value => value + 1); await onRefresh(); }} onBack={() => window.location.assign('/app')} />}<OwnerClaims key={`${humanId}:${revision}`} humanId={humanId} onSelectAgent={(agentId, address) => { void onSelectAgent(agentId, address); }} /></>;
 }
 
 const AGENT_COLORS = ['var(--accent)', 'var(--agent-purple)', 'var(--green)', 'var(--orange)', 'var(--agent-teal)', 'var(--red)', 'var(--ink2)'];

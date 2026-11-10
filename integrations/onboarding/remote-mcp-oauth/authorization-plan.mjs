@@ -76,8 +76,10 @@ export function planRemoteMcpAuthorization({ origin, protectedResource, authoriz
     || !validRedirect(redirectUri)
     || (clientMetadata.grant_types !== undefined
       && (!Array.isArray(clientMetadata.grant_types)
+        || clientMetadata.grant_types.length < 1 || clientMetadata.grant_types.length > 16
         || !clientMetadata.grant_types.includes('authorization_code')
-        || clientMetadata.grant_types.some(grant => !['authorization_code', 'refresh_token'].includes(grant))))
+        || new Set(clientMetadata.grant_types).size !== clientMetadata.grant_types.length
+        || !Array.from(clientMetadata.grant_types).every(grant => typeof grant === 'string' && grant.length >= 1 && grant.length <= 256 && /^[!-~]+$/.test(grant))))
     || (clientMetadata.response_types !== undefined
       && JSON.stringify(clientMetadata.response_types) !== JSON.stringify(['code']))) invalid();
 

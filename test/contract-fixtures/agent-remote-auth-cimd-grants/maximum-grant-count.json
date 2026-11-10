@@ -1,0 +1,47 @@
+{
+  "contract": "agent-remote-auth-cimd-grants",
+  "version": 1,
+  "id": "maximum-grant-count",
+  "description": "maximum grant count",
+  "kind": "client-metadata",
+  "document": {
+    "client_id": "https://chatgpt.com/oauth/client.json",
+    "client_uri": "https://chatgpt.com/",
+    "redirect_uris": [
+      "https://chatgpt.com/connector_platform_oauth_redirect"
+    ],
+    "token_endpoint_auth_method": "private_key_jwt",
+    "token_endpoint_auth_methods_supported": [
+      "none",
+      "private_key_jwt"
+    ],
+    "grant_types": [
+      "authorization_code",
+      "urn:example:grant:0",
+      "urn:example:grant:1",
+      "urn:example:grant:2",
+      "urn:example:grant:3",
+      "urn:example:grant:4",
+      "urn:example:grant:5",
+      "urn:example:grant:6",
+      "urn:example:grant:7",
+      "urn:example:grant:8",
+      "urn:example:grant:9",
+      "urn:example:grant:10",
+      "urn:example:grant:11",
+      "urn:example:grant:12",
+      "urn:example:grant:13",
+      "urn:example:grant:14"
+    ],
+    "response_types": [
+      "code"
+    ],
+    "client_name": "ChatGPT",
+    "logo_uri": "https://persistent.oaistatic.com/sonic/misc/openai-logo.png",
+    "token_endpoint_auth_signing_alg": "RS256",
+    "jwks_uri": "https://chatgpt.com/oauth/jwks.json"
+  },
+  "expected": {
+    "valid": true
+  }
+}

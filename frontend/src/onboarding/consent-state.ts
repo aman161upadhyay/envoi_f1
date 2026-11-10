@@ -16,9 +16,23 @@ export function authorizationHandle(search: string) {
   const value = handles[0];
   return handles.length === 1 && value && value.length <= 2048 && !/[\s\u0000-\u001f\u007f]/.test(value) ? value : null;
 }
+const startErrors = {
+  invalid_client: 'Envoi could not verify the assistant’s OAuth client configuration. Contact Envoi support before retrying. Your agent permissions have not changed.',
+  invalid_redirect_uri: 'Envoi could not verify where this assistant should return after approval. Contact Envoi support before retrying.',
+  invalid_request: 'The assistant sent an invalid connection request. Start again from your assistant; contact Envoi support if it repeats.'
+} as const;
+export type AuthorizationStartError = keyof typeof startErrors;
+export function authorizationStartError(search: string): AuthorizationStartError | null {
+  const params = new URLSearchParams(search), errors = params.getAll('error');
+  if (params.has('request') || errors.length !== 1 || !Object.hasOwn(startErrors, errors[0])) return null;
+  return errors[0] as AuthorizationStartError;
+}
+export const authorizationStartMessage = (error: AuthorizationStartError) => startErrors[error];
 export function authorizationSignInPath(path: string, search: string) {
   const handle = authorizationHandle(search);
-  const target = handle ? '/authorize-agent?request=' + encodeURIComponent(handle) : '/authorize-agent';
+  const error = authorizationStartError(search);
+  const target = handle ? '/authorize-agent?request=' + encodeURIComponent(handle)
+    : error ? '/authorize-agent?error=' + error : '/authorize-agent';
   const url = new URL(path, 'https://www.envoi-agents.com');
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return '/api/auth/workos/sign-in?returnTo=' + encodeURIComponent(target);
   url.searchParams.set('returnTo', target);
