@@ -238,7 +238,7 @@ test('About has one centered dotted agent orbit and a compact data-request card 
   }
   assert.match(layout, /\.hero-ambient \{[^}]*left: 50%; top: calc\(50% \+ 20px\); transform: translate\(-50%, -50%\)/);
   assert.match(layout, /\.solution-showcase \{ display: grid; grid-template-columns:/);
-  assert.match(layout, /@media \(max-width: 980px\) \{\s*\.solution-showcase \{ grid-template-columns: 1fr;/);
+  assert.match(layout, /@media \(max-width: 980px\) \{\s*:where\(html\[data-page="about"\]\) \.solution-showcase \{ grid-template-columns: 1fr;/);
   assert.match(layout, /\.hero-copy \{[^}]*text-align: center/);
   assert.match(layout, /\.main-nav \{[^}]*justify-self: center/);
   const flow = await readFile(new URL('../src/components/Handshake.astro', import.meta.url), 'utf8');
@@ -300,7 +300,7 @@ test('sections keep their main headings without numbered eyebrow labels', async 
 test('Product has one main inbox headline without the duplicate introduction', async () => {
   const page = await readFile(new URL('../src/components/Website.astro', import.meta.url), 'utf8');
   const footer = await readFile(new URL('../src/components/Footer.astro', import.meta.url), 'utf8');
-  assert.match(page, /<h1 id="product-title">Track your agents work in different email threads<\/h1>/);
+  assert.match(page, /<h1 id="product-title">Track your agents\u2019 work in different email threads<\/h1>/);
   assert.doesNotMatch(page, /product-intro|product-overview-title|Native messaging between agents with human oversight/);
   assert.doesNotMatch(page, /id="oversight"|Set the terms|<Receipt|import Receipt/);
   assert.match(footer, /href="\/product\/#feature-4">Permissions & approvals/);
@@ -309,7 +309,7 @@ test('Product has one main inbox headline without the duplicate introduction', a
 
 test('the owner view uses the requested email-thread heading without its old supporting copy', async () => {
   const page = await readFile(new URL('../src/components/Website.astro', import.meta.url), 'utf8');
-  assert.match(page, /<h1 id="product-title">Track your agents work in different email threads<\/h1>/);
+  assert.match(page, /<h1 id="product-title">Track your agents\u2019 work in different email threads<\/h1>/);
   assert.doesNotMatch(page, /Review the work<br \/> waiting on you|for Thursday's client review|Illustrative product view/);
 });
 
@@ -339,11 +339,12 @@ test('reading text uses the light system font while action labels are larger and
   const styles = await readFile(new URL('../src/styles/site.css', import.meta.url), 'utf8');
   const hero = await readFile(new URL('../src/styles/hero-refresh.css', import.meta.url), 'utf8');
   const handshake = await readFile(new URL('../src/components/Handshake.astro', import.meta.url), 'utf8');
-  assert.match(fonts, /local\('Segoe UI Light'\)/);
-  assert.match(tokens, /--display: 'Envoi UI', 'Segoe UI Light'/);
+  assert.match(hero, /local\('Segoe UI Light'\)/);
+  assert.match(hero, /:where\(html\[data-page="about"\]\):root \{\s*--display: 'Envoi UI', 'Segoe UI Light'/);
+  assert.match(tokens, /--display: "Figtree Variable"/);
   assert.match(tokens, /--sans: var\(--display\)/);
   assert.match(tokens, /--mono: var\(--display\)/);
-  assert.doesNotMatch(fonts, /url\(|woff|Newsreader|Instrument Sans|Geist Mono/);
+  assert.match(fonts, /url\('\/fonts\/figtree\.woff2'\)/);
   assert.match(styles, /body \{ font-weight: 300; \}/);
   for (const selector of ['.button', '.header-auth-link']) assert.match(styles, new RegExp(`${selector.replace('.', '\\.') } \\{[^}]*font-weight: 700;`));
   for (const source of [hero, handshake]) assert.doesNotMatch(source, /font-weight:\s*(?!300\b)\d+/);

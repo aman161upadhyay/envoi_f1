@@ -38,24 +38,24 @@ const [first, second] = agents;
   :global(:root[data-theme="dark"]) .agent-symbol img { background: #eef5fb; border-radius: 6px; padding: 2px; }
   .shared-work { gap: 8px; color: var(--ink-muted); font-size: 14px; }
   .shared-work :global(svg) { color: var(--accent); }
-  .message-track { container-type: inline-size; position: relative; height: 96px; margin: 16px 6px 0; border-top: 1px dashed var(--line-strong); }
+  .message-track { position: relative; height: 96px; margin: 16px 6px 0; border-top: 1px dashed var(--line-strong); }
   .message-bubble { --bubble-width: min(224px, 82%); position: absolute; display: flex; align-items: center; justify-content: space-between; gap: 8px; width: var(--bubble-width); min-height: 34px; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--bg-raised); color: var(--ink); box-shadow: 0 4px 14px -10px var(--shadow-ink); font-size: 14px; white-space: nowrap; }
   .request { left: 0; top: 10px; border-color: var(--brand-blue); }
   .reply { right: 0; top: 53px; border-color: var(--brand-amber); }
   .review-gate { display: inline-flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--brand-amber); border-radius: 8px; color: var(--needs-human-ink); background: var(--needs-human-bg); font-size: 14px; }
   @media (prefers-reduced-motion: no-preference) {
-    .request { animation: request-slide 6s var(--ease-enter) infinite; }
-    .reply { animation: reply-slide 6s var(--ease-enter) infinite; }
+    .request { animation: request-slide 8s ease-in-out infinite; }
+    .reply { animation: reply-slide 8s ease-in-out infinite; }
     :global(body.page-hidden) .message-bubble { animation-play-state: paused; }
     @keyframes request-slide {
-      0%, 8% { transform: translateX(0); opacity: 1; }
-      42%, 48% { transform: translateX(calc(100cqw - 100%)); opacity: 1; }
-      56%, 100% { transform: translateX(calc(100cqw - 100%)); opacity: 1; }
+      0%, 8% { left: 0; opacity: 1; }
+      42%, 48% { left: calc(100% - var(--bubble-width)); opacity: 1; }
+      56%, 100% { left: calc(100% - var(--bubble-width)); opacity: .4; }
     }
     @keyframes reply-slide {
-      0%, 48% { transform: translateX(0); opacity: 1; }
-      56% { transform: translateX(0); opacity: 1; }
-      90%, 100% { transform: translateX(calc(-100cqw + 100%)); opacity: 1; }
+      0%, 48% { right: 0; opacity: .4; }
+      56% { right: 0; opacity: 1; }
+      90%, 100% { right: calc(100% - var(--bubble-width)); opacity: 1; }
     }
   }
   @media (max-width: 600px) {
