@@ -7,6 +7,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { generateSync } from 'otplib';
 import { BrowserSession } from './browser-session.js';
+import { FileStore } from '../src/storage.js';
+import { createCaseTraceSealer } from '../src/case-trace-sealer.js';
+import { traceQueue } from '../src/case-trace.js';
+import { valueDigest } from '../src/policy-engine.js';
+import { verifyPath } from '../frontend/guard-demo/packages/core/tree.mjs';
+import { createLocalAdapters } from '../frontend/guard-demo/adapters/local/store.mjs';
+import { localSealer } from '../frontend/guard-demo/apps/server/local-sealer.mjs';
 
 async function launch(existingDataDir = null, extraEnv = {}) {
   const dataDir = existingDataDir || await mkdtemp(path.join(tmpdir(), 'sinaloa-controls-'));
@@ -42,8 +49,15 @@ async function owner(baseUrl, suffix) {
 }
 
 test('case sensitivity is an owner-only, idempotent case update', async t => {
-  const server = await launch(null, { ENVOI_ENABLE_SENSITIVE_CASES: 'true' });
-  t.after(server.stop);
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+  const extraEnv = { ENVOI_ENABLE_SENSITIVE_CASES: 'true',
+    ENVOI_CASE_TRACE_SIGNING_KEY: privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64') };
+  let server = await launch(null, extraEnv);
+  const dataDir = server.dataDir;
+  t.after(async () => {
+    if (server) await server.stop();
+    else await rm(dataDir, { recursive: true, force: true });
+  });
   const [alice, bob] = await Promise.all([owner(server.baseUrl, '4411'), owner(server.baseUrl, '4412')]);
   const inbox = `/api/inboxes/${alice.inbox.id}`;
   const created = await api(server.baseUrl, `${inbox}/cases`, {
@@ -51,6 +65,10 @@ test('case sensitivity is an owner-only, idempotent case update', async t => {
   });
   assert.equal(created.status, 201, JSON.stringify(created.payload));
   const caseId = created.payload.id;
+  const ordinary = await api(server.baseUrl, `${inbox}/cases`, {
+    token: alice.agentApiToken, body: { objective: 'Ordinary review' }
+  });
+  assert.equal(ordinary.status, 201);
   const marker = `${inbox}/cases/${caseId}/sensitive`;
   const readView = () => api(server.baseUrl, `${inbox}/human-view`, { session: alice.session });
   assert.equal((await readView()).payload.caseQueue.find(item => item.id === caseId).canMarkSensitive, true);
@@ -71,6 +89,55 @@ test('case sensitivity is an owner-only, idempotent case update', async t => {
     assert.equal(changed.status, 201, JSON.stringify(changed.payload));
   }
   assert.equal((await readView()).payload.caseQueue.find(item => item.id === caseId).sensitive, true);
+  const ordinaryPause = await api(server.baseUrl, `${inbox}/cases/${ordinary.payload.id}/actions`, {
+    session: alice.session, key: 'ordinary-pause', body: { actionKey: 'pause' }
+  });
+  assert.equal(ordinaryPause.status, 201);
+  const trace = id => api(server.baseUrl, `${inbox}/cases/${id}/signed-trace`, { session: alice.session });
+  assert.equal((await api(server.baseUrl, `${inbox}/cases/${caseId}/signed-trace`, { token: alice.agentApiToken })).status, 403);
+  const before = (await trace(caseId)).payload.steps;
+  assert.equal(before.length, 3);
+  for (const [index, step] of before.entries()) {
+    assert.equal(step.seal, null);
+    assert.equal(step.record.previous, before[index + 1]?.digest ?? null);
+    assert.equal(step.digest, valueDigest(step.record));
+    assert.ok(crypto.verify(null, Buffer.from(step.digest, 'hex'), publicKey, Buffer.from(step.signature, 'hex')));
+  }
+  const localOnly = (await trace(ordinary.payload.id)).payload.steps;
+  assert.equal(localOnly.length, 1);
+  assert.equal(localOnly[0].record.sensitive, false);
+  assert.equal(localOnly[0].seal, null);
+
+  await server.stop(true);
+  server = null;
+  const store = new FileStore(dataDir);
+  const adapters = createLocalAdapters();
+  const scope = { network: 'local', recordContract: 'local-record', publisher: 'publisher' };
+  const transport = localSealer(adapters.publicRecord);
+  let broadcasts = 0;
+  try {
+    const interrupted = { ...transport, async broadcast(...args) {
+      broadcasts++;
+      await transport.broadcast(...args);
+      throw new Error('Connection interrupted after broadcast');
+    } };
+    const sealNext = createCaseTraceSealer({ store, transport: interrupted, scope });
+    await assert.rejects(sealNext(), /interrupted/);
+    assert.equal((await store.listJson(traceQueue)).length, 3);
+    const recover = createCaseTraceSealer({ store: new FileStore(dataDir), transport: interrupted, scope });
+    assert.equal((await recover()).status, 'final');
+    assert.equal(await recover(), null);
+    assert.equal(broadcasts, 1);
+  } finally { adapters.db.close(); }
+
+  server = await launch(dataDir, extraEnv);
+  const after = (await trace(caseId)).payload.steps;
+  assert.deepEqual(after.map(step => step.digest), before.map(step => step.digest));
+  for (const step of after) {
+    assert.equal(step.seal.status, 'final');
+    assert.ok(await verifyPath(step.digest, step.seal));
+  }
+  assert.equal((await trace(ordinary.payload.id)).payload.steps[0].seal, null);
 });
 
 test('workspace owner can revise approved agent permissions and changes gate existing credentials', async t => {

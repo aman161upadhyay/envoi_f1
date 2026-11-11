@@ -25,7 +25,7 @@ export const WORKSPACE_EVENT_TYPES = [
   'message.failed', 'message.delivered', 'message.acknowledged', 'message.processed', 'message.created',
   'message.cancelled',
   'human.instruction_created', 'agent.instruction_replied',
-  'email.queued', 'asset.created', 'asset.granted', 'asset.upload_started',
+  'email.queued', 'asset.created', 'asset.granted', 'asset.upload_started', 'payment.confirmed',
   'asset.scan_clean', 'asset.scan_infected', 'asset.scan_error',
   'contact.blocked', 'contact.unblocked', 'contact.approved',
   'discovery_invitation.issued', 'discovery_invitation.revoked',

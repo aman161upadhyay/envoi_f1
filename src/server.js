@@ -91,6 +91,8 @@ import { relationshipPath, relationshipRecord, revokeRelationship, trustedDiscov
 import { authorize as authorizeV2 } from './authorization-v2.js';
 import { discoveryInvitationPath, signDiscoveryInvitation, verifyDiscoveryInvitation } from './discovery-invitations.js';
 import { a2aAgentCard, parseA2ATextMessage, projectA2ATask } from './a2a/adapter.js';
+import { captureCaseTrace, createTraceSigner, isTracedCaseEvent, traceCasePath, traceSealPath } from './case-trace.js';
+import { createNearCasePayment, nearTransactionRef } from './near-case-payment.js';
 
 const productionConfig = validateProductionConfiguration();
 // agent-registration v1 §1: fails closed in every mode, before anything starts.
@@ -115,6 +117,7 @@ const externalEmailEnabled = process.env.ENVOI_ENABLE_EXTERNAL_EMAIL === 'true';
 const calendarWritesEnabled = process.env.ENVOI_ENABLE_CALENDAR_WRITES === 'true';
 const consequentialActionsEnabled = process.env.ENVOI_ENABLE_CONSEQUENTIAL_ACTIONS === 'true';
 const sensitiveCasesEnabled = process.env.ENVOI_ENABLE_SENSITIVE_CASES === 'true';
+const traceSigner = createTraceSigner(process.env.ENVOI_CASE_TRACE_SIGNING_KEY);
 const policyActiveKeyId = process.env.ENVOI_POLICY_ACTIVE_KEY_ID || 'primary';
 const policySigningKeys = (() => {
   const configured = process.env.ENVOI_POLICY_SIGNING_KEYS ? JSON.parse(process.env.ENVOI_POLICY_SIGNING_KEYS) : {};
@@ -130,6 +133,10 @@ const signedPolicyRegistry = createSignedPolicyRegistry({
 const signedPolicyOwnerAccounts = JSON.parse(process.env.ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS || '{}');
 const signedPolicyRpId = process.env.ENVOI_SIGNED_POLICY_RP_ID || null;
 const signedPolicyOrigins = (process.env.ENVOI_SIGNED_POLICY_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
+const nearCasePayment = createNearCasePayment({
+  rpcUrl: process.env.ENVOI_NEAR_PAYMENT_RPC_URL, contract: process.env.ENVOI_NEAR_PAYMENT_CONTRACT,
+  agentAccounts: process.env.ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS ? JSON.parse(process.env.ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS) : null
+});
 const emailTransport = createEmailTransport();
 const agentAccessTokenTtlSeconds = Math.max(60, Number(process.env.ENVOI_AGENT_ACCESS_TOKEN_TTL_SECONDS || 900));
 const agentRefreshTokenTtlDays = Math.max(1, Number(process.env.ENVOI_AGENT_REFRESH_TOKEN_TTL_DAYS || 30));
@@ -1203,6 +1210,10 @@ async function withInboxMutation(inboxId, operation, relatedInboxIds = [], addit
     return operation(async (type, data, createdAt = store.now(), targetInboxId = inboxId) => {
     const record = await auditRecord(targetInboxId, type, data, createdAt);
     await store.putJson(record.document.path, record.document.value);
+    if (traceSigner && isTracedCaseEvent(record.event)) {
+      const traceCase = await getCase(targetInboxId, record.event.caseId);
+      if (traceCase) await captureCaseTrace(store, traceSigner, targetInboxId, record.event, traceCase.sensitive === true);
+    }
     committedEvents.push({ inboxId: targetInboxId, event: record.event });
     if (httpWakeEnabled) {
       if (type === 'work.available' && ['human_instruction', 'human_decision', 'case_resumed', 'counterparty_resumed', 'agent_resumed'].includes(data.reason)) await httpWake.trigger({ inboxId: targetInboxId, agentId: data.agentId, reason: data.reason, cursor: record.event.cursor });
@@ -6380,6 +6391,72 @@ async function route(req, res) {
     } });
     const result = await sendInstruction({ inboxId, caseId: instructionRoute[1], input, idempotencyKey: req.headers['idempotency-key'] });
     return json(res, result.status, result.payload);
+  }
+
+  const nearPaymentRoute = suffix.match(/^cases\/([^/]+)\/near-payments(?:\/([^/]+)\/confirm)?$/);
+  if (req.method === 'POST' && nearPaymentRoute && nearCasePayment) {
+    const caseId = assertSafeIdentifier(nearPaymentRoute[1], 'caseId');
+    const confirmationId = nearPaymentRoute[2] && assertSafeIdentifier(nearPaymentRoute[2], 'paymentId');
+    const input = await body(req);
+    if (confirmationId && (typeof input.txRef !== 'string' || !nearTransactionRef.test(input.txRef))) {
+      return fail(res, 400, 'A NEAR transaction reference is required');
+    }
+    const result = await withCaseMutation(inboxId, caseId, async writeAudit => {
+      const principal = await getAgentPrincipal(req, inboxId);
+      const value = await getCase(inboxId, caseId);
+      if (!value?.schemaVersion || !principal || !canAct(principal, 'execute_cases') || !isCaseParticipant(value, principal.id)) {
+        throw codedError(403, 'CASE_PARTICIPANT_REQUIRED', 'An agent case participant credential is required.');
+      }
+      await requireV2Authorization(req, inboxId, principal.id, 'case.act', { caseRecord: value });
+      if (confirmationId) {
+        const location = path.join('inboxes', inboxId, 'near-case-payments', `${confirmationId}.json`);
+        const payment = await store.getJson(location);
+        if (payment?.caseId !== caseId || payment.agentId !== principal.id) throw codedError(404, 'NEAR_PAYMENT_NOT_FOUND', 'Case payment not found.');
+        if (payment.outcome) {
+          if (payment.outcome.txRef !== input.txRef) throw codedError(409, 'NEAR_PAYMENT_ALREADY_CONFIRMED', 'This payment already has a finalized transaction.');
+          return { status: 200, payment };
+        }
+        const outcome = await nearCasePayment.confirm(payment.instruction, input.txRef);
+        const confirmed = { ...payment, outcome, confirmedAt: store.now() };
+        await store.putJson(location, confirmed);
+        await writeAudit('payment.confirmed', { caseId, agentId: principal.id, policyEvaluationId: payment.policyEvaluationId,
+          actionId: payment.id, txRef: outcome.txRef, outcome: outcome.status, reasonCode: outcome.reason ?? null });
+        return { status: 200, payment: confirmed };
+      }
+      const evaluationId = assertSafeIdentifier(input.policyEvaluationId, 'policyEvaluationId');
+      const binding = await store.getJson(policyBindingPath(inboxId, evaluationId));
+      if (!binding?.signedPolicy || binding.requestedAction !== 'payment.near' || binding.caseId !== caseId || binding.agentId !== principal.id) {
+        throw codedError(403, 'SIGNED_PAYMENT_EVALUATION_REQUIRED', 'A signed case payment evaluation is required.');
+      }
+      const id = `near_payment_${semanticDigest([inboxId, caseId, evaluationId]).slice(0, 40)}`;
+      const location = path.join('inboxes', inboxId, 'near-case-payments', `${id}.json`);
+      if (await store.getJson(location)) throw codedError(409, 'NEAR_PAYMENT_ALREADY_ISSUED', 'This payment instruction was already issued. Reconcile it before retrying.');
+      const authorization = await validatedPolicyBinding(inboxId, value, principal, evaluationId, {
+        requestedAction: 'payment.near', actionPayload: binding.actionPayload, executionId: id, writeAudit
+      });
+      const ownerAccount = Object.hasOwn(signedPolicyOwnerAccounts, inbox.ownerHumanId) ? signedPolicyOwnerAccounts[inbox.ownerHumanId] : null;
+      const instruction = await nearCasePayment.prepare({ agentId: principal.id, ownerAccount, payload: binding.actionPayload,
+        paymentId: id, expiresAt: authorization.refreshed.expiresAt });
+      const payment = { id, caseId, agentId: principal.id, policyEvaluationId: evaluationId, instruction, issuedAt: store.now() };
+      await store.putJson(location, payment);
+      return { status: 201, payment };
+    }, { allowPaused: Boolean(confirmationId) });
+    return json(res, result.status, result.payment);
+  }
+
+  const traceRoute = suffix.match(/^cases\/([^/]+)\/signed-trace$/);
+  if (req.method === 'GET' && traceRoute) {
+    const human = await auth.getHuman(req);
+    if (!await canManageInbox(human, inbox)) return fail(res, 403, 'Workspace administrator required');
+    const caseId = assertSafeIdentifier(traceRoute[1], 'caseId');
+    if (!await getCase(inboxId, caseId)) return fail(res, 404, 'Case not found');
+    const steps = await store.queryJson(path.join(traceCasePath(inboxId, caseId), 'steps'), {
+      limit: 100, before: url.searchParams.get('before'), sortField: 'sequence', order: 'desc'
+    });
+    return json(res, 200, { nextBefore: steps.length === 100 ? steps.at(-1).sequence : null,
+      steps: await Promise.all(steps.map(async step => ({
+      ...step, seal: step.record.sensitive ? await store.getJson(traceSealPath(step.record.id)) : null
+    }))) });
   }
 
   const sensitiveCaseRoute = suffix.match(/^cases\/([^/]+)\/sensitive$/);

@@ -45,14 +45,33 @@ test('signed policy and one-time owner approval narrow the existing case action 
   const keys = crypto.generateKeyPairSync('ed25519');
   const publicKey = Buffer.from(keys.publicKey.export({ format: 'jwk' }).x, 'base64url').toString('hex');
   const registryKey = { public_key: publicKey, key_type: 'demo_device', registered_at_ms: Date.now() - 60_000, revoked_at_ms: null };
+  const spendingPolicyHash = 'a'.repeat(64);
+  const txRef = '3'.repeat(44);
+  const otherTxRef = '4'.repeat(44);
+  let authorizedCall;
   const rpc = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const input = JSON.parse(Buffer.concat(chunks).toString());
-    const { owner } = JSON.parse(Buffer.from(input.params.args_base64, 'base64').toString());
-    const result = input.params.method_name === 'owner_keys' && owner === 'dana.testnet' ? [registryKey] : [];
+    let result;
+    if (input.method === 'status') result = { chain_id: 'testnet' };
+    else if (input.method === 'tx') {
+      const args = input.params.tx_hash === txRef ? authorizedCall : { ...authorizedCall, case_ref: 'other-payment' };
+      const encoded = value => Buffer.from(JSON.stringify(value)).toString('base64');
+      result = { final_execution_status: 'FINAL', transaction: { hash: input.params.tx_hash,
+        signer_id: 'milo.testnet', receiver_id: 'spend.testnet', actions: [{ FunctionCall: { method_name: 'pay', args: encoded(args) } }] },
+      status: { SuccessValue: encoded({ status: 'paid', agent: 'milo.testnet', to: args.to,
+        amount: args.amount, case_ref: args.case_ref, policy_hash: spendingPolicyHash }) } };
+    } else {
+      const { owner, agent } = JSON.parse(Buffer.from(input.params.args_base64, 'base64').toString());
+      const data = input.params.method_name === 'get_policy' && agent === 'milo.testnet'
+        ? { owner: 'dana.testnet', policy_hash: spendingPolicyHash, paused: false,
+          daily_cap: '2000000000000000000000000', payees: [{ account: 'ledger.testnet', max_per_payment: '1000000000000000000000000' }] }
+        : input.params.method_name === 'owner_keys' && owner === 'dana.testnet' ? [registryKey] : [];
+      result = { result: [...Buffer.from(JSON.stringify(data))] };
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ id: input.id, jsonrpc: '2.0', result: { result: [...Buffer.from(JSON.stringify(result))] } }));
+    res.end(JSON.stringify({ id: input.id, jsonrpc: '2.0', result }));
   });
   t.after(async () => {
     await server?.stop();
@@ -89,12 +108,17 @@ test('signed policy and one-time owner approval narrow the existing case action 
   server = await launch(dataDir, {
     ENVOI_SIGNED_POLICY_RPC_URL: `http://127.0.0.1:${rpc.address().port}`,
     ENVOI_SIGNED_POLICY_RECORD_CONTRACT: 'record.testnet', ENVOI_SIGNED_POLICY_NETWORK: 'near-testnet',
-    ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS: JSON.stringify({ [human.id]: 'dana.testnet' })
+    ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS: JSON.stringify({ [human.id]: 'dana.testnet' }),
+    ENVOI_NEAR_PAYMENT_RPC_URL: `http://127.0.0.1:${rpc.address().port}`,
+    ENVOI_NEAR_PAYMENT_CONTRACT: 'spend.testnet',
+    ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS: JSON.stringify({ [agent.id]: 'milo.testnet' }),
+    ENVOI_ENABLE_CONSEQUENTIAL_ACTIONS: 'true'
   });
   const cases = `/api/inboxes/${inbox.id}/cases`;
   const value = await call(cases, { token, body: { objective: 'Signed Acme review' }, status: 201 });
   const route = `${cases}/${value.id}`;
   const actionPayload = { note: 'Discuss the owner-approved deck' };
+  const paymentTarget = { payee: 'ledger.testnet', amount: { units: '500000000000000000000000', unit: 'yoctoNEAR', network: 'near-testnet' } };
   const action = { actionKey: 'case.note', actionPayload, outcome: 'ok' };
   await call(`${route}/actions`, { token, body: action, key: 'legacy-note', status: 201 });
   const context = await call(`${route}/signed-policy`, { status: 200 });
@@ -104,7 +128,8 @@ test('signed policy and one-time owner approval narrow the existing case action 
     ownerId: context.ownerId, agentId: context.agentId, version: context.version, previousHash: context.previousHash,
     issuedAtMs: Date.now(), expiresAtMs: Date.now() + 60_000,
     grants: [{ id: 'review-note', action: 'case.note', decision: 'needsHuman',
-      target: { ...actionPayload, nextState: null, outcome: 'ok', externalRefs: {} } }]
+      target: { ...actionPayload, nextState: null, outcome: 'ok', externalRefs: {} } },
+    { id: 'pay-ledger', action: 'payment.near', decision: 'needsHuman', target: paymentTarget }]
   };
   const signed = document => ({ document, publicKey, keyType: 'demo_device',
     signature: crypto.sign(null, Buffer.from(valueDigest(document), 'hex'), keys.privateKey).toString('hex') });
@@ -138,6 +163,26 @@ test('signed policy and one-time owner approval narrow the existing case action 
     actionKey: 'approveOnce', externalRefs: { policyEvaluationId: secondPending.id }, signedApproval: signed(staleApproval)
   } });
   assert.equal(stale.code, 'SIGNED_APPROVAL_STALE');
+  const payPending = await call(`${route}/policy-evaluations`, { token, status: 201,
+    body: { requestedAction: 'payment.near', actionPayload: paymentTarget } });
+  assert.equal(payPending.decision, 'needsHuman');
+  const payments = `${route}/near-payments`;
+  const reserve = { policyEvaluationId: payPending.id };
+  await call(payments, { token, body: reserve, status: 409 });
+  const { document: paymentApproval } = await call(`${route}/signed-approval/${payPending.id}`, { status: 200 });
+  await call(`${route}/actions`, { key: 'payment-approval', status: 201, body: {
+    actionKey: 'approveOnce', externalRefs: { policyEvaluationId: payPending.id }, signedApproval: signed(paymentApproval)
+  } });
+  const issued = await call(payments, { token, body: reserve, status: 201 });
+  authorizedCall = issued.instruction.args;
+  assert.deepEqual(authorizedCall, { to: paymentTarget.payee, amount: paymentTarget.amount.units,
+    case_ref: issued.id, expected_policy_hash: spendingPolicyHash });
+  await call(payments, { token, body: reserve, status: 409 });
+  const confirm = `${payments}/${issued.id}/confirm`;
+  await call(confirm, { token, body: { txRef: otherTxRef }, status: 409 });
+  const payment = await call(confirm, { token, body: { txRef }, status: 200 });
+  assert.equal(payment.outcome.status, 'paid');
+  assert.deepEqual(await call(confirm, { token, body: { txRef }, status: 200 }), payment);
   registryKey.revoked_at_ms = Date.now();
   const revoked = await call(`${route}/policy-evaluations`, { token, body: {
     requestedAction: 'case.note', actionPayload: draft.grants[0].target
