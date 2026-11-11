@@ -29,6 +29,8 @@ import { CsrfReloadBoundary, createHumanStreamRecovery } from './browser-session
 import { captureAnalyticsEvent } from './analytics';
 import { AgentRemovalDialogContent } from './AgentRemovalDialog';
 import { canonicalDecisionPolicy, canSubmitCaseDecision, caseActionPayload } from './case-decisions';
+import { SignedCasePolicyForm } from './SignedCasePolicyForm';
+import { signOwnerDocument, type SignedApprovalDraft } from './signed-case-policy';
 import { CreateInboxFolderContent, MoveInboxCaseContent } from './InboxFolderDialogs';
 import { applyInboxPreference, filterInboxCases, readAcknowledgementForCase } from './inbox-preferences';
 import { AGENT_PERMISSION_OPTIONS, DEFAULT_AGENT_PERMISSIONS, selectedAgentPermissions } from './agent-permissions';
@@ -122,7 +124,9 @@ export const previewView: HumanView = {
 };
 
 // Dev preview only: a recorded reply stands in for a model. Production installs no provider until a real one is wired.
-if (import.meta.env.DEV) void import('./preview-suggestions').then(module => setSuggestionProvider(module.recordedProvider));
+if (typeof window !== 'undefined' && previewRequested(window.location.search, import.meta.env.DEV)) {
+  void import('./preview-suggestions').then(module => setSuggestionProvider(module.recordedProvider));
+}
 
 // Long agent-to-agent sample threads, appended after the originals so existing indexes stay put.
 previewView.cases.push(...longPreviewCases);
@@ -1206,9 +1210,13 @@ export function CaseRow({ workCase, view, showOwner, selected, onSelect }: { wor
 <button role="option" aria-selected={selected} className={`case-row inbox-message-row ${selected ? 'selected' : ''} ${(workCase.inboxPreference ? !workCase.inboxPreference.read : workCase.needsAttention) ? 'is-unread' : ''} ${caseState(workCase) === 'completed' ? 'is-done' : ''}`} onClick={() => onSelect(workCase)}>
       <span className="counterparty-avatar" style={{ '--avatar-color': counterpartyColor } as React.CSSProperties}>{workCase.caseMode === 'group' ? 'G' : initials(counterparty.displayName)}{showOwner && owner && <span className="owner-badge" style={{ '--owner-color': ownerColor } as React.CSSProperties} title={owner.name}>{initials(owner.name)[0]}</span>}</span>
       <span className="case-row-copy"><span className="thread-sender">{senderLabel}</span><span className="thread-summary"><strong>{caseSubject(workCase, view.messages)}</strong><small className="case-preview"> — {conversationPreview(workCase)}</small></span></span>
-      <span className="case-row-meta">{workCase.needsAttention && <span className="case-chip">Needs you</span>}<time dateTime={updated}>{today ? formatTime(updated) : formatDate(updated)}</time></span>
+      <span className="case-row-meta">{workCase.sensitive && <SensitiveBadge />}{workCase.needsAttention && <span className="case-chip">Needs you</span>}<time dateTime={updated}>{today ? formatTime(updated) : formatDate(updated)}</time></span>
     </button>
   );
+}
+
+function SensitiveBadge() {
+  return <span className="sensitive-badge"><ShieldCheck size={13} aria-hidden="true" />Sensitive</span>;
 }
 
 export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRailToggle, onBack, onRefresh, onPreferencesChanged, notify }: { workCase: WorkCase; view: HumanView; canManageInbox: boolean; railOpen: boolean; onRailToggle: () => void; onBack: () => void; onRefresh: () => Promise<unknown>; onPreferencesChanged: (preference: InboxPreference) => Promise<unknown>; notify: (message: string) => void }) {
@@ -1216,12 +1224,20 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
   const state = caseState(workCase);
   const events = timelineForCase(workCase, view.messages);
   const policy = canonicalDecisionPolicy(workCase);
+  const signedApprovalRequired = Boolean(workCase.decision?.signedApprovalRequired || policy?.signedPolicy);
   const suggestMessages = events.filter(event => isExchangeEvent(event) && String(event.payload.messageType || '').toLowerCase() !== 'instruction').map(event => ({ id: event.id, sender: String(event.payload.senderAgentId || event.actor), text: eventSummary(event) }));
-  const suggestions = useSuggestedFlags(workCase.id, workCase.objective || '', workCase.constraints, suggestMessages);
+  const suggestions = useSuggestedFlags(workCase.id, workCase.objective || '', workCase.constraints, suggestMessages, !workCase.sensitive);
   const [drawer, setDrawer] = useState<{ type: 'policy' | 'evidence'; item?: PolicyEvaluation | EvidenceItem } | null>(null);
   const [confirm, setConfirm] = useState<HumanActionKey | null>(null);
   const [busy, setBusy] = useState<HumanActionKey | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [sensitiveOpen, setSensitiveOpen] = useState(false);
+  const [sensitiveBusy, setSensitiveBusy] = useState(false);
+  const [sensitiveError, setSensitiveError] = useState('');
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [permissionsBusy, setPermissionsBusy] = useState(false);
+  const [approvalDraft, setApprovalDraft] = useState<SignedApprovalDraft | null>(null);
+  const [approvalError, setApprovalError] = useState('');
   const [moveOpen, setMoveOpen] = useState(false);
   const [preferenceBusy, setPreferenceBusy] = useState(false);
   const [preferenceError, setPreferenceError] = useState('');
@@ -1242,12 +1258,44 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
     }
   }
 
-  async function act(actionKey: HumanActionKey) {
+  async function act(actionKey: HumanActionKey, confirmedApproval?: SignedApprovalDraft) {
+    if (busy) return;
     setBusy(actionKey);
     try {
-      await api.action(view.inbox.id, workCase.id, actionKey, caseActionPayload(workCase, actionKey));
+      const payload = caseActionPayload(workCase, actionKey);
+      if (actionKey === 'approveOnce' && signedApprovalRequired && payload.policyEvaluationId) {
+        if (!confirmedApproval) {
+          setApprovalError('');
+          setApprovalDraft(await api.signedCaseApproval(view.inbox.id, workCase.id, payload.policyEvaluationId));
+          return;
+        }
+        if (confirmedApproval.document.evaluationId !== payload.policyEvaluationId || confirmedApproval.document.caseId !== workCase.id) {
+          throw new Error('This decision has changed. Reopen it to review the current action.');
+        }
+      }
+      const signature = confirmedApproval ? await signOwnerDocument(confirmedApproval.document) : undefined;
+      await api.action(view.inbox.id, workCase.id, actionKey, payload, signature);
+      setApprovalDraft(null);
       notify(actionPastTense(actionKey)); await onRefresh(); setConfirm(null);
-    } catch (caught) { notify(errorMessage(caught)); } finally { setBusy(null); }
+    } catch (caught) {
+      if (confirmedApproval) setApprovalError(errorMessage(caught));
+      else notify(errorMessage(caught));
+    } finally { setBusy(null); }
+  }
+
+  async function markSensitive() {
+    setSensitiveBusy(true);
+    setSensitiveError('');
+    try {
+      await api.markCaseSensitive(view.inbox.id, workCase.id);
+      setSensitiveOpen(false);
+      notify('Case marked sensitive');
+      await onRefresh();
+    } catch (caught) {
+      setSensitiveError(errorMessage(caught));
+    } finally {
+      setSensitiveBusy(false);
+    }
   }
 
   const hasOpenDecision = !isGroup && Boolean(workCase.schemaVersion) && !['completed', 'expired', 'revoked'].includes(state);
@@ -1307,11 +1355,11 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
           <button className="thread-tool" disabled={!canOrganize || preferenceBusy} onClick={() => { setPreferenceError(''); setMoveOpen(true); }}><Folder size={16} />Move</button>
           <button className="thread-tool" aria-label={canAct ? state === 'paused' ? 'Resume conversation' : 'Pause conversation' : state === 'paused' ? 'Resume' : 'Pause'} disabled={!canAct || Boolean(busy)} onClick={() => state === 'paused' ? void act('resume') : setConfirm('pause')}><Pause size={16} />{canAct ? state === 'paused' ? 'Resume conversation' : 'Pause conversation' : state === 'paused' ? 'Resume' : 'Pause'}</button>
           <button className="thread-tool thread-tool-right" aria-pressed={railOpen} onClick={onRailToggle}><PanelRightOpen size={16} />Details</button>
-          <div className="thread-more-wrap"><button className="thread-tool icon-only" aria-label="More case actions" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}><MoreHorizontal size={17} /></button>{moreOpen && <div className="thread-more" role="menu">{canAct && <button role="menuitem" onClick={() => { setMoreOpen(false); if (state === 'paused') void act('resume'); else setConfirm('pause'); }}>{state === 'paused' ? 'Resume conversation' : 'Pause conversation'}</button>}<button role="menuitem" disabled title="Take over needs server support">Take over case</button><button role="menuitem" onClick={() => { setMoreOpen(false); void navigator.clipboard.writeText(workCase.id).then(() => notify('Copied')).catch(() => notify('Copy failed')); }}>Copy case ID</button>{canAct && <button role="menuitem" className="danger" onClick={() => { setMoreOpen(false); setConfirm('revoke'); }}>Revoke case authority</button>}</div>}</div>
+          <div className="thread-more-wrap"><button className="thread-tool icon-only" aria-label="More case actions" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}><MoreHorizontal size={17} /></button>{moreOpen && <div className="thread-more" role="menu">{canAct && <button role="menuitem" onClick={() => { setMoreOpen(false); if (state === 'paused') void act('resume'); else setConfirm('pause'); }}>{state === 'paused' ? 'Resume conversation' : 'Pause conversation'}</button>}{canManageInbox && workCase.canMarkSensitive && !workCase.sensitive && <button role="menuitem" onClick={() => { setMoreOpen(false); setSensitiveError(''); setSensitiveOpen(true); }}><ShieldCheck size={14} />Mark sensitive</button>}{canManageInbox && workCase.canManageSignedPolicy && <button role="menuitem" onClick={() => { setMoreOpen(false); setPermissionsOpen(true); }}><KeyRound size={14} />Case permissions</button>}<button role="menuitem" disabled title="Take over needs server support">Take over case</button><button role="menuitem" onClick={() => { setMoreOpen(false); void navigator.clipboard.writeText(workCase.id).then(() => notify('Copied')).catch(() => notify('Copy failed')); }}>Copy case ID</button>{canAct && <button role="menuitem" className="danger" onClick={() => { setMoreOpen(false); setConfirm('revoke'); }}>Revoke case authority</button>}</div>}</div>
         </div>
         <div className="thread-scroll" ref={scrollRef}><div className="thread-inner">
           <h1 className="thread-subject">{caseSubject(workCase, view.messages)}</h1>
-          <div className="thread-meta"><StatusBadge workCase={workCase} /><button className="add-folder" disabled={!canOrganize || preferenceBusy} onClick={() => { setPreferenceError(''); setMoveOpen(true); }}><Folder size={13} />{view.folders?.find(folder => folder.id === workCase.inboxPreference?.folderId)?.name || 'Folder'}</button></div>
+          <div className="thread-meta"><StatusBadge workCase={workCase} />{workCase.sensitive && <SensitiveBadge />}<button className="add-folder" disabled={!canOrganize || preferenceBusy} onClick={() => { setPreferenceError(''); setMoveOpen(true); }}><Folder size={13} />{view.folders?.find(folder => folder.id === workCase.inboxPreference?.folderId)?.name || 'Folder'}</button></div>
           {isGroup ? <section aria-label="Group members" className="participant-duo participant-group">
             {workCase.participants?.map(id => {
               const member = groupParticipant(workCase, view, id);
@@ -1334,6 +1382,27 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
       {moveOpen && <Modal title="Move conversation" dismissible={!preferenceBusy} onClose={() => setMoveOpen(false)}><MoveInboxCaseContent folders={view.folders || []} currentFolderId={workCase.inboxPreference?.folderId || null} busy={preferenceBusy} error={preferenceError} onClose={() => setMoveOpen(false)} onMove={folderId => void updatePreference({ folderId })} /></Modal>}
       {railOpen && <aside className="case-details" aria-label="Case details"><div className="details-heading"><strong>Details</strong><button className="icon-button" aria-label="Close details" onClick={onRailToggle}><X size={16} /></button></div><h2>{ownAgent ? `${local.displayName} can` : 'Local permissions unavailable'}</h2>{ownAgent?.permissions.map(permission => <div className="details-row" key={permission}><Check size={14} />{humanize(permission)}</div>) || <p>No permissions listed</p>}{ownAgent && <><h2>{local.displayName} asks you before</h2><p>Actions outside its permissions</p></>}<h2>Files</h2>{view.assets.filter(item => item.caseId === workCase.id).map(asset => <AssetRow key={asset.id} asset={asset} inboxId={view.inbox.id} notify={notify} />)}<h2>Case</h2><dl><dt>Deadline</dt><dd>{workCase.deadline ? formatDate(workCase.deadline) : 'None'}</dd><dt>ID</dt><dd className="case-id">{workCase.id}</dd></dl></aside>}
       {drawer && <DetailDrawer drawer={drawer} onClose={() => setDrawer(null)} />}
+      {sensitiveOpen && <Modal title="Mark case sensitive?" dismissible={!sensitiveBusy} onClose={() => setSensitiveOpen(false)}>
+        <p className="dialog-copy">Add the Sensitive label to this case. This setting is permanent.</p>
+        <FormError message={sensitiveError} />
+        <div className="dialog-actions"><button className="button secondary" disabled={sensitiveBusy} onClick={() => setSensitiveOpen(false)}>Cancel</button><button className="button primary" disabled={sensitiveBusy} onClick={() => void markSensitive()}>{sensitiveBusy ? 'Saving…' : 'Mark sensitive'}</button></div>
+      </Modal>}
+      {permissionsOpen && <Modal title="Case permissions" dismissible={!permissionsBusy} onClose={() => setPermissionsOpen(false)}>
+        <SignedCasePolicyForm inboxId={view.inbox.id} caseId={workCase.id} assets={view.assets} onBusy={setPermissionsBusy}
+          onClose={() => setPermissionsOpen(false)} onSaved={() => {
+            setPermissionsOpen(false);
+            notify('Signed case policy saved');
+            void onRefresh().catch(caught => notify(errorMessage(caught)));
+          }} />
+      </Modal>}
+      {approvalDraft && <Modal title="Review and sign approval" dismissible={!busy} onClose={() => setApprovalDraft(null)}>
+        <ul className="signed-policy-display">{approvalDraft.display?.map((line, index) => <li key={index}>{line}</li>)}</ul>
+        <FormError message={approvalError} />
+        <div className="dialog-actions">
+          <button className="button secondary" disabled={Boolean(busy)} onClick={() => setApprovalDraft(null)}>Cancel</button>
+          <button className="button primary" disabled={Boolean(busy) || !approvalDraft.display?.length} onClick={() => void act('approveOnce', approvalDraft)}>{busy ? 'Signing…' : 'Sign and approve'}</button>
+        </div>
+      </Modal>}
       {confirm && canAct && <ConfirmDialog action={confirm} busy={busy === confirm} onCancel={() => setConfirm(null)} onConfirm={() => void act(confirm)} />}
     </div>
   );
@@ -1362,6 +1431,9 @@ export function ConversationEntry({ event, previous, workCase, view, replyTarget
   const deliveryLabel = delivery === 'delivered' ? 'Delivered' : ['acknowledged', 'processed'].includes(delivery) ? 'Read' : ['queued', 'retrying', 'deadLettered'].includes(delivery) ? 'Not sent' : 'Unknown';
   const color = AGENT_COLORS[Math.abs(Array.from(participant.id).reduce((sum, char) => sum + char.charCodeAt(0), 0)) % AGENT_COLORS.length];
   const assigneeIds: string[] = isGroup && Array.isArray(event.payload.assigneeAgentIds) ? event.payload.assigneeAgentIds : [];
+  const policyEvaluation = event.type === 'policyEvaluation'
+    ? workCase.policyEvaluations?.find(item => item.id === event.linkedPolicyEvaluation || item.id === event.payload.id)
+    : undefined;
   const replyAuthor = replyTarget ? groupParticipant(workCase, view, replyTarget.payload.senderAgentId || replyTarget.actor) : null;
   return <>
     {showDay && <div className="conversation-day"><span>{date.toDateString() === new Date().toDateString() ? 'Today' : formatDate(event.createdAt)}</span></div>}
@@ -1379,8 +1451,19 @@ export function ConversationEntry({ event, previous, workCase, view, replyTarget
         })}</ul>}
         {mine && !isGroup && <div className={`message-delivery ${deliveryLabel === 'Not sent' || deliveryLabel === 'Unknown' ? 'warning' : ''}`}>{deliveryLabel}</div>}
       </div>
-    </div> : <div className={`conversation-event${event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? ' needs-you' : ''}`}>{event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? <Hand size={13} /> : <Sparkles size={13} />}<span>{eventSummary(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>}
+    </div> : <div className={`conversation-event${event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? ' needs-you' : ''}`}>{event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? <Hand size={13} /> : <Sparkles size={13} />}<span>{policyEvaluation?.signedPolicy ? `${signedPolicyReason(policyEvaluation)} · Policy version ${policyEvaluation.signedPolicy.version}` : eventSummary(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>}
   </>;
+}
+
+function signedPolicyReason(policy: PolicyEvaluation): string {
+  const decision = { allow: 'Allowed', deny: 'Denied', needsHuman: 'Ask first' }[policy.decision];
+  const reason: Record<string, string> = {
+    ownerSignedGrant: 'The owner’s signed grant allows this action.',
+    ownerSignedApprovalRequired: 'The owner’s signed grant requires approval.',
+    ownerSignedGrantDenied: 'The owner’s signed grant blocks this action.',
+    ownerSignedGrantMissing: 'This action has no matching signed grant.'
+  };
+  return `${decision} · ${humanize(policy.requestedAction)} · ${reason[policy.reasonCode] ?? humanize(policy.reasonCode)}`;
 }
 
 function NegotiationParticipants({ workCase, view, events, canManageInbox, onRefresh, notify }: { workCase: WorkCase; view: HumanView; events: CaseEvent[]; canManageInbox: boolean; onRefresh: () => Promise<unknown>; notify: (message: string) => void }) {
@@ -1440,7 +1523,7 @@ export function DecisionCard({ workCase, view, events, policy, canManageInbox, b
       <h2>{decisionQuestion(workCase, option)}</h2>
       {option && <ProposalOptionView option={option} expiresAt={proposal?.expiresAt || null} stageLabel={proposal?.status === 'countered' ? 'Counteroffer' : 'Offer'} partyLabel={optionParty?.displayName} />}
       {policy && <button className="decision-policy" onClick={onPolicy}>{humanize(policy.reasonCode)} · {humanize(policy.matchedPolicyId || 'Human approval')}</button>}
-      {canManageInbox && <div className="decision-actions"><button className="button primary" disabled={Boolean(busy) || !canSubmitCaseDecision(workCase, 'approveOnce')} onClick={() => onAction('approveOnce')}>Approve Once</button><button className="button secondary" disabled title="Changing a proposal needs instruction support">Change</button><button className="button secondary" disabled={Boolean(busy) || !canSubmitCaseDecision(workCase, 'decline')} onClick={() => onAction('decline')}>Decline</button><button className="button quiet" disabled title="Policy editing needs server support">Always allow this</button></div>}
+      {canManageInbox && <div className="decision-actions"><button className="button primary" disabled={Boolean(busy) || !canSubmitCaseDecision(workCase, 'approveOnce')} onClick={() => onAction('approveOnce')}>{workCase.decision?.signedApprovalRequired || policy?.signedPolicy ? 'Review and sign' : 'Approve Once'}</button><button className="button secondary" disabled title="Changing a proposal needs instruction support">Change</button><button className="button secondary" disabled={Boolean(busy) || !canSubmitCaseDecision(workCase, 'decline')} onClick={() => onAction('decline')}>Decline</button><button className="button quiet" disabled title="Policy editing needs server support">Always allow this</button></div>}
     </section>
   );
 }
@@ -2089,7 +2172,7 @@ function PageEmpty({ icon, title, body, action }: { icon: ReactNode; title: stri
 
 function DetailDrawer({ drawer, onClose }: { drawer: { type: 'policy' | 'evidence'; item?: PolicyEvaluation | EvidenceItem }; onClose: () => void }) {
   const item = drawer.item;
-  return <><button className="drawer-scrim" aria-label="Close details" onClick={onClose} /><aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><div><p className="eyebrow">{drawer.type === 'policy' ? 'Recorded policy evaluation' : 'Evidence provenance'}</p><h2 id="drawer-title">{item && 'title' in item ? item.title : item && 'requestedAction' in item ? humanize(item.requestedAction) : 'Details'}</h2></div><button className="icon-button" aria-label="Close details" onClick={onClose}><X size={18} /></button></header>{item && 'decision' in item ? <dl className="detail-list"><Detail term="Decision" value={humanize(item.decision)} /><Detail term="Matched policy" value={humanize(item.matchedPolicyId || 'No matching policy')} /><Detail term="Grant type" value={humanize(item.grantType)} /><Detail term="Reason" value={humanize(item.reasonCode)} /><Detail term="Effective" value={formatAbsolute(item.effectiveAt)} /><Detail term="Expires" value={item.expiresAt ? formatAbsolute(item.expiresAt) : 'No expiration'} /></dl> : item && 'provenance' in item ? <dl className="detail-list"><Detail term="Type" value={humanize(item.kind)} /><Detail term="Source" value={provenanceLabel(item.provenance)} /><Detail term="Reference" value={item.id} /></dl> : null}</aside></>;
+  return <><button className="drawer-scrim" aria-label="Close details" onClick={onClose} /><aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title"><header><div><p className="eyebrow">{drawer.type === 'policy' ? 'Recorded policy evaluation' : 'Evidence provenance'}</p><h2 id="drawer-title">{item && 'title' in item ? item.title : item && 'requestedAction' in item ? humanize(item.requestedAction) : 'Details'}</h2></div><button className="icon-button" aria-label="Close details" onClick={onClose}><X size={18} /></button></header>{item && 'decision' in item ? <dl className="detail-list"><Detail term="Decision" value={humanize(item.decision)} /><Detail term="Matched policy" value={humanize(item.matchedPolicyId || 'No matching policy')} />{item.signedPolicy && <><Detail term="Owner-signed policy" value={`Version ${item.signedPolicy.version}`} />{item.signedPolicy.grantId && <Detail term="Matched grant" value={item.signedPolicy.grantId} />}</>}<Detail term="Grant type" value={humanize(item.grantType)} /><Detail term="Reason" value={humanize(item.reasonCode)} /><Detail term="Effective" value={formatAbsolute(item.effectiveAt)} /><Detail term="Expires" value={item.expiresAt ? formatAbsolute(item.expiresAt) : 'No expiration'} /></dl> : item && 'provenance' in item ? <dl className="detail-list"><Detail term="Type" value={humanize(item.kind)} /><Detail term="Source" value={provenanceLabel(item.provenance)} /><Detail term="Reference" value={item.id} /></dl> : null}</aside></>;
 }
 
 function Detail({ term, value }: { term: string; value: string }) { return <div><dt>{term}</dt><dd>{value}</dd></div>; }

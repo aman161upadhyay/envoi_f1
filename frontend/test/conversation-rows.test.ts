@@ -1,8 +1,8 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { ConversationEntry } from '../src/App';
-import type { CaseEvent, HumanView, WorkCase } from '../src/types';
+import { CaseRow, ConversationEntry } from '../src/App';
+import type { CaseEvent, HumanView, PolicyEvaluation, WorkCase } from '../src/types';
 
 const workCase = { id: 'case_rows', principal: 'human_owner', actingAgent: 'agent_mine' } as WorkCase;
 const view = {
@@ -34,4 +34,27 @@ it('labels the own agent and omits the role chip for owner instructions', () => 
   const instruction = render({ ...message('e5', 'human_owner', '2026-10-06T12:00:00Z'), payload: { senderHumanId: 'human_owner', messageType: 'instruction', text: 'Pay it', deliveryState: 'delivered' } } as unknown as CaseEvent);
   expect(instruction).not.toContain('meta-role');
   expect(instruction).toContain('>Owner instruction<');
+});
+
+it('shows the sensitive marker only when the server projects it', () => {
+  const row = { ...workCase, createdAt: '2026-10-06T12:00:00Z', objective: 'Review deck' };
+  const renderRow = (value: WorkCase) => renderToStaticMarkup(createElement(CaseRow, { workCase: value, view, showOwner: false, selected: false, onSelect: () => {} }));
+  expect(renderRow(row)).not.toContain('sensitive-badge');
+  expect(renderRow({ ...row, sensitive: true })).toContain('sensitive-badge');
+});
+
+it('renders the deciding signed grant and version in the timeline', () => {
+  const evaluation: PolicyEvaluation = {
+    id: 'evaluation_1', requestedAction: 'asset.share', actor: 'agent_mine', matchedPolicyId: null, decision: 'deny',
+    grantType: 'oneTime', effectiveAt: '2026-10-06T12:00:00Z', expiresAt: null,
+    reasonCode: 'ownerSignedGrantMissing', signedPolicy: { digest: 'digest', version: 2, grantId: null }
+  };
+  const event: CaseEvent = {
+    id: 'event_1', type: 'policyEvaluation', actor: 'agent_mine', createdAt: evaluation.effectiveAt,
+    payload: { requestedAction: evaluation.requestedAction, decision: evaluation.decision },
+    linkedPolicyEvaluation: evaluation.id, precedingEventRef: null
+  };
+  const html = renderToStaticMarkup(createElement(ConversationEntry, { event, workCase: { ...workCase, policyEvaluations: [evaluation] }, view }));
+  expect(html).toContain('This action has no matching signed grant.');
+  expect(html).toContain('Policy version 2');
 });

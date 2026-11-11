@@ -63,4 +63,15 @@ describe('canonical owner case decisions', () => {
       expect(/<button[^>]*disabled=""[^>]*>Decline<\/button>/.test(html)).toBe(!pending);
     } finally { clock.mockRestore(); }
   });
+
+  it('requires signed review when the pending evaluation is outside the loaded history', () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const current = workCase();
+      current.decision!.signedApprovalRequired = true;
+      const html = renderToStaticMarkup(createElement(DecisionCard, { workCase: current, view: previewView, events: [], canManageInbox: true, busy: null, onAction: () => {}, onPolicy: () => {} }));
+      expect(html).toContain('>Review and sign</button>');
+      expect(html).not.toContain('>Approve Once</button>');
+    } finally { clock.mockRestore(); }
+  });
 });

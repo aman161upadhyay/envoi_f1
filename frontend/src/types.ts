@@ -92,6 +92,7 @@ export interface PolicyEvaluation {
   effectiveAt: string;
   expiresAt: string | null;
   reasonCode: string;
+  signedPolicy?: { digest: string; version: number; grantId: string | null };
 }
 
 export interface ProposalOption {
@@ -147,6 +148,9 @@ export interface InboxPreference { folderId: string | null; read: boolean; archi
 
 export interface WorkCase {
   caseMode?: 'group';
+  sensitive?: boolean;
+  canMarkSensitive?: boolean;
+  canManageSignedPolicy?: boolean;
   members?: Array<{ agentId: string; address: string }>;
   assignments?: Array<{ messageId: string; agentId: string; status: string }>;
   inboxPreference?: InboxPreference;
@@ -168,6 +172,7 @@ export interface WorkCase {
     grantType: string | null;
     expiresAt: string | null;
     availableActions: HumanActionKey[];
+    signedApprovalRequired?: boolean;
   } | null;
   timeline?: Array<{
     id: string;

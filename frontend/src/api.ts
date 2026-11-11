@@ -1,5 +1,6 @@
 import type { Agent, AgentConnectionInvitation, AgentConnectionInvitationDecision, ApprovedEmailContact, Asset, AuthConfig, CalendarConnector, CalendarProvider, EmailTransportStatus, Human, HumanActionKey, HumanView, Inbox, InboxPreference, Organization } from './types';
 import { trackSessionRequest } from './session-lifecycle';
+import type { OwnerDeviceSignature, SignedApprovalDraft, SignedPolicyDocument, SignedPolicyDraft } from './signed-case-policy';
 import { captureSuccessfulProductAction } from './analytics';
 import type { EnrollmentResult, EnrollmentStatus } from './quick-connect';
 import { validateQuickConnectHandoff, type ConnectorRuntime } from '../../sdk/typescript/src/quick-connect';
@@ -194,10 +195,15 @@ export const api = {
   invitations: (inboxId: string) => request<AgentConnectionInvitation[]>(`/api/inboxes/${encodeURIComponent(inboxId)}/invitations`),
   acceptInvitation: (inboxId: string, invitationId: string) => request<AgentConnectionInvitationDecision>(`/api/inboxes/${encodeURIComponent(inboxId)}/invitations/${encodeURIComponent(invitationId)}/accept`, { method: 'POST' }),
   declineInvitation: (inboxId: string, invitationId: string) => request<AgentConnectionInvitation>(`/api/inboxes/${encodeURIComponent(inboxId)}/invitations/${encodeURIComponent(invitationId)}/decline`, { method: 'POST' }),
-  action: (inboxId: string, caseId: string, actionKey: HumanActionKey, externalRefs: Record<string, unknown> = {}) => request<{ case: unknown; action: unknown; replay?: boolean }>(`/api/inboxes/${encodeURIComponent(inboxId)}/cases/${encodeURIComponent(caseId)}/actions`, {
+  markCaseSensitive: (inboxId: string, caseId: string) => request<unknown>(`/api/inboxes/${encodeURIComponent(inboxId)}/cases/${encodeURIComponent(caseId)}/sensitive`, { method: 'POST' }),
+  signedCasePolicy: (inboxId: string, caseId: string) => request<SignedPolicyDraft>(`/api/inboxes/${encodeURIComponent(inboxId)}/cases/${encodeURIComponent(caseId)}/signed-policy`),
+  previewSignedCasePolicy: (inboxId: string, caseId: string, document: Omit<SignedPolicyDocument, 'display'>) => request<{ document: SignedPolicyDocument }>(`/api/inboxes/${encodeURIComponent(inboxId)}/cases/${encodeURIComponent(caseId)}/signed-policy/preview`, { method: 'POST', body: JSON.stringify(document) }),
+  saveSignedCasePolicy: (inboxId: string, caseId: string, envelope: OwnerDeviceSignature<SignedPolicyDocument>) => request<unknown>(`/api/inboxes/${encodeURIComponent(inboxId)}/cases/${encodeURIComponent(caseId)}/signed-policy`, { method: 'POST', body: JSON.stringify(envelope) }),
+  signedCaseApproval: (inboxId: string, caseId: string, evaluationId: string) => request<SignedApprovalDraft>(`/api/inboxes/${encodeURIComponent(inboxId)}/cases/${encodeURIComponent(caseId)}/signed-approval/${encodeURIComponent(evaluationId)}`),
+  action: (inboxId: string, caseId: string, actionKey: HumanActionKey, externalRefs: Record<string, unknown> = {}, signedApproval?: OwnerDeviceSignature<SignedApprovalDraft['document']>) => request<{ case: unknown; action: unknown; replay?: boolean }>(`/api/inboxes/${encodeURIComponent(inboxId)}/cases/${encodeURIComponent(caseId)}/actions`, {
     method: 'POST',
     headers: { 'Idempotency-Key': `${actionKey}-${caseId}-${crypto.randomUUID()}` },
-    body: JSON.stringify({ actionKey, externalRefs })
+    body: JSON.stringify({ actionKey, externalRefs, ...(signedApproval ? { signedApproval } : {}) })
   }),
   agentAddressAvailability: (inboxId: string, localPart: string) => request<{ localPart: string; address: string; available: boolean }>(`/api/inboxes/${encodeURIComponent(inboxId)}/agent-address-availability?localPart=${encodeURIComponent(localPart)}`),
   enrollmentToken: (inboxId: string, name: string, localPart: string, permissions: string[], runtime: ConnectorRuntime = 'openclaw') => request<EnrollmentResult>(`/api/inboxes/${encodeURIComponent(inboxId)}/agent-enrollment-tokens`, {
