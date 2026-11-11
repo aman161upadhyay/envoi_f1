@@ -1,0 +1,48 @@
+/* Envoi chat: luxury layer. Loaded after product-brand.css. Highlight rules live in product-brand.css and are not redefined here. */
+.app-shell {
+  --lx-canvas: #f7f7f5;        /* page behind the thread */
+  --lx-paper: #ffffff;         /* cards */
+  --lx-paper-2: #fbfbf9;       /* inset panels, hover rows */
+  --lx-ink: #0f2a43;           /* primary text (existing navy) */
+  --lx-ink-2: #3d5468;         /* secondary text, 8.3:1 on canvas */
+  --lx-ink-3: #5c7084;         /* meta text, 5.0:1 on canvas */
+  --lx-line: #e6e8eb;          /* hairlines */
+  --lx-line-2: #d4d9df;        /* stronger borders, inputs */
+  --lx-accent: #1d5f99;        /* the one blue: links, focus, selected */
+  --lx-accent-soft: #eaf2f9;
+  --lx-gold: #b8860b;          /* same as the blocking underline */
+  --lx-gold-ink: #7d5a06;      /* gold text, 5.6:1 on gold-soft */
+  --lx-gold-soft: #fbf6e8;
+  --lx-gold-line: #e8d6a6;
+  --lx-green-bubble: #dff5d8;  /* unchanged own-agent bubble */
+  --lx-green-line: #b7ddb0;
+  --lx-green-ink: #2d6a26;     /* text on green chips */
+  --lx-green-soft: #edf8ea;
+  --lx-instruction: #f0f5fa;   /* owner instruction card */
+  --lx-instruction-line: #cddcea;
+  --lx-red: #b23a48;
+  --lx-radius-card: 14px;
+  --lx-radius-small: 8px;
+  --lx-radius-pill: 999px;
+  --lx-shadow-1: 0 1px 2px rgba(15, 42, 67, .05);
+  --lx-shadow-2: 0 10px 30px rgba(15, 42, 67, .08), 0 1px 2px rgba(15, 42, 67, .04);
+  --lx-ease: cubic-bezier(.23, 1, .32, 1);
+  --lx-fast: 140ms;
+  --lx-column: 760px;          /* one width for header, thread and composer */
+  --lx-measure: 68ch;
+  --lx-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --lx-serif: "Instrument Serif", "Newsreader Variable", Georgia, serif;
+  font-family: var(--lx-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+.app-shell time, .app-shell .lx-num { font-family: var(--lx-sans); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .app-shell * { transition-duration: 1ms !important; animation-duration: 1ms !important; } }
+
+.app-shell .thread-scroll { background: var(--lx-canvas); }
+.app-shell .thread-inner { max-width: calc(var(--lx-column) + 64px); padding: 36px 32px 40px; }
+.app-shell .thread-toolbar { background: rgba(255,255,255,.92); border-bottom: 1px solid var(--lx-line); min-height: 52px; }
+.app-shell .thread-tool { color: var(--lx-ink-2); border-radius: var(--lx-radius-small); transition: background-color var(--lx-fast) var(--lx-ease), transform var(--lx-fast) var(--lx-ease); }
+.app-shell .thread-tool:hover:not(:disabled) { background: var(--lx-accent-soft); color: var(--lx-ink); }
+.app-shell .thread-tool:active:not(:disabled) { transform: scale(.97); }
+.app-shell :focus-visible { outline: 2px solid var(--lx-accent); outline-offset: 2px; }
