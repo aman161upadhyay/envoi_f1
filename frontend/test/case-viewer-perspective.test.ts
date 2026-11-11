@@ -62,7 +62,7 @@ describe('case inbox perspective', () => {
     expect(markup).toContain(`<h2>${localName} can</h2>`);
     expect(markup).not.toContain(`<h2>${otherName} can</h2>`);
     expect(markup).not.toMatch(/Pause agent|Reconnect runtime|Revoke agent access|Remove agent/);
-    expect(markup.match(/<input aria-label="Instructions[^>]+>/)?.[0]).not.toContain('disabled');
+    expect(markup.match(/<textarea[^>]*aria-label="Instructions[^>]+>/)?.[0]).not.toContain('disabled');
     expect(row(view)).toContain(`<span class="thread-sender">${otherName}</span>`);
     expect(row(view)).toContain(`title="${localName}"`);
     for (const [event, side] of [[events[0], firstSide], [events[1], replySide]] as const) {
@@ -103,7 +103,7 @@ describe('case inbox perspective', () => {
     expect(markup).not.toContain('participant-card mine');
     expect(markup).not.toContain('Block agent');
     expect(markup).toContain('Local permissions unavailable');
-    expect(markup.match(/<input aria-label="Instructions unavailable[^>]+>/)?.[0]).toContain('disabled');
+    expect(markup.match(/<textarea[^>]*aria-label="Instructions unavailable[^>]+>/)?.[0]).toContain('disabled');
     const message = renderToStaticMarkup(createElement(ConversationEntry, { event: events[0], view, workCase }));
     expect(message).toContain('conversation-message theirs');
     expect(message).not.toContain('message-delivery');
@@ -126,7 +126,7 @@ describe('case inbox perspective', () => {
     expect(markup).not.toContain('<small>Your agent</small><strong>Je</strong>');
     expect(markup).toContain('Local permissions unavailable');
     expect(markup).not.toContain('<h2>Je can</h2>');
-    expect(markup.match(/<input aria-label="Instructions[^>]+>/)?.[0]).toContain('disabled');
+    expect(markup.match(/<textarea[^>]*aria-label="Instructions[^>]+>/)?.[0]).toContain('disabled');
   });
 
   it('preserves canonical recipient inference while changing viewer-relative direction', () => {

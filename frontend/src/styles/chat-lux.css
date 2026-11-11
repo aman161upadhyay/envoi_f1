@@ -134,3 +134,16 @@
 
 /* Legend sits quietly under the participants line */
 .app-shell .hl-legend { margin: -8px 0 16px; }
+
+/* Composer */
+.app-shell .thread-composer { padding: 12px 32px max(16px, env(safe-area-inset-bottom)); background: linear-gradient(to top, var(--lx-canvas) 70%, rgba(247,247,245,0)); border-top: 0; }
+.app-shell .composer-box { display: flex; flex-direction: column; gap: 6px; max-width: var(--lx-column); margin: 0 auto; padding: 12px 12px 10px 16px; border: 1px solid var(--lx-line-2); border-radius: 16px; background: var(--lx-paper); box-shadow: var(--lx-shadow-2); transition: border-color var(--lx-fast) var(--lx-ease); }
+.app-shell .composer-box:focus-within { border-color: var(--lx-accent); }
+.app-shell .composer-box textarea { width: 100%; min-height: 24px; max-height: 168px; resize: none; border: 0; outline: 0; padding: 0; background: transparent; font: 400 15px/1.55 var(--lx-sans); color: var(--lx-ink); field-sizing: content; }
+.app-shell .composer-box textarea::placeholder { color: var(--lx-ink-3); }
+.app-shell .composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.app-shell .composer-hint { font-size: 12px; color: var(--lx-ink-3); }
+.app-shell .composer-box button { display: inline-flex; align-items: center; gap: 6px; width: auto; height: 34px; padding: 0 14px; border: 0; border-radius: var(--lx-radius-pill); background: var(--lx-ink); color: #fff; font: 600 13.5px/1 var(--lx-sans); transition: transform var(--lx-fast) var(--lx-ease), opacity var(--lx-fast) var(--lx-ease); }
+.app-shell .composer-box button:disabled { opacity: .4; }
+.app-shell .composer-box button:active:not(:disabled) { transform: scale(.97); }
+@media (max-width: 700px) { .app-shell .composer-box textarea { font-size: 16px; } .app-shell .composer-hint { display: none; } .app-shell .thread-composer { padding-inline: 12px; } }
