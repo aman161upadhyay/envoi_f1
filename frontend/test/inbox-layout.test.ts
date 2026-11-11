@@ -115,3 +115,9 @@ it('honors initial Done on a fresh shell mount without selecting a case or relyi
   expect(archived.state).toBe('inProgress');
   expect(completed.state).toBe('completed');
 });
+
+it('does not use the wide layout without a window', async () => {
+  const { useWideLayout } = await import('../src/App');
+  const Probe = () => createElement('i', null, String(useWideLayout()));
+  expect(renderToStaticMarkup(createElement(Probe))).toBe('<i>false</i>');
+});

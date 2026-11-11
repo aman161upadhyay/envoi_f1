@@ -836,12 +836,26 @@ interface ShellProps {
 
 type AgentEntry = { agent: Agent; inbox: Workspace; view: HumanView };
 
+export function useWideLayout(query = '(min-width: 1280px)') {
+  const [wide, setWide] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const mq = typeof window !== 'undefined' ? window.matchMedia?.(query) : undefined;
+    if (!mq) return;
+    const on = () => setWide(mq.matches);
+    on();
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [query]);
+  return wide;
+}
+
 export function AppShell(props: ShellProps) {
   const { human, workspaces, workspace, view, onSelectWorkspace, onRefresh, onLogout, syncNotice } = props;
   const canManageInbox = view.canManageInbox === true;
   const authorizationRoute = typeof window !== 'undefined' && window.location.pathname === '/authorize-agent';
   const [section, setSection] = useState<NavSection>(props.initialSection || 'inbox');
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const wide = useWideLayout();
   const [railOpen, setRailOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<string[]>([]);
@@ -1100,8 +1114,8 @@ export function AppShell(props: ShellProps) {
             {section === 'activity' && <ActivityPage view={view} onOpenCase={openCaseFromUtility} />}
           </main>
         ) : (
-          <div className={`case-layout ${selectedCase ? 'inbox-detail-view show-detail' : 'inbox-list-view'}`}>
-{!selectedCase && <CaseQueue section={section} folderName={view.folders?.find(folder => folder.id === selectedFolderId)?.name} cases={visibleCases} view={queueView} currentAgent={currentAgent} selectedId={selectedCaseEntry?.key || null} caseKey={item => caseSources.find(source => source.workCase === item)?.key || item.id} onOpenNav={() => setNavOpen(true)} onConnect={openConnect} onLoadOlder={props.onLoadOlder} historyBusy={props.historyBusy} onSelect={openCase} conversationsStatus={doneLoadStatus} onRetryConversations={() => { for (const inbox of missingAgentViews) void refreshAgentInbox(inbox.id).catch(() => setChildViewFailures(current => current.includes(inbox.id) ? current : [...current, inbox.id])); }} />}
+          <div className={`case-layout ${selectedCase ? 'inbox-detail-view show-detail' : 'inbox-list-view'}${selectedCase && wide ? ' split-view' : ''}`}>
+{(!selectedCase || wide) && <CaseQueue section={section} folderName={view.folders?.find(folder => folder.id === selectedFolderId)?.name} cases={visibleCases} view={queueView} currentAgent={currentAgent} selectedId={selectedCaseEntry?.key || null} caseKey={item => caseSources.find(source => source.workCase === item)?.key || item.id} onOpenNav={() => setNavOpen(true)} onConnect={openConnect} onLoadOlder={props.onLoadOlder} historyBusy={props.historyBusy} onSelect={openCase} conversationsStatus={doneLoadStatus} onRetryConversations={() => { for (const inbox of missingAgentViews) void refreshAgentInbox(inbox.id).catch(() => setChildViewFailures(current => current.includes(inbox.id) ? current : [...current, inbox.id])); }} />}
             {selectedCase && <main id="main-content" className="case-main">
 <CaseWorkspace key={`${selectedCaseView.inbox.id}:${selectedCase.id}`} workCase={selectedCase} view={selectedCaseView} canManageInbox={selectedCaseView.canManageInbox} railOpen={railOpen} onRailToggle={() => setRailOpen(value => !value)} onBack={() => { setSelectedCaseId(null); }} onRefresh={refreshSelectedCase} onPreferencesChanged={async preference => { preferenceUpdated(selectedCaseView.inbox.id, selectedCase.id, preference); setSelectedCaseId(null); await refreshSelectedCase().catch(caught => setToast(errorMessage(caught))); }} notify={setToast} />
             </main>}
