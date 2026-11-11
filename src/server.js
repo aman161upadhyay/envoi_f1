@@ -2765,6 +2765,8 @@ async function humanView(inboxId, inbox, cursors = {}, { includeOwnerReviews = f
     }
     Object.assign(item, { bucket: 'needsMe', needsAttention: true, nextActor: 'Owner review required', decision: {
       question: `Review the proposed reply: ${request.proposedReply}`, policyEvaluationId: request.policyEvaluationId,
+      ...(item.policyEvaluations.some(evaluation => evaluation.id === request.policyEvaluationId && evaluation.signedPolicy)
+        ? { signedApprovalRequired: true } : {}),
       requestedAction: 'message.reply', grantType: 'oneTime', expiresAt: request.expiresAt, availableActions: ['approveOnce', 'decline']
     } });
   }

@@ -67,6 +67,7 @@ export function projectCaseForHuman(value) {
     decision: needsAttention ? {
       question: relevantPolicy?.reasonCode ? `Review required: ${readableAction(relevantPolicy.reasonCode)}.` : nextActor,
       policyEvaluationId: relevantPolicy?.id || null,
+      ...(relevantPolicy?.signedPolicy ? { signedApprovalRequired: true } : {}),
       requestedAction: relevantPolicy?.requestedAction || null,
       grantType: relevantPolicy?.grantType || null,
       expiresAt: relevantPolicy?.expiresAt || openProposal?.expiresAt || null,

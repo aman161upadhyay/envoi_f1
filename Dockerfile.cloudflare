@@ -6,6 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --chown=node:node src ./src
+COPY --chown=node:node frontend/guard-demo/packages/core/crypto.mjs frontend/guard-demo/packages/core/webauthn.mjs ./frontend/guard-demo/packages/core/
 # The tools/list schemas are consumed verbatim from the approved canonical source.
 COPY --chown=node:node test/contract-fixtures/case-tools/schemas.json ./test/contract-fixtures/case-tools/schemas.json
 COPY --chown=node:node protocol ./protocol
