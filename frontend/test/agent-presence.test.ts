@@ -147,7 +147,7 @@ describe('instruction controls use agent control state independently of presence
     const markup = renderToStaticMarkup(createElement(CaseWorkspace, {
       workCase, view, railOpen: false, onRailToggle: vi.fn(), onBack: vi.fn(), onRefresh: vi.fn(), notify: vi.fn(), canManageInbox: true
     }));
-    const input = markup.match(/<input aria-label="Instructions for [^>]+>/)![0];
+    const input = markup.match(/<textarea[^>]*aria-label="Instructions for [^>]+>/)![0];
     expect(input.includes('disabled=""')).toBe(disabled);
   });
 });

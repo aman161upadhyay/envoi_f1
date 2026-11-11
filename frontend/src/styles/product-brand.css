@@ -330,3 +330,10 @@ body:has(.onboarding-page) { background: #f6f9fc; }
 @media (prefers-reduced-motion:reduce) {
   .app-shell .button, .connect-page .button, .app-shell .runtime-option, .connect-platform { transition-duration: 0ms; }
 }
+
+/* Highlights inside agent messages. Same green for both; a golden underline marks what needs your decision. */
+.app-shell .hl { color: inherit; background: #9ad78f; padding: 0 2px; border-radius: 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone; cursor: help; }
+.app-shell .hl-blocking { text-decoration: underline solid #b8860b 3px; text-underline-offset: 3px; text-decoration-skip-ink: none; }
+.app-shell .hl:focus-visible { outline: 2px solid #176fae; outline-offset: 1px; }
+.app-shell .hl-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 14px 0 4px; font-size: 12px; color: #4a6073; }
+.app-shell .hl-legend .hl { cursor: default; font-size: 12px; padding: 1px 6px; }

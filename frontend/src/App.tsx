@@ -33,6 +33,11 @@ import { CreateInboxFolderContent, MoveInboxCaseContent } from './InboxFolderDia
 import { applyInboxPreference, filterInboxCases, readAcknowledgementForCase } from './inbox-preferences';
 import { AGENT_PERMISSION_OPTIONS, DEFAULT_AGENT_PERMISSIONS, selectedAgentPermissions } from './agent-permissions';
 import { previewRequested } from './preview';
+import { longPreviewCases, longPreviewDirectory } from './preview-long-cases';
+import { HighlightedText, HighlightLegend, HighlightSummary } from './HighlightedText';
+import { setSuggestionProvider, type ResolvedFlag } from './suggestions';
+import { useSuggestedFlags } from './useSuggestedFlags';
+import { findHighlights } from './highlights';
 import { agentLabel, connectionLabel } from './agent-presence';
 import { mergeHistory, olderCursors } from './history';
 import { createEventCursorStore, PROGRESS_ONLY_EVENTS, subscribeReplayRecovery, WORKSPACE_EVENT_TYPES } from './event-replay';
@@ -115,6 +120,15 @@ export const previewView: HumanView = {
     outlook: { id: 'outlook', label: 'Outlook Calendar', configured: false }
   }, calendarConnectors: [], deliveryReceipts: [], recentEvents: []
 };
+
+// Dev preview only: a recorded reply stands in for a model. Production installs no provider until a real one is wired.
+if (import.meta.env.DEV) void import('./preview-suggestions').then(module => setSuggestionProvider(module.recordedProvider));
+
+// Long agent-to-agent sample threads, appended after the originals so existing indexes stay put.
+previewView.cases.push(...longPreviewCases);
+Object.assign(previewView.participantDirectory ?? {}, longPreviewDirectory);
+previewView.summary = { ...previewView.summary, cases: previewView.cases.length, needsMe: 2 };
+previewView.navigation = { ...previewView.navigation, needsMe: 2, activeWork: 2 };
 
 previewView.caseQueue = previewView.cases.map(workCase => {
   const state = caseState(workCase);
@@ -827,12 +841,26 @@ interface ShellProps {
 
 type AgentEntry = { agent: Agent; inbox: Workspace; view: HumanView };
 
+export function useWideLayout(query = '(min-width: 1280px)') {
+  const [wide, setWide] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const mq = typeof window !== 'undefined' ? window.matchMedia?.(query) : undefined;
+    if (!mq) return;
+    const on = () => setWide(mq.matches);
+    on();
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [query]);
+  return wide;
+}
+
 export function AppShell(props: ShellProps) {
   const { human, workspaces, workspace, view, onSelectWorkspace, onRefresh, onLogout, syncNotice } = props;
   const canManageInbox = view.canManageInbox === true;
   const authorizationRoute = typeof window !== 'undefined' && window.location.pathname === '/authorize-agent';
   const [section, setSection] = useState<NavSection>(props.initialSection || 'inbox');
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const wide = useWideLayout();
   const [railOpen, setRailOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [expandedAgents, setExpandedAgents] = useState<string[]>([]);
@@ -1091,8 +1119,8 @@ export function AppShell(props: ShellProps) {
             {section === 'activity' && <ActivityPage view={view} onOpenCase={openCaseFromUtility} />}
           </main>
         ) : (
-          <div className={`case-layout ${selectedCase ? 'inbox-detail-view show-detail' : 'inbox-list-view'}`}>
-{!selectedCase && <CaseQueue section={section} folderName={view.folders?.find(folder => folder.id === selectedFolderId)?.name} cases={visibleCases} view={queueView} currentAgent={currentAgent} selectedId={selectedCaseEntry?.key || null} caseKey={item => caseSources.find(source => source.workCase === item)?.key || item.id} onOpenNav={() => setNavOpen(true)} onConnect={openConnect} onLoadOlder={props.onLoadOlder} historyBusy={props.historyBusy} onSelect={openCase} conversationsStatus={doneLoadStatus} onRetryConversations={() => { for (const inbox of missingAgentViews) void refreshAgentInbox(inbox.id).catch(() => setChildViewFailures(current => current.includes(inbox.id) ? current : [...current, inbox.id])); }} />}
+          <div className={`case-layout ${selectedCase ? 'inbox-detail-view show-detail' : 'inbox-list-view'}${selectedCase && wide ? ' split-view' : ''}`}>
+{(!selectedCase || wide) && <CaseQueue section={section} folderName={view.folders?.find(folder => folder.id === selectedFolderId)?.name} cases={visibleCases} view={queueView} currentAgent={currentAgent} selectedId={selectedCaseEntry?.key || null} caseKey={item => caseSources.find(source => source.workCase === item)?.key || item.id} onOpenNav={() => setNavOpen(true)} onConnect={openConnect} onLoadOlder={props.onLoadOlder} historyBusy={props.historyBusy} onSelect={openCase} conversationsStatus={doneLoadStatus} onRetryConversations={() => { for (const inbox of missingAgentViews) void refreshAgentInbox(inbox.id).catch(() => setChildViewFailures(current => current.includes(inbox.id) ? current : [...current, inbox.id])); }} />}
             {selectedCase && <main id="main-content" className="case-main">
 <CaseWorkspace key={`${selectedCaseView.inbox.id}:${selectedCase.id}`} workCase={selectedCase} view={selectedCaseView} canManageInbox={selectedCaseView.canManageInbox} railOpen={railOpen} onRailToggle={() => setRailOpen(value => !value)} onBack={() => { setSelectedCaseId(null); }} onRefresh={refreshSelectedCase} onPreferencesChanged={async preference => { preferenceUpdated(selectedCaseView.inbox.id, selectedCase.id, preference); setSelectedCaseId(null); await refreshSelectedCase().catch(caught => setToast(errorMessage(caught))); }} notify={setToast} />
             </main>}
@@ -1188,6 +1216,8 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
   const state = caseState(workCase);
   const events = timelineForCase(workCase, view.messages);
   const policy = canonicalDecisionPolicy(workCase);
+  const suggestMessages = events.filter(event => isExchangeEvent(event) && String(event.payload.messageType || '').toLowerCase() !== 'instruction').map(event => ({ id: event.id, sender: String(event.payload.senderAgentId || event.actor), text: eventSummary(event) }));
+  const suggestions = useSuggestedFlags(workCase.id, workCase.objective || '', workCase.constraints, suggestMessages);
   const [drawer, setDrawer] = useState<{ type: 'policy' | 'evidence'; item?: PolicyEvaluation | EvidenceItem } | null>(null);
   const [confirm, setConfirm] = useState<HumanActionKey | null>(null);
   const [busy, setBusy] = useState<HumanActionKey | null>(null);
@@ -1222,6 +1252,25 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
 
   const hasOpenDecision = !isGroup && Boolean(workCase.schemaVersion) && !['completed', 'expired', 'revoked'].includes(state);
   const canAct = canManageInbox && hasOpenDecision;
+  const decisionRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [decisionHidden, setDecisionHidden] = useState(false);
+  useEffect(() => {
+    const target = decisionRef.current;
+    const root = scrollRef.current;
+    if (!hasOpenDecision || !target || !root || typeof IntersectionObserver === 'undefined') { setDecisionHidden(false); return; }
+    const observer = new IntersectionObserver(entries => {
+      const entry = entries[entries.length - 1];
+      if (entry) setDecisionHidden(!entry.isIntersecting && entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0));
+    }, { root, threshold: 0 });
+    observer.observe(target);
+    return () => { observer.disconnect(); setDecisionHidden(false); };
+  }, [workCase.id, hasOpenDecision]);
+  function reviewDecision() {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    decisionRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    decisionRef.current?.querySelector<HTMLElement>('.decision-actions button:not(:disabled)')?.focus({ preventScroll: true });
+  }
   const canOrganize = Boolean(workCase.inboxPreference && view.folders);
   const ownAgent = view.agents.find(agent => agent.id === localAgentId(workCase, view));
   const canInstruct = canAct && state !== 'paused' && ownAgent?.status === 'active' && ownAgent.onboardingStatus === 'approved' && !ownAgent.credentialRevoked && !ownAgent.paused && ownAgent.permissions.includes('receive_agent_messages');
@@ -1260,7 +1309,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
           <button className="thread-tool thread-tool-right" aria-pressed={railOpen} onClick={onRailToggle}><PanelRightOpen size={16} />Details</button>
           <div className="thread-more-wrap"><button className="thread-tool icon-only" aria-label="More case actions" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}><MoreHorizontal size={17} /></button>{moreOpen && <div className="thread-more" role="menu">{canAct && <button role="menuitem" onClick={() => { setMoreOpen(false); if (state === 'paused') void act('resume'); else setConfirm('pause'); }}>{state === 'paused' ? 'Resume conversation' : 'Pause conversation'}</button>}<button role="menuitem" disabled title="Take over needs server support">Take over case</button><button role="menuitem" onClick={() => { setMoreOpen(false); void navigator.clipboard.writeText(workCase.id).then(() => notify('Copied')).catch(() => notify('Copy failed')); }}>Copy case ID</button>{canAct && <button role="menuitem" className="danger" onClick={() => { setMoreOpen(false); setConfirm('revoke'); }}>Revoke case authority</button>}</div>}</div>
         </div>
-        <div className="thread-scroll"><div className="thread-inner">
+        <div className="thread-scroll" ref={scrollRef}><div className="thread-inner">
           <h1 className="thread-subject">{caseSubject(workCase, view.messages)}</h1>
           <div className="thread-meta"><StatusBadge workCase={workCase} /><button className="add-folder" disabled={!canOrganize || preferenceBusy} onClick={() => { setPreferenceError(''); setMoveOpen(true); }}><Folder size={13} />{view.folders?.find(folder => folder.id === workCase.inboxPreference?.folderId)?.name || 'Folder'}</button></div>
           {isGroup ? <section aria-label="Group members" className="participant-duo participant-group">
@@ -1273,14 +1322,14 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
             <ArrowLeftRight size={18} className="participant-swap" aria-hidden="true" />
             <ParticipantCard participant={counterparty} label={`Agent for ${counterparty.orgRef || 'another organization'}`} nativeControl={Boolean(localAgentId(workCase, view)) && canManageInbox && counterparty.type === 'externalAgent' ? { inboxId: view.inbox.id, onRefresh, notify } : undefined} />
           </div>}
-          {workCase.decision && hasOpenDecision && <DecisionCard workCase={workCase} view={view} events={events} policy={policy} canManageInbox={canManageInbox} busy={busy} onAction={key => key === 'decline' ? setConfirm(key) : void act(key)} onPolicy={() => policy && setDrawer({ type: 'policy', item: policy })} />}
+          {workCase.decision && hasOpenDecision && <div ref={decisionRef} className="decision-anchor"><DecisionCard workCase={workCase} view={view} events={events} policy={policy} canManageInbox={canManageInbox} busy={busy} onAction={key => key === 'decline' ? setConfirm(key) : void act(key)} onPolicy={() => policy && setDrawer({ type: 'policy', item: policy })} /></div>}
           {state === 'unknownExternalResult' && <InlineNotice title="Result unknown" body="The external service did not confirm the result. Do not retry with a new key." tone="unknown" />}
           {state === 'revoked' && <InlineNotice title="Authority revoked" body="New agent work for this case is blocked." tone="danger" />}
-          <div className="conversation" aria-label="Conversation">{events.length ? events.map((event, index) => <ConversationEntry key={event.id} event={event} previous={events[index - 1]} workCase={workCase} view={view} replyTarget={messageEvents.get(event.payload.inReplyTo)} />) : <div className="empty-list"><Inbox size={20} /><strong>No messages yet</strong></div>}</div>
+          {events.some(event => isExchangeEvent(event) && findHighlights(eventSummary(event)).length > 0) && <HighlightLegend />}{suggestions.available && <div className="suggest-bar"><button type="button" className="suggest-button" disabled={suggestions.status === 'loading'} onClick={() => void suggestions.run()}>{suggestions.status === 'loading' ? 'Reading the thread…' : suggestions.status === 'done' ? 'Suggest again' : 'Suggest what to review'}</button><span className="suggest-note" role="status">{suggestions.status === 'error' ? 'Suggestions are unavailable right now. The marks above are unaffected.' : suggestions.status === 'done' ? (suggestions.count ? `${suggestions.count} suggested. Dashed marks are a model’s guess, not a check.` : 'Nothing extra to suggest.') : 'Optional. A model reads this thread once and proposes extra phrases, shown dashed.'}</span></div>}<div className="conversation" aria-label="Conversation">{events.length ? events.map((event, index) => <ConversationEntry key={event.id} event={event} previous={events[index - 1]} workCase={workCase} view={view} replyTarget={messageEvents.get(event.payload.inReplyTo)} suggested={suggestions.byEvent.get(event.id)} onDismissSuggestion={suggestions.dismiss} />) : <div className="empty-list"><Inbox size={20} /><strong>No messages yet</strong></div>}</div>
           {workCase.receipt && <ReceiptCard workCase={workCase} />}
           {isGroup && <FormError message={preferenceError} />}
         </div></div>
-        {!isGroup && <div className="thread-composer"><form className="composer-box" onSubmit={event => void sendInstruction(event)}><input aria-label={local.relationship === 'localAgent' ? `Instructions for ${local.displayName}` : 'Instructions unavailable: local identity unknown'} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={15000} placeholder={canInstruct ? 'Send an instruction to your agent' : 'Instructions require an active agent and conversation'} disabled={!canInstruct || instructionBusy} /><button aria-label="Send instruction" disabled={!canInstruct || instructionBusy || !instruction.trim()}><ArrowRight size={16} /></button></form><FormError message={instructionError || preferenceError} /></div>}
+        <div className="thread-composer">{workCase.decision && hasOpenDecision && decisionHidden && <div className="decision-bar" role="status"><span className="decision-bar-label">Needs your decision</span><span className="decision-bar-text">{decisionQuestion(workCase)}</span><button type="button" onClick={reviewDecision}>Review</button></div>}{!isGroup && <><form className="composer-box" onSubmit={event => void sendInstruction(event)}><textarea rows={1} aria-label={local.relationship === 'localAgent' ? `Instructions for ${local.displayName}` : 'Instructions unavailable: local identity unknown'} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={15000} placeholder={canInstruct ? 'Send an instruction to your agent' : 'Instructions require an active agent and conversation'} disabled={!canInstruct || instructionBusy} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="composer-foot"><span className="composer-hint">Enter to send · Shift+Enter for a new line</span><button aria-label="Send instruction" disabled={!canInstruct || instructionBusy || !instruction.trim()}><span>Send</span><ArrowRight size={15} /></button></div></form><FormError message={instructionError || preferenceError} /></>}</div>
       </div>
       {moveOpen && <Modal title="Move conversation" dismissible={!preferenceBusy} onClose={() => setMoveOpen(false)}><MoveInboxCaseContent folders={view.folders || []} currentFolderId={workCase.inboxPreference?.folderId || null} busy={preferenceBusy} error={preferenceError} onClose={() => setMoveOpen(false)} onMove={folderId => void updatePreference({ folderId })} /></Modal>}
       {railOpen && <aside className="case-details" aria-label="Case details"><div className="details-heading"><strong>Details</strong><button className="icon-button" aria-label="Close details" onClick={onRailToggle}><X size={16} /></button></div><h2>{ownAgent ? `${local.displayName} can` : 'Local permissions unavailable'}</h2>{ownAgent?.permissions.map(permission => <div className="details-row" key={permission}><Check size={14} />{humanize(permission)}</div>) || <p>No permissions listed</p>}{ownAgent && <><h2>{local.displayName} asks you before</h2><p>Actions outside its permissions</p></>}<h2>Files</h2>{view.assets.filter(item => item.caseId === workCase.id).map(asset => <AssetRow key={asset.id} asset={asset} inboxId={view.inbox.id} notify={notify} />)}<h2>Case</h2><dl><dt>Deadline</dt><dd>{workCase.deadline ? formatDate(workCase.deadline) : 'None'}</dd><dt>ID</dt><dd className="case-id">{workCase.id}</dd></dl></aside>}
@@ -1296,7 +1345,7 @@ function groupParticipant(workCase: WorkCase, view: HumanView, agentId: string) 
   return participant.address || !member ? participant : { ...participant, displayName: member.address, address: member.address };
 }
 
-export function ConversationEntry({ event, previous, workCase, view, replyTarget }: { event: CaseEvent; previous?: CaseEvent; workCase: WorkCase; view: HumanView; replyTarget?: CaseEvent }) {
+export function ConversationEntry({ event, previous, workCase, view, replyTarget, suggested, onDismissSuggestion }: { event: CaseEvent; previous?: CaseEvent; workCase: WorkCase; view: HumanView; replyTarget?: CaseEvent; suggested?: ResolvedFlag[]; onDismissSuggestion?: (flag: ResolvedFlag) => void }) {
   view = caseSourceView(workCase, view);
   const ownHuman = Boolean(event.payload.senderHumanId && event.payload.senderHumanId === view.requester?.id);
   const ownerInstruction = String(event.payload.messageType || '').toLowerCase() === 'instruction' && Boolean(event.payload.senderHumanId || event.payload.senderType === 'human');
@@ -1307,19 +1356,22 @@ export function ConversationEntry({ event, previous, workCase, view, replyTarget
   const date = new Date(event.createdAt);
   const priorDate = previous ? new Date(previous.createdAt) : null;
   const showDay = !priorDate || date.toDateString() !== priorDate.toDateString();
+  const priorSender = previous ? (previous.payload.senderAgentId || previous.payload.senderHumanId || previous.actor) : null;
+  const continued = Boolean(previous && priorDate && isExchangeEvent(previous) && isExchangeEvent(event) && priorSender === senderId && !showDay && Math.abs(date.getTime() - priorDate.getTime()) < 10 * 60 * 1000);
   const delivery = String(event.payload.deliveryState || 'unknown');
   const deliveryLabel = delivery === 'delivered' ? 'Delivered' : ['acknowledged', 'processed'].includes(delivery) ? 'Read' : ['queued', 'retrying', 'deadLettered'].includes(delivery) ? 'Not sent' : 'Unknown';
   const color = AGENT_COLORS[Math.abs(Array.from(participant.id).reduce((sum, char) => sum + char.charCodeAt(0), 0)) % AGENT_COLORS.length];
   const assigneeIds: string[] = isGroup && Array.isArray(event.payload.assigneeAgentIds) ? event.payload.assigneeAgentIds : [];
   const replyAuthor = replyTarget ? groupParticipant(workCase, view, replyTarget.payload.senderAgentId || replyTarget.actor) : null;
   return <>
-    {showDay && <div className="conversation-day">{date.toDateString() === new Date().toDateString() ? 'Today' : formatDate(event.createdAt)}</div>}
-    {isExchangeEvent(event) ? <div id={isGroup && typeof event.payload.messageId === 'string' ? `message-${event.payload.messageId}` : undefined} className={`conversation-message ${mine ? 'mine' : 'theirs'}${ownerInstruction ? ' owner-instruction' : ''}`}>
+    {showDay && <div className="conversation-day"><span>{date.toDateString() === new Date().toDateString() ? 'Today' : formatDate(event.createdAt)}</span></div>}
+    {isExchangeEvent(event) ? <div id={isGroup && typeof event.payload.messageId === 'string' ? `message-${event.payload.messageId}` : undefined} className={`conversation-message ${mine ? 'mine' : 'theirs'}${ownerInstruction ? ' owner-instruction' : ''}${continued ? ' continued' : ''}`}>
       <span className="counterparty-avatar" style={{ '--avatar-color': color } as React.CSSProperties}>{ownerInstruction ? <UserRound size={15} aria-hidden="true" /> : initials(participant.displayName)}</span>
       <div className="message-content">
-        <div className="message-meta"><strong>{ownHuman ? 'You' : participant.displayName}</strong><span>{ownerInstruction ? 'Owner instruction' : exchangeEventLabel(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>
+        <div className="message-meta"><strong>{ownHuman ? 'You' : participant.displayName}</strong>{!ownerInstruction && <span className="meta-role">{mine ? 'Your agent' : participant.orgRef || 'External agent'}</span>}<span>{ownerInstruction ? 'Owner instruction' : exchangeEventLabel(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>
         {isGroup && typeof event.payload.inReplyTo === 'string' && <div className="group-reply">{replyAuthor ? <a href={`#message-${encodeURIComponent(event.payload.inReplyTo)}`}>Reply to {replyAuthor.displayName}</a> : 'Reply to an earlier message'}</div>}
-        <div className="message-bubble">{ownerInstruction && event.payload.text ? String(event.payload.text) : eventSummary(event)}</div>
+        <div className="message-bubble">{ownerInstruction && event.payload.text ? String(event.payload.text) : <HighlightedText text={eventSummary(event)} suggested={suggested} onDismiss={onDismissSuggestion} />}</div>
+        {!ownerInstruction && <HighlightSummary text={eventSummary(event)} suggestedCount={suggested?.length || 0} />}
         {assigneeIds.length > 0 && <ul className="group-assignments" aria-label="Assignments">{assigneeIds.map(agentId => {
           const assignee = groupParticipant(workCase, view, agentId);
           const assignment = workCase.assignments?.find(item => item.messageId === event.payload.messageId && item.agentId === agentId);
@@ -1327,7 +1379,7 @@ export function ConversationEntry({ event, previous, workCase, view, replyTarget
         })}</ul>}
         {mine && !isGroup && <div className={`message-delivery ${deliveryLabel === 'Not sent' || deliveryLabel === 'Unknown' ? 'warning' : ''}`}>{deliveryLabel}</div>}
       </div>
-    </div> : <div className="conversation-event"><Sparkles size={13} /><span>{eventSummary(event)}</span></div>}
+    </div> : <div className={`conversation-event${event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? ' needs-you' : ''}`}>{event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? <Hand size={13} /> : <Sparkles size={13} />}<span>{eventSummary(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>}
   </>;
 }
 
