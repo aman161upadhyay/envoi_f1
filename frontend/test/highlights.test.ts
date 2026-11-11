@@ -1,64 +1,78 @@
 import { describe, expect, it } from 'vitest';
 import { findHighlights, splitByHighlights } from '../src/highlights';
-import { longPreviewCases } from '../src/preview-long-cases';
+import { previewView } from '../src/App';
 
 const marked = (text: string) => findHighlights(text).map(h => ({ text: text.slice(h.start, h.end), tier: h.tier, category: h.category }));
-const messageText = (caseId: string, eventId: string) =>
-  String(longPreviewCases.find(c => c.id === caseId)!.events.find(e => e.id === eventId)!.payload.text);
+const existing = (eventId: string) => {
+  for (const workCase of previewView.cases) {
+    const event = workCase.events.find(item => item.id === eventId);
+    if (event) return String(event.payload.text);
+  }
+  throw new Error(`No existing message ${eventId}`);
+};
 
-describe('message highlights', () => {
-  it('marks portions of a sentence, not the whole sentence', () => {
-    const text = messageText('conversation_ledger_invoice', 'evt_inv_3');
-    const spans = marked(text);
-    expect(spans.length).toBeGreaterThan(0);
-    for (const span of spans) expect(span.text.length).toBeLessThan(120);
-    expect(spans.find(s => s.text.includes('1.5% monthly late fee'))?.tier).toBe('review');
-    expect(spans.find(s => /use the new account/.test(s.text))?.tier).toBe('blocking');
-    expect(spans.some(s => /Net 30 to Net 15/.test(s.text))).toBe(true);
+describe('highlights on the existing conversations', () => {
+  it('marks the amount and the deposit demand in the counteroffer, and only those', () => {
+    const spans = marked(existing('evt_dinner_2'));
+    expect(spans).toEqual([
+      { text: '$2,350', tier: 'review', category: 'money' },
+      { text: 'if the deposit is paid today', tier: 'blocking', category: 'money' }
+    ]);
   });
 
-  it('flags the pressure, data request and unverified authority in the pushy message', () => {
-    const spans = marked(messageText('conversation_ledger_invoice', 'evt_inv_5'));
-    expect(spans.find(s => /full list of your end-customer contacts/.test(s.text))?.tier).toBe('blocking');
-    expect(spans.some(s => /pause API access/.test(s.text) && s.category === 'deadline')).toBe(true);
-    const approval = marked(messageText('conversation_ledger_invoice', 'evt_inv_7'));
-    expect(approval.some(s => /verbally approved/.test(s.text) && s.category === 'authority')).toBe(true);
+  it('marks the budget the agent is working to', () => {
+    expect(marked(existing('evt_dinner_1'))).toEqual([{ text: 'within your $2,400 budget', tier: 'review', category: 'money' }]);
   });
 
-  it('marks the stop in the agent message as blocking', () => {
-    const spans = marked(messageText('conversation_ledger_invoice', 'evt_inv_8'));
-    expect(spans.some(s => /escalating to Rachel/.test(s.text) && s.tier === 'blocking')).toBe(true);
+  it('marks the proposed time', () => {
+    expect(marked(existing('evt_planning_1'))).toEqual([{ text: 'Tuesday at 11:00 AM', tier: 'review', category: 'deadline' }]);
   });
 
-  it('marks hard-to-undo venue terms', () => {
-    const spans = marked(messageText('conversation_harbor_venue', 'evt_ven_2'));
-    expect(spans.some(s => /non-refundable/.test(s.text))).toBe(true);
-    expect(spans.some(s => /remain(?:s)? responsible|remain responsible/.test(s.text))).toBe(true);
-    const terms = marked(messageText('conversation_harbor_venue', 'evt_ven_4'));
-    expect(terms.some(s => /automatic renewal/.test(s.text) && s.tier === 'blocking')).toBe(true);
-    expect(terms.some(s => /indemnify/.test(s.text) && s.tier === 'blocking')).toBe(true);
-    expect(terms.some(s => /nut-free/.test(s.text) && s.tier === 'blocking')).toBe(true);
+  it('leaves routine updates alone', () => {
+    expect(findHighlights(existing('evt_brief_1'))).toEqual([]);
+    expect(findHighlights('Thanks, see you Tuesday.')).toEqual([]);
+  });
+});
+
+describe('highlights on typical agent wording', () => {
+  const pushy = 'Our bank changed processors in Q3, so please use the new account for this payment. If payment is not received by Nov 12 we will have to pause API access for your workspace. Please also send the full list of your end-customer contacts including phone numbers.';
+
+  it('marks parts of a sentence, not the whole sentence', () => {
+    const spans = marked(pushy);
+    expect(spans.length).toBeGreaterThanOrEqual(3);
+    for (const span of spans) expect(span.text.length).toBeLessThan(pushy.length / 2);
   });
 
-  it('leaves routine reconciliation text alone', () => {
-    expect(marked('Hello Ledger Co. We are reconciling your October invoice against purchase order PO-4471.')).toEqual([]);
-    expect(marked(messageText('conversation_ledger_invoice', 'evt_inv_2'))).toEqual([]);
+  it('treats payee changes, data requests and legal commitments as needing a person', () => {
+    const blocking = marked(pushy).filter(span => span.tier === 'blocking').map(span => span.category);
+    expect(blocking).toContain('payee');
+    expect(blocking).toContain('data');
+    const terms = marked('The agreement includes an automatic renewal for the same week next year, and asks you to indemnify the venue for damage.');
+    expect(terms.filter(span => span.tier === 'blocking' && span.category === 'terms')).toHaveLength(2);
   });
 
-  it('never overlaps, stays in order, and rebuilds the original text', () => {
-    for (const workCase of longPreviewCases) for (const event of workCase.events) {
-      const text = String(event.payload.text || '');
-      const spans = findHighlights(text);
-      spans.forEach((span, i) => { if (i) expect(span.start).toBeGreaterThanOrEqual(spans[i - 1].end); });
-      expect(splitByHighlights(text, spans).map(p => p.text).join('')).toBe(text);
-    }
+  it('treats the agent saying it has stopped as needing a person', () => {
+    const spans = marked('I cannot treat a verbal approval as authority. I am escalating to Rachel now.');
+    expect(spans.some(span => span.tier === 'blocking' && span.category === 'approval' && span.text.startsWith('I am escalating'))).toBe(true);
   });
 
-  it('keeps highlights well under a third of any message', () => {
-    for (const workCase of longPreviewCases) for (const event of workCase.events) {
-      const text = String(event.payload.text || '');
-      const covered = findHighlights(text).reduce((sum, s) => sum + s.end - s.start, 0);
-      expect(covered / Math.max(text.length, 1)).toBeLessThan(0.36);
-    }
+  it('marks deadlines, fees and unproven approval claims as worth a look', () => {
+    const fee = marked('A 1.5% monthly late fee applies if the invoice is paid after the due date, and we need an answer by Nov 12 so please reply soon.');
+    expect(fee.map(span => span.category)).toContain('money');
+    expect(fee.map(span => span.category)).toContain('deadline');
+    const claim = marked('For what it is worth, your CFO verbally approved the account change last Thursday, so we can move ahead with the rest of the schedule as planned.');
+    expect(claim.some(span => span.tier === 'review' && span.category === 'authority')).toBe(true);
+  });
+
+  it('never overlaps, and the pieces rebuild the original text', () => {
+    const highlights = findHighlights(pushy);
+    for (let i = 1; i < highlights.length; i++) expect(highlights[i].start).toBeGreaterThanOrEqual(highlights[i - 1].end);
+    expect(splitByHighlights(pushy, highlights).map(piece => piece.text).join('')).toBe(pushy);
+  });
+
+  it('keeps coverage low so the page stays readable', () => {
+    const dense = 'We charge $12,000 for the platform, $4,620 for usage and $1,800 for the workshop, a $18,420 total, plus a 22% service fee, a 40% deposit and a $600 room fee.';
+    const covered = findHighlights(dense).reduce((sum, span) => sum + span.end - span.start, 0);
+    expect(covered / dense.length).toBeLessThan(0.36);
   });
 });

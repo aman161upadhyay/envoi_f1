@@ -35,7 +35,6 @@ import { CreateInboxFolderContent, MoveInboxCaseContent } from './InboxFolderDia
 import { applyInboxPreference, filterInboxCases, readAcknowledgementForCase } from './inbox-preferences';
 import { AGENT_PERMISSION_OPTIONS, DEFAULT_AGENT_PERMISSIONS, selectedAgentPermissions } from './agent-permissions';
 import { previewRequested } from './preview';
-import { longPreviewCases, longPreviewDirectory } from './preview-long-cases';
 import { HighlightedText, HighlightLegend } from './HighlightedText';
 import { setSuggestionProvider, type ResolvedFlag } from './suggestions';
 import { useSuggestedFlags } from './useSuggestedFlags';
@@ -127,12 +126,6 @@ export const previewView: HumanView = {
 if (typeof window !== 'undefined' && previewRequested(window.location.search, import.meta.env.DEV)) {
   void import('./preview-suggestions').then(module => setSuggestionProvider(module.recordedProvider));
 }
-
-// Long agent-to-agent sample threads, appended after the originals so existing indexes stay put.
-previewView.cases.push(...longPreviewCases);
-Object.assign(previewView.participantDirectory ?? {}, longPreviewDirectory);
-previewView.summary = { ...previewView.summary, cases: previewView.cases.length, needsMe: 2 };
-previewView.navigation = { ...previewView.navigation, needsMe: 2, activeWork: 2 };
 
 previewView.caseQueue = previewView.cases.map(workCase => {
   const state = caseState(workCase);
