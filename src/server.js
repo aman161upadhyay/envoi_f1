@@ -6088,6 +6088,9 @@ async function route(req, res) {
     const requester = { id: human.id, auth: { provider: auth.provider, assurance: session.assurance || 'provider' } };
     const preferences = await getPrefsForCases(store, { scopeMode: 'personal', organizationId: inbox.organizationId, humanId: human.id, inboxId, cases: view.caseQueue });
     const personalizedView = attachInboxPreferencesToView(view, preferences);
+    if (traceSigner && requesterCanManage) {
+      for (const item of personalizedView.caseQueue) item.canReadSignedTrace = true;
+    }
     if (requesterCanManage && human.id === inbox.ownerHumanId) {
       const canManageSignedPolicy = Boolean(inbox.ownerAgentId && signedPolicyNetwork && signedPolicyRecordContract
         && Object.hasOwn(signedPolicyOwnerAccounts, human.id) && signedPolicyOwnerAccounts[human.id]);

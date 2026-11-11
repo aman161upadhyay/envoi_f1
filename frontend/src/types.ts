@@ -151,6 +151,7 @@ export interface WorkCase {
   caseMode?: 'group';
   sensitive?: boolean;
   canMarkSensitive?: boolean;
+  canReadSignedTrace?: boolean;
   canManageSignedPolicy?: boolean;
   members?: Array<{ agentId: string; address: string }>;
   assignments?: Array<{ messageId: string; agentId: string; status: string }>;
