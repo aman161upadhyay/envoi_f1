@@ -10,6 +10,7 @@ import path from 'node:path';
 import { generateSync } from 'otplib';
 import { BrowserSession } from './browser-session.js';
 import { loadMigrations } from '../src/migrations.js';
+import { valueDigest } from '../src/policy-engine.js';
 
 async function scanner() {
   const server = http.createServer(async (req, res) => {
@@ -80,6 +81,113 @@ async function eventually(check) {
   }
   throw new Error('Expected recipient case did not become visible');
 }
+
+test('owner-signed asset grants narrow upload, listing, download, and recipient sharing', async t => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'envoi-signed-case-assets-'));
+  const scan = await scanner();
+  let server = await launch(dataDir, scan.url);
+  t.after(async () => { await server?.stop(); await scan.stop(); await rm(dataDir, { recursive: true, force: true }); });
+  const [alice, bob] = await Promise.all([owner(server.baseUrl, '3104'), owner(server.baseUrl, '3105')]);
+  const { privateKey, publicKey: signingKey } = crypto.generateKeyPairSync('ed25519');
+  const publicKey = Buffer.from(signingKey.export({ format: 'jwk' }).x, 'base64url').toString('hex');
+  const keyRecord = { public_key: publicKey, key_type: 'demo_device', registered_at_ms: Date.now() - 60_000, revoked_at_ms: null };
+  const registry = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const query = JSON.parse(Buffer.concat(chunks).toString());
+    const { owner: account } = JSON.parse(Buffer.from(query.params.args_base64, 'base64').toString());
+    if (query.params.method_name !== 'owner_keys' || account !== 'alice.testnet') { res.writeHead(400); return res.end(); }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ jsonrpc: '2.0', id: query.id, result: { result: [...Buffer.from(JSON.stringify([keyRecord]))] } }));
+  });
+  registry.listen(0, '127.0.0.1');
+  await once(registry, 'listening');
+  t.after(() => new Promise(resolve => registry.close(resolve)));
+  await server.stop();
+  server = null;
+  server = await launch(dataDir, scan.url, {
+    ENVOI_SIGNED_POLICY_NETWORK: 'near-testnet',
+    ENVOI_SIGNED_POLICY_RECORD_CONTRACT: 'record.testnet',
+    ENVOI_SIGNED_POLICY_RPC_URL: `http://127.0.0.1:${registry.address().port}`,
+    ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS: JSON.stringify({ [alice.human.id]: 'alice.testnet' })
+  });
+  const { baseUrl } = server;
+  const caseId = 'case_signed_asset_grants';
+  const aliceInbox = `/api/inboxes/${alice.inbox.id}`;
+  const bobInbox = `/api/inboxes/${bob.inbox.id}`;
+  const agent = { token: alice.agentApiToken };
+  const admin = { session: alice.session };
+  const startedCase = await api(baseUrl, `${aliceInbox}/messages`, {
+    ...agent, key: 'signed-asset-case',
+    body: { senderAgentId: alice.agent.id, recipientEmail: bob.agent.address, caseId, type: 'request', text: 'Share case evidence' }
+  });
+  assert.equal(startedCase.status, 202, JSON.stringify(startedCase.payload));
+  await eventually(async () => (await api(baseUrl, `${bobInbox}/cases/${caseId}`, { token: bob.agentApiToken })).status === 200);
+
+  const checksum = bytes => crypto.createHash('sha256').update(bytes).digest('base64');
+  const uploadTarget = (filename, bytes) => ({ filename, mimeType: 'text/plain', size: bytes.length, checksumSha256: checksum(bytes) });
+  const begin = target => api(baseUrl, `${aliceInbox}/asset-uploads`, { ...agent, body: { ...target, caseId } });
+  const complete = assetId => api(baseUrl, `${aliceInbox}/assets/${assetId}/complete`, { ...agent, body: {} });
+  async function upload(target, bytes, finish) {
+    const result = await begin(target);
+    assert.equal(result.status, 201, JSON.stringify(result.payload));
+    const { object, upload: link } = result.payload;
+    assert.equal((await fetch(link.url, { method: 'PUT', headers: link.headers, body: bytes })).status, 204);
+    if (finish) assert.equal((await complete(object.id)).payload.state, 'clean');
+    return object;
+  }
+  const bytes = Buffer.from('signed case file');
+  const visible = await upload(uploadTarget('visible.txt', bytes), bytes, true);
+  const hidden = await upload(uploadTarget('hidden.txt', bytes), bytes, true);
+  const approvedUpload = uploadTarget('approved.txt', bytes);
+  const pending = await upload(uploadTarget('pending.txt', bytes), bytes, false);
+  const signedPolicy = `${aliceInbox}/cases/${caseId}/signed-policy`;
+  const target = { assetId: visible.id, assetVersion: visible.checksumSha256 };
+  const grantAsset = assetId => api(baseUrl, `${aliceInbox}/assets/${assetId}/grants`, {
+    ...agent, key: `grant-${assetId}`, body: { caseId, recipientAgentId: bob.agent.id }
+  });
+  async function setPolicy(grants) {
+    const response = await api(baseUrl, signedPolicy, admin);
+    assert.equal(response.status, 200, JSON.stringify(response.payload));
+    const { version, previousHash } = response.payload;
+    const now = Date.now();
+    const preview = await api(baseUrl, `${signedPolicy}/preview`, { ...admin, body: {
+      schema: 'envoi.case-policy/v1', workspaceId: alice.inbox.id, caseId, ownerId: alice.human.id, agentId: alice.agent.id,
+      version, previousHash, issuedAtMs: now, expiresAtMs: now + 60_000, grants
+    } });
+    assert.equal(preview.status, 200, JSON.stringify(preview.payload));
+    const { document } = preview.payload;
+    const signature = crypto.sign(null, Buffer.from(valueDigest(document), 'hex'), privateKey).toString('hex');
+    const saved = await api(baseUrl, signedPolicy, { ...admin, body: { document, signature, publicKey, keyType: 'demo_device' } });
+    assert.equal(saved.status, 200, JSON.stringify(saved.payload));
+  }
+  await setPolicy([
+    { id: 'read-one-version', action: 'asset.read', decision: 'allow', target },
+    { id: 'share-one-recipient', action: 'asset.share', decision: 'allow', target: { ...target, recipientAgentId: bob.agent.id } },
+    { id: 'upload-one-checksum', action: 'asset.upload', decision: 'allow', target: approvedUpload }
+  ]);
+  const listPath = `${aliceInbox}/assets?caseId=${caseId}`;
+  assert.deepEqual((await api(baseUrl, listPath, agent)).payload.map(asset => asset.id), [visible.id]);
+  assert.ok((await api(baseUrl, listPath, admin)).payload.some(asset => asset.id === hidden.id));
+  assert.equal((await api(baseUrl, `${aliceInbox}/assets/${hidden.id}/download`, agent)).status, 404);
+  assert.equal((await complete(pending.id)).status, 403);
+  assert.equal((await begin({ ...approvedUpload, checksumSha256: checksum(Buffer.from('different')) })).status, 403);
+  await upload(approvedUpload, bytes, true);
+  assert.equal((await grantAsset(hidden.id)).status, 403);
+  assert.equal((await grantAsset(visible.id)).status, 201);
+  const bobDownload = await api(baseUrl, `${bobInbox}/assets/${visible.id}/download`, { token: bob.agentApiToken });
+  assert.equal(bobDownload.status, 200, JSON.stringify(bobDownload.payload));
+  const download = await api(baseUrl, `${aliceInbox}/assets/${visible.id}/download`, agent);
+  assert.equal(download.status, 200, JSON.stringify(download.payload));
+  assert.match(download.payload.download.url, /\/api\/inboxes\/[^/]+\/assets\/[^/]+\/content$/);
+  const fetchVisible = () => fetch(download.payload.download.url, { headers: { authorization: `Bearer ${alice.agentApiToken}` } });
+  assert.deepEqual(Buffer.from(await (await fetchVisible()).arrayBuffer()), bytes);
+  assert.equal((await api(baseUrl, `${aliceInbox}/assets`, { token: `envoi_case_session_${'A'.repeat(43)}` })).status, 401);
+  await setPolicy([]);
+  assert.equal((await fetchVisible()).status, 404);
+  assert.equal((await grantAsset(visible.id)).status, 403);
+  assert.deepEqual((await api(baseUrl, listPath, agent)).payload, []);
+});
 
 for (const [label, extraEnv] of [['legacy gates', {}], ['Phase D authorization', { ENVOI_INSTALLATIONS_V2: 'true', ENVOI_RELATIONSHIPS_V2: 'true' }]]) test(`case asset grants remain private until explicit, clean, current counterparty authorization (${label})`, async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'sinaloa-case-grants-'));
