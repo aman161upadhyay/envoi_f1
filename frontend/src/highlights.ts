@@ -13,22 +13,28 @@ export const CATEGORY_LABEL: Record<HighlightCategory, string> = {
 
 type Rule = { pattern: RegExp; tier: HighlightTier; category: HighlightCategory; reason: string };
 
-// Order only matters for ties; blocking always wins an overlap.
+// Order only matters for ties; blocking always wins an overlap. Written from reading what agents
+// actually say when they negotiate (offers, deposits, schedules, access requests), not from any one thread.
+const MONTH = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*';
+const WEEKDAY = '(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day';
 const RULES: Rule[] = [
-  // Things the agent cannot settle without a person.
-  { pattern: /\b(?:use the new account(?: for this payment)?|our bank changed processors[^.,;]*|new account is at [A-Z][\w ]*(?:, ending \d{4})?|change the payee on file myself|a new remittance account)/gi, tier: 'blocking', category: 'payee', reason: 'Changes where the money goes. Only you can approve a new payee.' },
-  { pattern: /\b(?:the full list of your end-customer contacts[^.;]*?phone numbers|end-customer contact details)/gi, tier: 'blocking', category: 'data', reason: 'Asks for personal data beyond what the task needs.' },
-  { pattern: /\b(?:automatic renewal of the hall hold[^.;]*?(?= unless)|indemnify Harbor Room[^.;]*|carry liability insurance|accept that risk in writing|cannot guarantee a nut-free environment)/gi, tier: 'blocking', category: 'terms', reason: 'A legal or safety commitment the agent is not allowed to make for you.' },
-  { pattern: /\b(?:needs my principal[’']s approval|I am escalating to \w+|I will take those terms to her|I will hold payment until[^.;]*|an automatic renewal, an indemnity, or a written risk acceptance)/gi, tier: 'blocking', category: 'approval', reason: 'Your agent has stopped and is waiting for you.' },
+  // Things an agent cannot settle without a person.
+  { pattern: /\b(?:use (?:the|our) new (?:bank )?account(?: for this payment)?|(?:our|the) bank (?:details|account|information) (?:have|has) changed|(?:new|updated|different) (?:bank|remittance|wire|payment) (?:account|details|instructions)|(?:change|update|switch) the (?:payee|bank account|remittance)[^.,;]{0,40}|our bank changed processors[^.,;]*|new account is at [A-Z][\w ]*(?:, ending \d{4})?)/gi, tier: 'blocking', category: 'payee', reason: 'Changes where the money goes. Only you can approve a new payee.' },
+  { pattern: /\b(?:(?:if )?the deposit (?:is|be|must be|has to be) (?:paid|sent|received)(?: (?:today|now|immediately|by [^.,;]+|within [^.,;]+))?|(?:send|wire|transfer|pay) (?:the )?(?:deposit|payment|funds)(?: (?:today|now|immediately|right away))?|pay(?:ment)? (?:today|immediately|right away))/gi, tier: 'blocking', category: 'money', reason: 'Asks for money to move. Paying needs your approval.' },
+  { pattern: /\b(?:the full list of your end-customer contacts[^.;]*?phone numbers|end-customer contact details|(?:send|share|provide|give) (?:us |me )?(?:the )?(?:full )?(?:list|details|contacts?|emails?|phone numbers?) (?:of|for) (?:your )?(?:customers?|clients?|employees?|users?)[^.;]{0,30}|social security number|passport number|credit card number|card number|date of birth)/gi, tier: 'blocking', category: 'data', reason: 'Asks for personal data beyond what the task needs.' },
+  { pattern: /\b(?:auto(?:matic(?:ally)?)?[- ]renew(?:al|s|ed)?[^.;]{0,50}?(?= unless|[.;,]|$)|indemnif(?:y|ication)[^.;]{0,40}|liability insurance|non-?compete|exclusiv(?:e|ity)[^.;,]{0,30}|accept that risk in writing|cannot guarantee a nut-free environment)/gi, tier: 'blocking', category: 'terms', reason: 'A legal or safety commitment the agent is not allowed to make for you.' },
+  { pattern: /\b(?:needs? (?:my principal[’']s|your|human) (?:approval|decision|sign-?off)|I (?:am|will be|[’']m) escalating to \w+|I will (?:take|bring) (?:those|these) terms to \w+|I will hold payment until[^.;]*|waiting (?:for|on) (?:your|my principal[’']s) (?:approval|decision)|I (?:cannot|can[’']t|am not able to) (?:approve|accept|agree to|commit to|authori[sz]e)[^.;]{0,60})/gi, tier: 'blocking', category: 'approval', reason: 'Your agent has stopped and is waiting for you.' },
 
   // Worth reading, but the agent can carry on.
-  { pattern: /\b\d+(?:\.\d+)?% monthly late fee/gi, tier: 'review', category: 'money', reason: 'A penalty that applies if payment is late.' },
-  { pattern: /\b(?:Net 30 to Net 15(?: effective Nov \d+)?|Net 15 is not in our agreement)/gi, tier: 'review', category: 'terms', reason: 'Payment terms differ from the signed agreement.' },
-  { pattern: /\b(?:pause API access for your workspace on Nov \d+|if payment is not received by Nov \d+|we will have to pause[^.;]*)/gi, tier: 'review', category: 'deadline', reason: 'A deadline with a consequence attached.' },
-  { pattern: /\b(?:verbally approved[^.,;]*|no need to wait on anyone else|treat approval as already given)/gi, tier: 'review', category: 'authority', reason: 'A claim of approval that nothing in this thread proves.' },
-  { pattern: /\+1 \(\d{3}\) \d{3}-\d{4}/g, tier: 'review', category: 'authority', reason: 'A phone number to verify. Compare it with the one in the contract.' },
-  { pattern: /\b(?:deposit of \d+%[^.;]*?(?=\. )|non-refundable[^.;,]*|all-in (?:price )?(?:comes to )?about \$[\d,]+|22% service and gratuity[^.;,]*)/gi, tier: 'review', category: 'money', reason: 'Cost or deposit terms that move the total.' },
-  { pattern: /\b(?:if the count falls below \d+ you remain responsible[^.;]*|minimum to 15, not 14|refundable until Nov \d+|balance is due \d+ days before)/gi, tier: 'review', category: 'terms', reason: 'A commitment or cutoff that is hard to undo.' }
+  { pattern: /\bwithin (?:your|the) \$[\d,]+(?:\.\d+)? budget/gi, tier: 'review', category: 'money', reason: 'The limit you set. Check that the offer respects it.' },
+  { pattern: /(?<![\w$])\$\d[\d,]*(?:\.\d{1,2})?(?:[kKmM])?(?:\s*(?:per (?:person|guest|month|hour|seat)|a month|monthly|in total|total|all[- ]in))?/g, tier: 'review', category: 'money', reason: 'An amount of money. Check it against what you authorised.' },
+  { pattern: /\b\d+(?:\.\d+)?% (?:(?:monthly|late|service|cancellation) )*(?:fee|deposit|gratuity|penalty|interest|surcharge)/gi, tier: 'review', category: 'money', reason: 'A percentage charge that adds to the total.' },
+  { pattern: /\b(?:late fee|non-?refundable[^.;,]*|refundable until [^.,;]+|balance is due [^.,;]+|cancell?ation (?:fee|policy)[^.,;]*)/gi, tier: 'review', category: 'terms', reason: 'A cost or cutoff that is hard to undo.' },
+  { pattern: /\b(?:Net \d+ to Net \d+(?: effective [^.,;]+)?|Net 15 is not in our agreement|minimum (?:of )?\d+[^.,;]{0,30}|if the count falls below \d+ you remain responsible[^.;]*)/gi, tier: 'review', category: 'terms', reason: 'Terms that differ from what was agreed or that lock you in.' },
+  { pattern: new RegExp(`\\b(?:(?:by|before|no later than|due|expires?(?: on)?) (?:end of day|EOD|tomorrow|${WEEKDAY}|${MONTH} \\d{1,2}(?:st|nd|rd|th)?)|within \\d+ (?:business )?(?:hours?|days?)|if payment is not received by [^.,;]+|(?:pause|suspend|terminate|cancel)[^.;]{0,30}(?:access|service|account)[^.;]{0,40})`, 'gi'), tier: 'review', category: 'deadline', reason: 'A deadline, or a consequence that follows one.' },
+  { pattern: new RegExp(`\\b(?:${WEEKDAY}|tomorrow) at \\d{1,2}(?::\\d{2})? ?(?:AM|PM|am|pm)(?: [A-Z]{2,4})?`, 'g'), tier: 'review', category: 'deadline', reason: 'A proposed time. Check it against your calendar.' },
+  { pattern: /\b(?:verbally approved[^.,;]*|no need to wait on anyone else|treat approval as already given|already (?:approved|signed off)[^.,;]*)/gi, tier: 'review', category: 'authority', reason: 'A claim of approval that nothing in this thread proves.' },
+  { pattern: /\+\d{1,2} ?\(\d{3}\) ?\d{3}-\d{4}/g, tier: 'review', category: 'authority', reason: 'A phone number to verify. Compare it with the one you already have on file.' }
 ];
 
 const MAX_SPANS = 8;
@@ -53,7 +59,8 @@ export function findHighlights(text: string): Highlight[] {
   let covered = limited.reduce((sum, span) => sum + span.end - span.start, 0);
   for (const span of kept) {
     if (span.tier !== 'review' || limited.length >= MAX_SPANS) continue;
-    if ((covered + span.end - span.start) / Math.max(text.length, 1) > MAX_SHARE) continue;
+    // Short messages are dense by nature, so the share cap only applies once there is enough text to read around a mark.
+    if (text.length >= 120 && (covered + span.end - span.start) / text.length > MAX_SHARE) continue;
     limited.push(span);
     covered += span.end - span.start;
   }
