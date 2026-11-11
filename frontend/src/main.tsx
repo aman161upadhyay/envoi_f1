@@ -15,6 +15,7 @@ import './styles/landing.css';
 import './onboarding/connect.css';
 import './onboarding/claim.css';
 import './styles/product-brand.css';
+import './styles/chat-lux.css';
 
 initAnalytics();
 
