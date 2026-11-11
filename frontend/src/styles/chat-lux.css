@@ -87,14 +87,6 @@
 .app-shell .mine .message-content { align-items: flex-start; }
 .app-shell .mine .message-meta { justify-content: flex-start; }
 
-.app-shell .hl-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
-.app-shell .hl-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: var(--lx-radius-pill); font: 500 12px/1 var(--lx-sans); cursor: pointer; transition: transform var(--lx-fast) var(--lx-ease), background-color var(--lx-fast) var(--lx-ease); }
-.app-shell .hl-chip::before { content: ""; width: 7px; height: 7px; border-radius: 2px; transform: rotate(45deg); }
-.app-shell .hl-chip-blocking { background: var(--lx-gold-soft); border: 1px solid var(--lx-gold-line); color: var(--lx-gold-ink); }
-.app-shell .hl-chip-blocking::before { background: var(--lx-gold); }
-.app-shell .hl-chip-review { background: var(--lx-green-soft); border: 1px solid var(--lx-green-line); color: var(--lx-green-ink); }
-.app-shell .hl-chip-review::before { background: #9ad78f; }
-.app-shell .hl-chip:active { transform: scale(.97); }
 
 .app-shell .conversation-event { display: flex; align-items: center; gap: 10px; max-width: none; margin: 10px 0; padding: 8px 12px 8px 60px; font-size: 13px; color: var(--lx-ink-2); text-align: left; }
 .app-shell .conversation-event svg { width: 24px; height: 24px; padding: 5px; border-radius: 8px; background: var(--lx-paper); border: 1px solid var(--lx-line); color: var(--lx-ink-3); flex: none; }
@@ -200,14 +192,12 @@
 @keyframes lx-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (max-width: 700px) { .app-shell .decision-bar-label { display: none; } }
 
-/* Suggested highlights: dashed and blue, so they never read as a verified (solid green) mark. */
+/* Suggested highlights use a dashed underline to distinguish them from rule-based marks. */
 .app-shell .hl.hl-suggested { background: rgba(29, 95, 153, .08); text-decoration: none; border-bottom: 2px dashed var(--lx-accent); border-radius: 3px 3px 0 0; padding: 0 2px; cursor: help; }
 .app-shell .hl-suggest-wrap { display: inline; }
 .app-shell .hl-dismiss { display: inline-flex; align-items: center; margin: 0 3px; padding: 0 6px; height: 18px; vertical-align: 1px; border: 1px solid var(--lx-line-2); border-radius: var(--lx-radius-pill); background: var(--lx-paper); color: var(--lx-ink-3); font: 500 10.5px/1 var(--lx-sans); cursor: pointer; transition: background-color var(--lx-fast) var(--lx-ease), transform var(--lx-fast) var(--lx-ease); }
 .app-shell .hl-dismiss:hover { background: var(--lx-accent-soft); color: var(--lx-ink); }
 .app-shell .hl-dismiss:active { transform: scale(.97); }
-.app-shell .hl-chip-suggested { background: var(--lx-accent-soft); border: 1px solid var(--lx-instruction-line); color: var(--lx-accent); }
-.app-shell .hl-chip-suggested::before { background: transparent; border: 1.5px dashed var(--lx-accent); border-radius: 2px; }
 .app-shell .suggest-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 14px; }
 .app-shell .suggest-button { height: 30px; padding: 0 14px; border: 1px solid var(--lx-line-2); border-radius: var(--lx-radius-pill); background: var(--lx-paper); color: var(--lx-ink); font: 600 13px/1 var(--lx-sans); cursor: pointer; transition: background-color var(--lx-fast) var(--lx-ease), transform var(--lx-fast) var(--lx-ease); }
 .app-shell .suggest-button:hover:not(:disabled) { background: var(--lx-accent-soft); }
@@ -241,3 +231,22 @@
 }
 .signed-policy-display { padding-left: 1.25rem; overflow-wrap: anywhere; }
 .signed-policy-display li { margin: 6px 0; }
+
+/* One scroll area. Absolutely positioned screen-reader text inside the thread used to stretch the outer
+   .case-main, which then scrolled the whole page (composer included). Containing it fixes both bars. */
+.app-shell .thread-scroll { position: relative; }
+.app-shell .case-main { overflow: hidden; }
+.app-shell .decision-card .proposal-option .risk-label { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.app-shell .decision-card .proposal-option button.risk-label:hover { background: #f6ecc9; }
+
+/* TRIAL: blue highlight palette (swatch supplied 11 Nov: #3a5e95 bar, #ecf2f8 fill).
+   Delete this whole block to go back to the green highlights in product-brand.css. The golden underline
+   on "needs your decision" marks is unchanged. */
+.app-shell {
+  --lx-hl: #c9daf0;
+  --lx-hl-dot: #7f9fcf;
+  --lx-hl-soft: #ecf2f8;
+  --lx-hl-line: #c5d3e8;
+  --lx-hl-ink: #2f5088;
+}
+.app-shell .hl { background: var(--lx-hl); }

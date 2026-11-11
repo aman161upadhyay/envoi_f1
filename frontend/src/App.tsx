@@ -36,7 +36,7 @@ import { applyInboxPreference, filterInboxCases, readAcknowledgementForCase } fr
 import { AGENT_PERMISSION_OPTIONS, DEFAULT_AGENT_PERMISSIONS, selectedAgentPermissions } from './agent-permissions';
 import { previewRequested } from './preview';
 import { longPreviewCases, longPreviewDirectory } from './preview-long-cases';
-import { HighlightedText, HighlightLegend, HighlightSummary } from './HighlightedText';
+import { HighlightedText, HighlightLegend } from './HighlightedText';
 import { setSuggestionProvider, type ResolvedFlag } from './suggestions';
 import { useSuggestedFlags } from './useSuggestedFlags';
 import { findHighlights } from './highlights';
@@ -1314,6 +1314,8 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
     observer.observe(target);
     return () => { observer.disconnect(); setDecisionHidden(false); };
   }, [workCase.id, hasOpenDecision]);
+  const barOption = workCase.proposals?.find(item => ['open', 'countered'].includes(item.status))?.options.find(item => !item.expired);
+  const barText = workCase.decision?.question || (barOption?.value.title ? humanize(barOption.value.title) : decisionQuestion(workCase, barOption));
   function reviewDecision() {
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     decisionRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
@@ -1377,7 +1379,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
           {workCase.receipt && <ReceiptCard workCase={workCase} />}
           {isGroup && <FormError message={preferenceError} />}
         </div></div>
-        <div className="thread-composer">{workCase.decision && hasOpenDecision && decisionHidden && <div className="decision-bar" role="status"><span className="decision-bar-label">Needs your decision</span><span className="decision-bar-text">{decisionQuestion(workCase)}</span><button type="button" onClick={reviewDecision}>Review</button></div>}{!isGroup && <><form className="composer-box" onSubmit={event => void sendInstruction(event)}><textarea rows={1} aria-label={local.relationship === 'localAgent' ? `Instructions for ${local.displayName}` : 'Instructions unavailable: local identity unknown'} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={15000} placeholder={canInstruct ? 'Send an instruction to your agent' : 'Instructions require an active agent and conversation'} disabled={!canInstruct || instructionBusy} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="composer-foot"><span className="composer-hint">Enter to send · Shift+Enter for a new line</span><button aria-label="Send instruction" disabled={!canInstruct || instructionBusy || !instruction.trim()}><span>Send</span><ArrowRight size={15} /></button></div></form><FormError message={instructionError || preferenceError} /></>}</div>
+        <div className="thread-composer">{workCase.decision && hasOpenDecision && decisionHidden && <div className="decision-bar" role="status"><span className="decision-bar-label">Needs your decision</span><span className="decision-bar-text">{barText}</span><button type="button" onClick={reviewDecision}>Review</button></div>}{!isGroup && <><form className="composer-box" onSubmit={event => void sendInstruction(event)}><textarea rows={1} aria-label={local.relationship === 'localAgent' ? `Instructions for ${local.displayName}` : 'Instructions unavailable: local identity unknown'} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={15000} placeholder={canInstruct ? 'Send an instruction to your agent' : 'Instructions require an active agent and conversation'} disabled={!canInstruct || instructionBusy} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="composer-foot"><span className="composer-hint">Enter to send · Shift+Enter for a new line</span><button aria-label="Send instruction" disabled={!canInstruct || instructionBusy || !instruction.trim()}><span>Send</span><ArrowRight size={15} /></button></div></form><FormError message={instructionError || preferenceError} /></>}</div>
       </div>
       {moveOpen && <Modal title="Move conversation" dismissible={!preferenceBusy} onClose={() => setMoveOpen(false)}><MoveInboxCaseContent folders={view.folders || []} currentFolderId={workCase.inboxPreference?.folderId || null} busy={preferenceBusy} error={preferenceError} onClose={() => setMoveOpen(false)} onMove={folderId => void updatePreference({ folderId })} /></Modal>}
       {railOpen && <aside className="case-details" aria-label="Case details"><div className="details-heading"><strong>Details</strong><button className="icon-button" aria-label="Close details" onClick={onRailToggle}><X size={16} /></button></div><h2>{ownAgent ? `${local.displayName} can` : 'Local permissions unavailable'}</h2>{ownAgent?.permissions.map(permission => <div className="details-row" key={permission}><Check size={14} />{humanize(permission)}</div>) || <p>No permissions listed</p>}{ownAgent && <><h2>{local.displayName} asks you before</h2><p>Actions outside its permissions</p></>}<h2>Files</h2>{view.assets.filter(item => item.caseId === workCase.id).map(asset => <AssetRow key={asset.id} asset={asset} inboxId={view.inbox.id} notify={notify} />)}<h2>Case</h2><dl><dt>Deadline</dt><dd>{workCase.deadline ? formatDate(workCase.deadline) : 'None'}</dd><dt>ID</dt><dd className="case-id">{workCase.id}</dd></dl></aside>}
@@ -1443,7 +1445,6 @@ export function ConversationEntry({ event, previous, workCase, view, replyTarget
         <div className="message-meta"><strong>{ownHuman ? 'You' : participant.displayName}</strong>{!ownerInstruction && <span className="meta-role">{mine ? 'Your agent' : participant.orgRef || 'External agent'}</span>}<span>{ownerInstruction ? 'Owner instruction' : exchangeEventLabel(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>
         {isGroup && typeof event.payload.inReplyTo === 'string' && <div className="group-reply">{replyAuthor ? <a href={`#message-${encodeURIComponent(event.payload.inReplyTo)}`}>Reply to {replyAuthor.displayName}</a> : 'Reply to an earlier message'}</div>}
         <div className="message-bubble">{ownerInstruction && event.payload.text ? String(event.payload.text) : <HighlightedText text={eventSummary(event)} suggested={suggested} onDismiss={onDismissSuggestion} />}</div>
-        {!ownerInstruction && <HighlightSummary text={eventSummary(event)} suggestedCount={suggested?.length || 0} />}
         {assigneeIds.length > 0 && <ul className="group-assignments" aria-label="Assignments">{assigneeIds.map(agentId => {
           const assignee = groupParticipant(workCase, view, agentId);
           const assignment = workCase.assignments?.find(item => item.messageId === event.payload.messageId && item.agentId === agentId);
@@ -1516,25 +1517,30 @@ export function DecisionCard({ workCase, view, events, policy, canManageInbox, b
   const parties = proposal ? proposalParties(workCase, proposal.id, events, view) : null;
   const optionParty = proposal?.status === 'countered' ? parties?.counterparty : parties?.originator;
   const expired = Boolean(workCase.decision?.expiresAt && Date.parse(workCase.decision.expiresAt) <= Date.now());
+  const question = decisionQuestion(workCase, option);
+  // When the offer already carries the "Payment Requires Approval" flag, a heading that says the same thing is noise.
+  const requestedAction = decisionPolicy(workCase)?.requestedAction;
+  const restatesPolicy = Boolean(option?.outOfPolicyFlags?.length) && Boolean(requestedAction) && question === `${humanize(requestedAction)} needs your approval.`;
   return (
     <section className="decision-card" aria-label="Needs your decision">
       <div className="decision-label"><Hand size={14} />{expired ? 'Expired' : 'Needs your decision'}</div>
       {!canManageInbox && <p className="decision-review-label">Workspace administrator review</p>}
-      <h2>{decisionQuestion(workCase, option)}</h2>
-      {option && <ProposalOptionView option={option} expiresAt={proposal?.expiresAt || null} stageLabel={proposal?.status === 'countered' ? 'Counteroffer' : 'Offer'} partyLabel={optionParty?.displayName} />}
-      {policy && <button className="decision-policy" onClick={onPolicy}>{humanize(policy.reasonCode)} · {humanize(policy.matchedPolicyId || 'Human approval')}</button>}
+      <h2 className={restatesPolicy ? 'sr-only' : undefined}>{question}</h2>
+      {option && <ProposalOptionView option={option} expiresAt={proposal?.expiresAt || null} stageLabel={proposal?.status === 'countered' ? 'Counteroffer' : 'Offer'} partyLabel={optionParty?.displayName} onFlag={policy ? onPolicy : undefined} />}
+      {policy && !option?.outOfPolicyFlags?.length && <button className="decision-policy" onClick={onPolicy}>{humanize(policy.reasonCode)} · {humanize(policy.matchedPolicyId || 'Human approval')}</button>}
       {canManageInbox && <div className="decision-actions"><button className="button primary" disabled={Boolean(busy) || !canSubmitCaseDecision(workCase, 'approveOnce')} onClick={() => onAction('approveOnce')}>{workCase.decision?.signedApprovalRequired || policy?.signedPolicy ? 'Review and sign' : 'Approve Once'}</button><button className="button secondary" disabled title="Changing a proposal needs instruction support">Change</button><button className="button secondary" disabled={Boolean(busy) || !canSubmitCaseDecision(workCase, 'decline')} onClick={() => onAction('decline')}>Decline</button><button className="button quiet" disabled title="Policy editing needs server support">Always allow this</button></div>}
     </section>
   );
 }
 
-function ProposalOptionView({ option, expiresAt, stageLabel, partyLabel, muted = false }: { option: ProposalOption; expiresAt: string | null; stageLabel?: string; partyLabel?: string; muted?: boolean }) {
+function ProposalOptionView({ option, expiresAt, stageLabel, partyLabel, muted = false, onFlag }: { option: ProposalOption; expiresAt: string | null; stageLabel?: string; partyLabel?: string; muted?: boolean; onFlag?: () => void }) {
+  const provenance = provenanceLabel(option.sourceConfidence);
   const start = typeof option.value.start === 'string' ? option.value.start : null;
   const end = typeof option.value.end === 'string' ? option.value.end : null;
   const timezone = String(option.value.timezone || 'UTC');
   const terms = Object.entries(option.value).filter(([key]) => !['title', 'start', 'end', 'timezone'].includes(key));
   return (
-    <div className={`proposal-option ${muted ? 'is-superseded' : ''}`}><CalendarDays size={18} /><div>{stageLabel && <span className="proposal-party">{stageLabel}{partyLabel ? ` · ${partyLabel}` : ''}</span>}<strong>{start ? `${formatDate(start)} · ${formatTime(start)}${end ? `–${formatTime(end)}` : ''}` : humanize(option.value.title || 'Proposed option')}</strong>{start && <span>{timezone} · {provenanceLabel(option.sourceConfidence)}</span>}{!start && <span>{provenanceLabel(option.sourceConfidence)}</span>}{terms.length > 0 && <dl className="proposal-terms">{terms.map(([key, value]) => <div key={key}><dt>{humanize(key)}</dt><dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>}{expiresAt && !muted && <small>Tentative hold expires {formatAbsolute(expiresAt)}</small>}{muted && <small>Superseded by a counteroffer</small>}</div>{option.outOfPolicyFlags?.map(flag => <span key={flag} className="risk-label"><AlertCircle size={12} />{humanize(flag)}</span>)}</div>
+    <div className={`proposal-option ${muted ? 'is-superseded' : ''}`}><CalendarDays size={18} /><div>{stageLabel && <span className="proposal-party">{stageLabel}{partyLabel ? ` · ${partyLabel}` : ''}</span>}<strong>{start ? `${formatDate(start)} · ${formatTime(start)}${end ? `–${formatTime(end)}` : ''}` : humanize(option.value.title || 'Proposed option')}</strong>{start && <span>{provenance ? `${timezone} · ${provenance}` : timezone}</span>}{!start && provenance && <span>{provenance}</span>}{terms.length > 0 && <dl className="proposal-terms">{terms.map(([key, value]) => <div key={key}><dt>{humanize(key)}</dt><dd>{typeof value === 'object' ? JSON.stringify(value) : String(value)}</dd></div>)}</dl>}{expiresAt && !muted && <small>Tentative hold expires <time dateTime={expiresAt} title={`${expiresAt.replace('T', ' ').replace(/\.000Z$/, 'Z')} (UTC)`}>{formatAbsolute(expiresAt)}</time></small>}{muted && <small>Superseded by a counteroffer</small>}</div>{option.outOfPolicyFlags?.map(flag => onFlag ? <button type="button" key={flag} className="risk-label" title="Why this needs approval" onClick={onFlag}><AlertCircle size={12} />{humanize(flag)}</button> : <span key={flag} className="risk-label"><AlertCircle size={12} />{humanize(flag)}</span>)}</div>
   );
 }
 
@@ -2250,7 +2256,7 @@ function conversationPreview(workCase: WorkCase) {
   if (projectedEvent) return eventSummary(projectedEvent);
   return workCase.contextualDetail || (workCase.deadline ? `Working toward ${formatDate(workCase.deadline)}` : STATE_META[caseState(workCase)].description);
 }
-function provenanceLabel(value: string) { return ({ fromVerifiedProfile: 'From verified profile', enteredForCase: 'Added for this conversation', extractedFromDocument: 'Extracted from attached document' } as Record<string, string>)[value] || humanize(value); }
+function provenanceLabel(value: string) { const labels: Record<string, string> = { fromVerifiedProfile: 'From verified profile', enteredForCase: '', extractedFromDocument: 'Extracted from attached document' }; return value in labels ? labels[value] : humanize(value); }
 function formatAbsolute(value: string) { return new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(value)); }
 function formatDate(value: string) { return new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric' }).format(new Date(value)); }
 function formatTime(value: string) { return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(value)); }
