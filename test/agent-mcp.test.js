@@ -106,6 +106,64 @@ async function eventually(check) {
   throw new Error('Expected delivered work did not become visible');
 }
 
+async function checkOwnerDeferral(t, databaseUrl = '') {
+  const baseUrl = await startServer(t, { DATABASE_URL: databaseUrl, ENVOI_INSTALLATIONS_V2: 'true', ENVOI_CASE_SESSIONS_V1: 'true' });
+  const sender = await owner(baseUrl, databaseUrl ? '1181' : '1191');
+  const receiver = await owner(baseUrl, databaseUrl ? '1182' : '1192');
+  const send = (text, idempotencyKey) => tool(baseUrl, sender.agentApiToken, 'envoi_start_case', {
+    recipientAddress: receiver.agent.address, text, idempotencyKey, intent: 'request'
+  }).then(content);
+  const claim = () => tool(baseUrl, receiver.agentApiToken, 'envoi_claim_work').then(content);
+  const first = await send('Needs owner approval', 'defer-first');
+  assert.equal(first.status, 202);
+  const work = await eventually(async () => (await claim()).payload.work);
+  assert.equal(work.workId, first.payload.id);
+  const args = { workId: work.workId, leaseToken: work.leaseToken, proposedReply: 'Proposed reply for owner review' };
+  const defer = () => tool(baseUrl, receiver.agentApiToken, 'envoi_defer_work', args).then(content);
+  const forged = content(await tool(baseUrl, receiver.agentApiToken, 'envoi_defer_work', { ...args, leaseToken: 'wrong-lease' }));
+  assert.equal(forged.status, 409);
+  const held = await defer();
+  assert.equal(held.status, 201, JSON.stringify(held));
+  assert.equal(held.payload.status, 'owner_approval_pending');
+  assert.deepEqual(await defer(), { status: 200, payload: held.payload });
+  assert.equal((await claim()).payload.state, 'idle');
+  const fresh = await send('Fresh independent request', 'defer-fresh');
+  assert.equal(fresh.status, 202);
+  const freshWork = await eventually(async () => (await claim()).payload.work);
+  assert.equal(freshWork.workId, fresh.payload.id);
+  const reply = content(await tool(baseUrl, receiver.agentApiToken, 'envoi_send_message', {
+    recipientAddress: sender.agent.address, caseId: fresh.payload.caseId, text: 'Fresh task reply', intent: 'status', idempotencyKey: 'defer-fresh-reply'
+  }));
+  assert.equal(reply.status, 202);
+  const completion = content(await tool(baseUrl, receiver.agentApiToken, 'envoi_complete_work', {
+    workId: freshWork.workId, leaseToken: freshWork.leaseToken, idempotencyKey: 'defer-fresh-complete'
+  }));
+  assert.equal(completion.payload.status, 'processed');
+  assert.equal(completion.payload.receipt.messageId, freshWork.workId);
+  await eventually(async () => {
+    const inbox = content(await tool(baseUrl, sender.agentApiToken, 'envoi_list_messages', { caseId: fresh.payload.caseId }));
+    return inbox.payload.some(message => message.id === reply.payload.id && message.status === 'delivered');
+  });
+  const view = await api(baseUrl, `/api/inboxes/${receiver.inbox.id}/human-view`, { session: receiver.session });
+  const review = view.payload.caseQueue.find(item => item.id === first.payload.caseId);
+  assert.equal(review.bucket, 'needsMe');
+  assert.match(review.decision.question, /Proposed reply for owner review/);
+  const decision = await api(baseUrl, `/api/inboxes/${receiver.inbox.id}/cases/${first.payload.caseId}/actions`, {
+    session: receiver.session, headers: { 'idempotency-key': 'defer-owner-decline' },
+    body: { actionKey: 'decline', externalRefs: { policyEvaluationId: review.decision.policyEvaluationId } }
+  });
+  assert.equal(decision.status, 201, JSON.stringify(decision.payload));
+  const reoffered = (await claim()).payload.work;
+  assert.equal(reoffered.workId, work.workId);
+  assert.notEqual(reoffered.leaseToken, work.leaseToken);
+  assert.deepEqual(reoffered.ownerReview, { requestId: held.payload.requestId, status: 'declined' });
+}
+
+test('native MCP owner deferral holds the item without blocking the next claim', t => checkOwnerDeferral(t));
+if (process.env.DATABASE_URL) {
+  test('PostgreSQL native MCP owner deferral holds the item without blocking the next claim', t => checkOwnerDeferral(t, process.env.DATABASE_URL));
+}
+
 test('remote MCP transport authenticates every call, validates the handshake, and rejects browser-origin and schema abuse', async t => {
   const baseUrl = await startServer(t);
   const alice = await owner(baseUrl, '1101');

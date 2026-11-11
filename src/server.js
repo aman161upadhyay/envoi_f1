@@ -2562,7 +2562,7 @@ async function participantDirectoryForHuman(inbox, agents, cases) {
   return Object.fromEntries(entries);
 }
 
-async function humanView(inboxId, inbox, cursors = {}) {
+async function humanView(inboxId, inbox, cursors = {}, { includeOwnerReviews = false } = {}) {
   const [agents, calendarConnectors, page] = await Promise.all([
     store.listJson(path.join('inboxes', inboxId, 'agents')),
     store.listJson(path.join('inboxes', inboxId, 'calendar-connectors')),
@@ -2581,6 +2581,26 @@ async function humanView(inboxId, inbox, cursors = {}) {
   const visibleHistory = { ...history, assets: { ...history.assets, total: history.assets.total + sharedAssets.length } };
   const projection = projectWorkspaceForHuman(await Promise.all(cases.map(async value => value?.caseMode === 'group'
     ? { ...value, assignments: await groupAssignments(value) } : value)));
+  const at = store.now();
+  const pendingReviews = new Map();
+  if (includeOwnerReviews && caseSessions.enabled) {
+    for (const request of await store.listJson(humanRequestDir(inboxId))) {
+      if (request.kind === 'native_work_review' && request.status === 'pending' && request.expiresAt > at
+        && !pendingReviews.has(request.caseId)) pendingReviews.set(request.caseId, request);
+    }
+  }
+  for (const item of projection.cases) {
+    const request = pendingReviews.get(item.id);
+    if (!request || ['completed', 'failed', 'expired', 'revoked', 'paused'].includes(item.state)) continue;
+    if (item.bucket !== 'needsMe') {
+      projection.counts[item.bucket]--;
+      projection.counts.needsMe++;
+    }
+    Object.assign(item, { bucket: 'needsMe', needsAttention: true, nextActor: 'Owner review required', decision: {
+      question: `Review the proposed reply: ${request.proposedReply}`, policyEvaluationId: request.policyEvaluationId,
+      requestedAction: 'message.reply', grantType: 'oneTime', expiresAt: request.expiresAt, availableActions: ['approveOnce', 'decline']
+    } });
+  }
   const participantDirectory = await participantDirectoryForHuman(inbox, agents, cases);
   const projectedInvitations = invitations
     .map(invitation => ({
@@ -3540,9 +3560,13 @@ async function resolveCaseHumanRequest(request, outcome, humanId, value, writeAu
   if (['completed', 'failed', 'expired', 'revoked'].includes(value.state)) return;
   const id = `msg_human_decision_${hashSecret(request.id).slice(0, 32)}`;
   if (await store.getJson(messagePath(request.inboxId, id))) return;
-  if (request.kind === 'gateway_reply') {
+  if (['gateway_reply', 'native_work_review'].includes(request.kind)) {
     const claim = await store.getJson(workClaimPath(request.inboxId, request.workId));
-    if (claim?.heldForOwnerRequest === request.id && ['approved', 'declined', 'expired'].includes(outcome)) await store.putJson(workClaimPath(request.inboxId, request.workId), { ...claim, heldForOwnerRequest: null, reofferWithoutAttempt: true, updatedAt: at });
+    if (claim?.heldForOwnerRequest === request.id && ['approved', 'declined', 'expired'].includes(outcome)) {
+      await store.putJson(workClaimPath(request.inboxId, request.workId), { ...claim, heldForOwnerRequest: null, reofferWithoutAttempt: true, updatedAt: at,
+        ...(request.kind === 'native_work_review' ? { ownerReview: { requestId: request.id, status: outcome,
+          ...(outcome === 'approved' ? { proposedReply: request.proposedReply, expiresAt: request.expiresAt } : {}) } } : {}) });
+    }
     if (['approved', 'declined', 'expired'].includes(outcome)) await writeAudit('work.available', { agentId: request.agentId, reason: 'human_decision', caseId: request.caseId }, at);
     return;
   }
@@ -3929,6 +3953,7 @@ async function claimCanonicalAgentWork(identity, currentIdentity, input, claimCa
       leaseExpiresAt,
       retryAt: null,
       status: 'claimed',
+      ...(currentClaim?.ownerReview ? { ownerReview: currentClaim.ownerReview } : {}),
       createdAt: currentClaim?.createdAt || now,
       updatedAt: now
     };
@@ -3936,7 +3961,8 @@ async function claimCanonicalAgentWork(identity, currentIdentity, input, claimCa
     if (message.groupCase) await auditGroupAssignment(message, claim.status, now, writeAudit);
     await caseSessions.endForWork(identity.inboxId, message.id, 'lease_lost', now, writeAudit);
     await writeAudit('agent.work_claimed', { workId: message.id, agentId: identity.agent.id, fence: claim.fence, attempts: claim.attempts, credentialFamilyId: claim.credentialFamilyId }, now);
-    return { status: 200, payload: { work: { workId: message.id, message, leaseToken, leaseExpiresAt }, state: 'claimed' } };
+    return { status: 200, payload: { work: { workId: message.id, message, leaseToken, leaseExpiresAt,
+      ...(claim.ownerReview ? { ownerReview: claim.ownerReview } : {}) }, state: 'claimed' } };
   }
   const idle = { work: null, state: 'idle' };
   if (nextAvailable) {
@@ -4104,6 +4130,35 @@ async function gatewayOwnerRequest(binding, work, ctx, text, actionPayload, opti
   }
   await gatewayRelease(binding, work, { ...options, ownerRequestId: requestId, reason: 'owner_required' });
   return { state: 'owner_approval_pending', settled: false, requestId };
+}
+
+async function deferNativeWorkForOwner(identity, message, claim, proposedReply, writeAudit) {
+  const { inboxId, agent } = identity;
+  const value = await getCase(inboxId, message.caseId);
+  if (!isActiveCase(value) || !message.senderAgentId || !message.senderInboxId) {
+    throw codedError(409, 'WORK_REVIEW_UNAVAILABLE', 'An active agent conversation is required for owner review.');
+  }
+  if (claim.ownerReview) throw codedError(409, 'WORK_REVIEW_RESOLVED', 'An owner decision has already been recorded for this work.');
+  const requestId = `request_native_${semanticDigest([agent.id, message.id, claim.fence]).slice(0, 32)}`;
+  const evaluationId = `policy_eval_native_${semanticDigest(requestId).slice(0, 32)}`;
+  const evaluated = await evaluateServerPolicy(inboxId, agent, value, { requestedAction: 'message.reply', humanDecisionRequired: true,
+    actionPayload: { caseId: message.caseId, workId: message.id, recipientAgentId: message.senderAgentId, text: proposedReply } }, { id: evaluationId });
+  if (evaluated.decision !== 'needsHuman') throw codedError(403, 'WORK_REVIEW_UNAVAILABLE', 'Workspace policy does not allow this reply to be reviewed.');
+  const at = store.now();
+  const evaluation = policyEvaluationFromInput({ id: evaluationId, requestedAction: 'message.reply', decision: evaluated.decision,
+    matchedPolicyId: evaluated.matchedPolicyId, grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode }, agent.id, at);
+  await saveCase(inboxId, addPolicyEvaluation(value, evaluation, { at }));
+  await store.putJson(policyBindingPath(inboxId, evaluationId), evaluated.binding);
+  const request = await requestCaseToolHuman({ agent, writeAudit, session: {
+    inboxId, caseId: message.caseId, counterpartyAgentId: message.senderAgentId,
+    counterpartyInboxId: message.senderInboxId, counterparty: { address: message.from?.address || message.senderAddress || null }
+  } }, evaluation, 'Review the proposed reply to this Envoi request.', requestId);
+  await store.putJson(humanRequestPath(inboxId, requestId), { ...request, kind: 'native_work_review', workId: message.id, proposedReply });
+  await store.putJson(workClaimPath(inboxId, message.id), { ...claim, status: 'retryable', leaseExpiresAt: null, retryAt: null,
+    heldForOwnerRequest: requestId, reofferWithoutAttempt: true, updatedAt: at });
+  await caseSessions.endForWork(inboxId, message.id, 'work_settled', at, writeAudit);
+  await writeAudit('agent.work_deferred', { workId: message.id, agentId: agent.id, requestId }, at);
+  return { workId: message.id, requestId, status: 'owner_approval_pending' };
 }
 const gatewayNativeAdapter = {
   ownerInstallations: async human => {
@@ -4378,7 +4433,7 @@ async function route(req, res) {
       return messageAccessResult(fresh, remoteAuth.origin, organizationMaximumPermissions());
     } : null;
     return handleAgentMcp(req, res, { identity, callRest, denyUnavailable, requestMessageAccess, onPermissionDenied: () => { req[monadPermissionDenied] = true; },
-      eventsEnabled: Boolean(onboardingFlags.mcpEvents), providerEvents: events,
+      eventsEnabled: Boolean(onboardingFlags.mcpEvents), providerEvents: events, ownerReviewEnabled: caseSessions.enabled,
       wakeTools: { ...mcpWakeTools, call: (name, args) => withInboxMutation(identity.inboxId, async () => mcpWakeTools.call(name, args, await freshMcpIdentity())) } });
   }
   // agent-remote-auth v1 §5: /authorize-agent is the owner consent page, also the web app.
@@ -4427,7 +4482,7 @@ async function route(req, res) {
   }
 
   const instructionReplyRoute = url.pathname.match(/^\/api\/agent\/instructions\/([^/]+)\/reply$/);
-  const workSettlementRoute = url.pathname.match(/^\/api\/agent\/work\/([^/]+)\/(renew|acknowledge|complete|fail)$/) || instructionReplyRoute;
+  const workSettlementRoute = url.pathname.match(/^\/api\/agent\/work\/([^/]+)\/(renew|acknowledge|complete|fail|defer)$/) || instructionReplyRoute;
   if ((req.method === 'POST' && url.pathname === '/api/agent/work/claim') || (req.method === 'POST' && workSettlementRoute)) {
     // a5-presence §2: a lease request is work-loop activity whatever its outcome, except AGENT_PAUSED.
     if (workSettlementRoute) notePresence(req, { workLoop: true });
@@ -4453,6 +4508,11 @@ async function route(req, res) {
     const workLockKeys = [...new Set([...(requestedMessage?.caseId ? [caseMutationKey(requestedMessage.caseId)] : []), ...sharedWorkCaseIds.map(caseMutationKey)])];
     if (action !== 'claim' && (typeof input.leaseToken !== 'string' || !input.leaseToken)) return fail(res, 400, 'leaseToken is required');
     if (action === 'fail' && typeof input.retryable !== 'boolean') return fail(res, 400, 'retryable must be a boolean');
+    if (action === 'defer') {
+      if (!caseSessions.enabled) return fail(res, 404, 'Owner review is unavailable');
+      if (typeof input.proposedReply !== 'string' || !input.proposedReply.trim() || input.proposedReply.length > 2000
+        || Object.keys(input).some(key => !['leaseToken', 'proposedReply'].includes(key))) return fail(res, 400, 'A proposed reply of 1 to 2000 characters is required');
+    }
     let idempotencyKey = null;
     let idempotencyPath = null;
     let requestDigest = null;
@@ -4508,6 +4568,12 @@ async function route(req, res) {
       }
       const now = store.now();
       const live = ['claimed', 'acknowledged'].includes(claim.status) && new Date(claim.leaseExpiresAt) > new Date(now);
+      if (action === 'defer' && claim.heldForOwnerRequest) {
+        const request = await store.getJson(humanRequestPath(identity.inboxId, claim.heldForOwnerRequest));
+        if (request?.kind === 'native_work_review' && request.status === 'pending' && request.proposedReply === input.proposedReply) {
+          return { status: 200, payload: { workId, requestId: request.id, status: 'owner_approval_pending' } };
+        }
+      }
       const priorComplete = action === 'complete' ? await store.getJson(idempotencyPath) : null;
       if (action === 'complete' && priorComplete) {
         const replay = replayResponse(priorComplete, { principalId: identity.agent.id, requestDigest });
@@ -4528,6 +4594,8 @@ async function route(req, res) {
         }
       }
       if (!live) throw settlementError(409, 'Work lease has expired or was consumed', 'WORK_LEASE_STALE', leaseStaleReason(claim, identity.familyId, leaseTokenHash, now));
+
+      if (action === 'defer') return { status: 201, payload: await deferNativeWorkForOwner(currentIdentity, currentMessage, claim, input.proposedReply, writeAudit) };
 
       if (action === 'reply') {
         const reply = {
@@ -5718,12 +5786,10 @@ async function route(req, res) {
   if (req.method === 'GET' && suffix === 'human-view') {
     const human = await auth.getHuman(req);
     if (!await canAccessInbox(human, inbox)) return fail(res, 403, 'Workspace membership required');
-    const [view, requesterCanManage] = await Promise.all([
-      humanView(inboxId, inbox, parseHistoryCursors(url.searchParams.get('history'))),
-      canManageInbox(human, inbox)
-    ]);
     const session = await auth.getSession(req);
     if (!session) return fail(res, 401, 'Authenticated human session required');
+    const requesterCanManage = await canManageInbox(human, inbox);
+    const view = await humanView(inboxId, inbox, parseHistoryCursors(url.searchParams.get('history')), { includeOwnerReviews: requesterCanManage });
     const requester = { id: human.id, auth: { provider: auth.provider, assurance: session.assurance || 'provider' } };
     const preferences = await getPrefsForCases(store, { scopeMode: 'personal', organizationId: inbox.organizationId, humanId: human.id, inboxId, cases: view.caseQueue });
     const personalizedView = attachInboxPreferencesToView(view, preferences);
@@ -6207,8 +6273,10 @@ async function route(req, res) {
           if (replayAction.actor !== human.id || replayAction.externalRefs?.requestDigest !== requestDigest) throw Object.assign(new Error('Idempotency key was already used for a different action'), { statusCode: 409 });
           return { status: 200, result: { case: value, action: replayAction, replay: true } };
         }
-        const scopedRequest = onboardingFlags.caseSessions && ['approveOnce', 'decline'].includes(input.actionKey)
-          ? (await store.listJson(humanRequestDir(inboxId))).find(r => r.caseId === value.id && r.policyEvaluationId === input.externalRefs?.policyEvaluationId && r.status === 'pending') : null;
+        const matchingRequests = onboardingFlags.caseSessions && ['approveOnce', 'decline'].includes(input.actionKey)
+          ? (await store.listJson(humanRequestDir(inboxId))).filter(r => r.caseId === value.id && r.policyEvaluationId === input.externalRefs?.policyEvaluationId) : [];
+        const scopedRequest = matchingRequests.find(request => request.status === 'pending');
+        if (!scopedRequest && matchingRequests.some(request => request.kind === 'native_work_review')) throw Object.assign(new Error('A current local human decision request is required'), { statusCode: 409 });
         let scopedBinding = null;
         if (onboardingFlags.caseSessions && input.actionKey === 'decline' && input.externalRefs?.policyEvaluationId && !scopedRequest) throw Object.assign(new Error('A current local human decision request is required'), { statusCode: 409 });
         if (scopedRequest) {
@@ -6232,7 +6300,7 @@ async function route(req, res) {
         const { serverAuthenticatedHuman: _ignoredHumanClaim, ...suppliedRefs } = input.externalRefs || {};
         const boundRefs = scopedBinding?.requestedAction === 'case.complete' ? { requestedAction: 'case.complete', result: scopedBinding.actionPayload.result } : {};
         result = applyHumanAction(value, { id: store.id('action'), actionKey: input.actionKey, actor: human.id, idempotencyKey, externalRefs: { ...suppliedRefs, ...boundRefs, caseId: value.id, sourceInboxId: inboxId, serverAuthenticatedHuman: true, requestDigest }, reasonCode: input.reasonCode || null },
-          { at: now, preserveState: Boolean(scopedRequest && (input.actionKey === 'decline' || scopedBinding.requestedAction === 'proposal.accept')) });
+          { at: now, preserveState: Boolean(scopedRequest && (scopedRequest.kind === 'native_work_review' || input.actionKey === 'decline' || scopedBinding.requestedAction === 'proposal.accept')) });
         if (scopedRequest) await resolveCaseHumanRequest(scopedRequest, input.actionKey === 'approveOnce' ? 'approved' : 'declined', human.id, result.case, writeAudit);
       } else {
         if (currentPrincipal.id !== value.actingAgent || !isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
