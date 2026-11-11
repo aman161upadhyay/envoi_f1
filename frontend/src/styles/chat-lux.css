@@ -175,3 +175,18 @@
 .app-shell .case-row.inbox-message-row.is-unread { box-shadow: inset 3px 0 0 var(--lx-accent); }
 .app-shell .case-chip { background: var(--lx-gold-soft); color: var(--lx-gold-ink); border: 1px solid var(--lx-gold-line); border-radius: var(--lx-radius-pill); }
 .app-shell .inbox-list-view .queue-search, .app-shell .queue-search { border-color: var(--lx-line-2); border-radius: 12px; }
+
+/* Wide screens: list beside the open case */
+.app-shell .case-layout.inbox-detail-view.split-view { display: grid; grid-template-columns: 340px minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; }
+.app-shell .split-view .case-queue { display: flex; flex-direction: column; width: auto; border-right: 1px solid var(--lx-line); overflow-y: auto; min-height: 0; background: var(--lx-paper); }
+.app-shell .split-view .queue-header { padding: 20px 16px 4px; }
+.app-shell .split-view .queue-header h1 { font-size: 26px; }
+.app-shell .split-view .queue-search { margin: 10px 16px 14px; }
+.app-shell .split-view .queue-search { width: calc(100% - 32px); }
+.app-shell .split-view .case-list { width: 100%; margin: 0; border: 0; border-radius: 0; box-shadow: none; overflow: visible; flex: none; }
+.app-shell .split-view .case-row.inbox-message-row { padding: 12px 16px; min-height: 0; }
+.app-shell .split-view .case-row.inbox-message-row.selected { background: var(--lx-accent-soft); }
+.app-shell .split-view .case-row.inbox-message-row .case-row-copy { display: flex; flex-direction: column; align-items: stretch; gap: 2px; min-width: 0; }
+.app-shell .split-view .case-row.inbox-message-row .case-row-meta { flex-basis: auto; max-width: 30%; }
+.app-shell .split-view .thread-tool[aria-label="Back to list"] { display: none; }
+.app-shell .split-view .case-main { min-width: 0; min-height: 0; }
