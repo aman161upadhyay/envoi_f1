@@ -1230,9 +1230,9 @@ async function withInboxMutation(inboxId, operation, relatedInboxIds = [], addit
   return result;
 }
 
-async function withCaseMutation(inboxId, caseId, operation, { allowPaused = false } = {}) {
+async function withCaseMutation(inboxId, caseId, operation, { allowPaused = false, allowGroup = false } = {}) {
   const binding = await store.getJson(caseBindingPath(caseId));
-  if (binding?.mode === 'group') throw codedError(409, 'GROUP_OPERATION_UNSUPPORTED', 'Use group case operations for this case.');
+  if (binding?.mode === 'group' && !allowGroup) throw codedError(409, 'GROUP_OPERATION_UNSUPPORTED', 'Use group case operations for this case.');
   const related = binding?.inboxIds?.filter(id => id !== inboxId) || [];
   return withInboxMutation(inboxId, async writeAudit => {
     const current = await store.getJson(caseBindingPath(caseId));
@@ -1689,7 +1689,35 @@ async function groupAgentReadable(identity, caseId) {
   if (!canReceive(identity.agent) || !groupMember(binding, identity)) return false;
   try { await verifyGroupMembers(binding.members); }
   catch (error) { if (error.code === 'GROUP_MEMBER_UNAVAILABLE') return false; throw error; }
+  return groupSnapshotAllowed(identity, caseId);
+}
+
+async function requireGroupSnapshotGrant(identity, caseId) {
+  const policy = await resolveSignedCasePolicy({ inboxId: identity.inboxId, caseId, agentId: identity.agent.id });
+  const grant = evaluateSignedCaseGrant(policy, 'case.snapshot');
+  if (grant && grant.decision !== 'allow') {
+    throw codedError(403, 'SIGNED_GROUP_SNAPSHOT_DENIED', 'The signed case policy does not grant access to this group timeline.');
+  }
+}
+
+async function groupSnapshotAllowed(identity, caseId) {
+  try { await requireGroupSnapshotGrant(identity, caseId); }
+  catch (error) {
+    if (error.statusCode === 403 || error.code === 'OWNER_REGISTRY_UNAVAILABLE') return false;
+    throw error;
+  }
   return true;
+}
+
+async function requireGroupMessageGrant(binding, identity, { text, inReplyTo, assignees }) {
+  const policy = await resolveSignedCasePolicy({ inboxId: identity.inboxId, caseId: binding.caseId, agentId: identity.agent.id });
+  const grant = evaluateSignedCaseGrant(policy, 'group.message.send', {
+    text, inReplyTo, assigneeAgentIds: assignees,
+    recipientAgentIds: binding.agentIds.filter(id => id !== identity.agent.id)
+  });
+  if (!grant || grant.decision === 'allow') return;
+  if (grant.decision === 'needsHuman') throw codedError(409, 'SIGNED_GROUP_APPROVAL_REQUIRED', 'The signed case policy requires owner approval for this group message.');
+  throw codedError(403, 'SIGNED_GROUP_MESSAGE_DENIED', 'The signed case policy does not grant this group message.');
 }
 
 async function verifyGroupMembers(members, assignees = []) {
@@ -1743,6 +1771,7 @@ async function writeGroupMessage(binding, identity, input, messageId, writeAudit
     if (previous.requestHash !== requestHash) throw nativeIdempotencyConflict();
     return { message: previous.message, replayed: true };
   }
+  await requireGroupMessageGrant(binding, identity, { text, inReplyTo, assignees });
   if (inReplyTo !== null && !value.events.some(event => event.type === 'message' && event.payload?.id === inReplyTo)) {
     throw codedError(404, 'GROUP_REPLY_NOT_FOUND', 'Reply target is not in this group case.');
   }
@@ -1788,6 +1817,7 @@ async function handleGroupCaseRoute(req, res, route) {
   if (caseId && !groupMember(binding, identity)) throw codedError(404, 'GROUP_CASE_NOT_FOUND', 'Group case not found.');
   if (req.method === 'GET' && caseId && !messages) {
     await verifyGroupMembers(binding.members);
+    await requireGroupSnapshotGrant(identity, caseId);
     const value = await getCase(identity.inboxId, caseId);
     if (!value) throw codedError(404, 'GROUP_CASE_NOT_FOUND', 'Group case not found.');
     return json(res, 200, groupCaseView(value));
@@ -1835,6 +1865,7 @@ async function handleGroupCaseRoute(req, res, route) {
     if (existing && (existing.mode !== 'group' || existing.requestHash !== requestHash)) throw nativeIdempotencyConflict();
     if (existing) {
       await verifyGroupMembers(existing.members);
+      await requireGroupSnapshotGrant(identity, id);
       return { replayed: true, value: await getCase(identity.inboxId, id) };
     }
     if (semanticDigest(members.slice(1)) !== semanticDigest(await resolveMembers())) {
@@ -1920,7 +1951,7 @@ async function resolveSignedCasePolicy({ inboxId, caseId, agentId }) {
 
 const signedCaseToolActions = {
   envoi_case_snapshot: ['case.snapshot'],
-  envoi_case_reply: ['message.send', 'message.reply'],
+  envoi_case_reply: ['message.send', 'message.reply', 'group.message.send'],
   envoi_case_propose: ['message.send', 'proposal.create'],
   envoi_case_decide: ['proposal.accept', 'message.send'],
   envoi_authority_check: ['proposal.accept', 'case.complete'],
@@ -3528,6 +3559,7 @@ async function workIneligibility(message, identity) {
       if (['GROUP_MEMBER_UNAVAILABLE', 'GROUP_ASSIGNEE_UNAVAILABLE'].includes(error.code)) return 'group_member_unavailable';
       throw error;
     }
+    if (!await groupSnapshotAllowed(identity, message.caseId)) return 'group_scope_unavailable';
   }
   const workKind = workKindOf(message, isHumanInstruction);
   if (workKind === 'human_instruction') {
@@ -6009,9 +6041,10 @@ async function route(req, res) {
       const canManageSignedPolicy = Boolean(inbox.ownerAgentId && signedPolicyNetwork && signedPolicyRecordContract
         && Object.hasOwn(signedPolicyOwnerAccounts, human.id) && signedPolicyOwnerAccounts[human.id]);
       for (const item of personalizedView.caseQueue) {
-        if (item.caseMode === 'group') continue;
-        if (sensitiveCasesEnabled && !item.sensitive && item.principal === human.id) item.canMarkSensitive = true;
-        if (canManageSignedPolicy) item.canManageSignedPolicy = true;
+        if (item.caseMode !== 'group' && sensitiveCasesEnabled && !item.sensitive && item.principal === human.id) item.canMarkSensitive = true;
+        if (canManageSignedPolicy && (item.caseMode !== 'group' || item.members?.some(member => member.agentId === inbox.ownerAgentId))) {
+          item.canManageSignedPolicy = true;
+        }
       }
     }
     return json(res, 200, { ...personalizedView, canManageInbox: requesterCanManage, requester });
@@ -6495,7 +6528,10 @@ async function route(req, res) {
       return fail(res, 404, 'Signed policy enrollment is unavailable for this inbox.');
     }
     const value = await getCase(inboxId, caseId);
-    if (!value?.schemaVersion || value.caseMode === 'group') return fail(res, 404, 'Supported structured case not found.');
+    const isGroupPolicyMember = async (record, currentInbox) => record.caseMode !== 'group' || groupMember(
+      await store.getJson(caseBindingPath(caseId)), { inboxId, agent: { id: currentInbox.ownerAgentId } }
+    );
+    if (!value?.schemaVersion || !await isGroupPolicyMember(value, inbox)) return fail(res, 404, 'Supported structured case not found.');
     const context = signedCasePolicyContext(inbox, caseId);
     if (req.method === 'GET' && rawEvaluationId) {
       const evaluationId = assertSafeIdentifier(rawEvaluationId, 'policyEvaluationId');
@@ -6531,7 +6567,7 @@ async function route(req, res) {
         const current = await getCase(inboxId, caseId);
         const currentInbox = await store.getJson(path.join('inboxes', inboxId, 'inbox.json'));
         const currentHuman = await auth.getHuman(req);
-        if (!current?.schemaVersion || current.caseMode === 'group' || !currentInbox || currentHuman?.id !== currentInbox.ownerHumanId
+        if (!current?.schemaVersion || !currentInbox || !await isGroupPolicyMember(current, currentInbox) || currentHuman?.id !== currentInbox.ownerHumanId
           || !await canManageInbox(currentHuman, currentInbox, { maxAgeMs: 0 })) {
           throw codedError(403, 'SIGNED_POLICY_OWNER_REQUIRED', 'The authenticated inbox owner is required.');
         }
@@ -6551,7 +6587,7 @@ async function route(req, res) {
         ]);
         await writeAudit('case.signed_policy_updated', { caseId, version: envelope.document.version, digest, agentId: envelope.document.agentId });
         return { document: envelope.document, digest };
-      });
+      }, { allowGroup: true });
       return json(res, 200, active);
     }
   }
