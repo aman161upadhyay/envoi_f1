@@ -41,6 +41,7 @@ import {
   verifyDecisionChain,
   verifyDecisionRecord
 } from './policy-engine.js';
+import { casePolicyDisplay, createSignedPolicyRegistry, evaluateSignedCaseGrant, requireCasePolicyDocument, requireOwnerSignature, signedApprovalDocument } from './signed-case-policy.js';
 import {
   acceptProposal,
   advanceNativeCase,
@@ -121,6 +122,14 @@ const policySigningKeys = (() => {
   return { ...configured, [policyActiveKeyId]: configured[policyActiveKeyId] || single };
 })();
 const policyKeyring = Object.freeze({ activeKeyId: policyActiveKeyId, keys: Object.freeze(policySigningKeys) });
+const signedPolicyNetwork = process.env.ENVOI_SIGNED_POLICY_NETWORK || null;
+const signedPolicyRecordContract = process.env.ENVOI_SIGNED_POLICY_RECORD_CONTRACT || null;
+const signedPolicyRegistry = createSignedPolicyRegistry({
+  rpcUrl: process.env.ENVOI_SIGNED_POLICY_RPC_URL, recordContract: signedPolicyRecordContract
+});
+const signedPolicyOwnerAccounts = JSON.parse(process.env.ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS || '{}');
+const signedPolicyRpId = process.env.ENVOI_SIGNED_POLICY_RP_ID || null;
+const signedPolicyOrigins = (process.env.ENVOI_SIGNED_POLICY_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
 const emailTransport = createEmailTransport();
 const agentAccessTokenTtlSeconds = Math.max(60, Number(process.env.ENVOI_AGENT_ACCESS_TOKEN_TTL_SECONDS || 900));
 const agentRefreshTokenTtlDays = Math.max(1, Number(process.env.ENVOI_AGENT_REFRESH_TOKEN_TTL_DAYS || 30));
@@ -1862,12 +1871,81 @@ function policyEvaluationFromInput(input, actor, now) {
     grantType: input.grantType || 'oneTime',
     effectiveAt: now,
     expiresAt: input.expiresAt || null,
-    reasonCode: input.reasonCode
+    reasonCode: input.reasonCode,
+    ...(input.signedPolicy ? { signedPolicy: input.signedPolicy } : {})
   };
 }
 
 const policyBindingPath = (inboxId, evaluationId) => path.join('inboxes', inboxId, 'policy-bindings', `${evaluationId}.json`);
 const policyExecutionPath = (inboxId, executionId) => path.join('inboxes', inboxId, 'policy-executions', `${executionId}.json`);
+const signedCasePolicyPath = (inboxId, caseId) => path.join('inboxes', inboxId, 'signed-case-policies', `${caseId}.json`);
+const signedCaseApprovalPath = (inboxId, evaluationId) => path.join('inboxes', inboxId, 'signed-case-approvals', `${evaluationId}.json`);
+
+function signedCasePolicyContext(inbox, caseId, agentId = inbox.ownerAgentId) {
+  return { workspaceId: inbox.id, caseId, ownerId: inbox.ownerHumanId, agentId };
+}
+
+function verifySignedOwnerEnvelope(envelope, ownerId, now) {
+  const ownerAccount = Object.hasOwn(signedPolicyOwnerAccounts, ownerId) ? signedPolicyOwnerAccounts[ownerId] : null;
+  return requireOwnerSignature(envelope, {
+    ownerAccount, registry: signedPolicyRegistry, nowMs: Date.parse(now), rpId: signedPolicyRpId, allowedOrigins: signedPolicyOrigins
+  });
+}
+
+async function resolveSignedCasePolicy({ inboxId, caseId, agentId }) {
+  if (!caseId) return null;
+  const envelope = await store.getJson(signedCasePolicyPath(inboxId, assertSafeIdentifier(caseId, 'caseId')));
+  if (!envelope) return null;
+  const inbox = await store.getJson(path.join('inboxes', inboxId, 'inbox.json'));
+  if (!inbox || inbox.ownerAgentId !== agentId) throw codedError(403, 'SIGNED_POLICY_SCOPE_MISMATCH', 'The signed policy belongs to another agent.');
+  const now = store.now();
+  const context = signedCasePolicyContext(inbox, caseId, agentId);
+  requireCasePolicyDocument(envelope.document, context, Date.parse(now));
+  return { document: envelope.document, digest: await verifySignedOwnerEnvelope(envelope, context.ownerId, now) };
+}
+
+const signedCaseToolActions = {
+  envoi_case_snapshot: ['case.snapshot'],
+  envoi_case_reply: ['message.send', 'message.reply'],
+  envoi_case_propose: ['message.send', 'proposal.create'],
+  envoi_case_decide: ['proposal.accept', 'message.send'],
+  envoi_authority_check: ['proposal.accept', 'case.complete'],
+  envoi_request_human: ['proposal.accept', 'case.complete'],
+  envoi_case_list_assets: ['asset.read'],
+  envoi_case_share_asset: ['asset.share'],
+  envoi_case_complete: ['case.complete']
+};
+
+async function signedCaseSessionFields(inboxId, caseId, agentId, allowedTools) {
+  const policy = await resolveSignedCasePolicy({ inboxId, caseId, agentId });
+  if (!policy) return { allowedTools };
+  const actions = new Set(policy.document.grants.filter(grant => grant.decision !== 'deny').map(grant => grant.action));
+  if (evaluateSignedCaseGrant(policy, 'case.snapshot').decision !== 'allow') actions.delete('case.snapshot');
+  return {
+    allowedTools: allowedTools.filter(tool => (signedCaseToolActions[tool] || []).some(action => actions.has(action))),
+    signedPolicyDigest: policy.digest,
+    signedPolicyExpiresAtMs: policy.document.expiresAtMs
+  };
+}
+
+async function currentSignedApprovalDocument(inbox, value, binding) {
+  if (!inbox || !binding?.signedPolicy || binding.decision !== 'needsHuman' || binding.caseId !== value.id ||
+      binding.workspaceId !== inbox.id || binding.agentId !== inbox.ownerAgentId || binding.expiresAt <= store.now() ||
+      !verifyDecisionRecord(binding, { keyring: policyKeyring, requireSigned: true })) {
+    throw codedError(409, 'SIGNED_APPROVAL_STALE', 'A current pending signed action is required.');
+  }
+  const active = await resolveSignedCasePolicy({ inboxId: inbox.id, caseId: value.id, agentId: binding.agentId });
+  if (active?.digest !== binding.signedPolicy.digest) {
+    throw codedError(409, 'SIGNED_APPROVAL_STALE', 'The case policy changed. Request approval again.');
+  }
+  return signedApprovalDocument(binding, inbox.ownerHumanId);
+}
+
+async function requireSignedMutation(inboxId, value, principal, evaluationId, requestedAction, actionPayload, writeAudit) {
+  if (!await store.getJson(signedCasePolicyPath(inboxId, value.id))) return;
+  if (typeof evaluationId !== 'string') throw codedError(403, 'SIGNED_POLICY_EVALUATION_REQUIRED', 'A current signed-policy evaluation is required.');
+  return validatedPolicyBinding(inboxId, value, principal, assertSafeIdentifier(evaluationId, 'policyEvaluationId'), { requestedAction, actionPayload, writeAudit });
+}
 const minutesFromClock = value => {
   const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/);
   if (!match) return null;
@@ -1927,6 +2005,7 @@ async function evaluateServerPolicy(inboxId, agent, caseRecord, input, options =
     return candidate != null && ((startBoundary != null && candidate < startBoundary) || (endBoundary != null && candidate > endBoundary));
   });
   const policy = await activeWorkspacePolicy(inboxId);
+  const signedGrant = evaluateSignedCaseGrant(await resolveSignedCasePolicy({ inboxId, caseId: caseRecord.id, agentId: agent.id }), requestedAction, actionPayload);
   const chain = await policyDecisionChain(inboxId);
   const record = evaluatePolicy({
     id: options.id || input.id || store.id(options.phase === 'execution' ? 'policy_exec' : 'policy_eval'),
@@ -1945,10 +2024,11 @@ async function evaluateServerPolicy(inboxId, agent, caseRecord, input, options =
     proposalDigest: valueDigest(caseRecord.proposals || []),
     allowedOptionIds: (caseRecord.proposals || []).flatMap(proposal => proposal.options.filter(option => !option.expired).map(option => option.id)),
     policy,
+    signedGrant,
     previousRecordDigest: chain.latest?.recordDigest || null,
     phase: options.phase || 'evaluation',
     sourceEvaluationId: options.sourceEvaluationId || null,
-    grantType: input.grantType || 'oneTime',
+    grantType: signedGrant ? 'oneTime' : input.grantType || 'oneTime',
     humanDecisionRequired: onboardingFlags.caseSessions && requestedAction === 'proposal.accept' ? policy.agreements?.requireHumanApproval !== false
       : onboardingFlags.caseSessions && requestedAction === 'case.complete' ? caseToolCompletionNeedsHuman(caseRecord, agent.id) : input.humanDecisionRequired === true ? true : null,
     keyring: policyKeyring,
@@ -1969,6 +2049,7 @@ async function evaluateServerPolicy(inboxId, agent, caseRecord, input, options =
   return {
     decision: record.decision,
     reasonCode: record.reasonCode,
+    ...(record.signedPolicy ? { signedPolicy: record.signedPolicy } : {}),
     matchedPolicyId: `${policy.id}@${policy.version}`,
     expiresAt: record.expiresAt,
     binding: record
@@ -1994,7 +2075,8 @@ const actionRequestDigest = input => {
     policyEvaluationId: input.policyEvaluationId ?? externalRefs.policyEvaluationId ?? null,
     actionPayload: input.actionPayload || {},
     externalRefs,
-    reasonCode: input.reasonCode ?? null
+    reasonCode: input.reasonCode ?? null,
+    ...(input.signedApproval ? { signedApproval: input.signedApproval } : {})
   });
 };
 
@@ -2008,7 +2090,18 @@ async function validatedPolicyBinding(inboxId, caseRecord, principal, evaluation
   const proposalStateDigest = valueDigest(caseRecord.proposals || []);
   assertExactBinding(binding, { requestedAction: requestedAction || binding.requestedAction, actionPayload: actionPayload || {}, proposalDigest: proposalId ? proposalStateDigest : null, optionId, keyring: policyKeyring, at: store.now() });
   if (evaluation.decision === 'deny') throw Object.assign(new Error(`Policy denied this action: ${evaluation.reasonCode}`), { statusCode: 403 });
-  const humanApproved = hasHumanApprovalForEvaluation(caseRecord, evaluation.id, onboardingFlags.caseSessions && ['proposal.accept', 'case.complete', 'message.reply'].includes(binding.requestedAction) ? inboxId : null);
+  const activeSignedPolicy = await resolveSignedCasePolicy({ inboxId, caseId: caseRecord.id, agentId: principal.id });
+  if (activeSignedPolicy?.digest !== binding.signedPolicy?.digest) {
+    throw codedError(409, 'SIGNED_POLICY_CHANGED', 'The case policy changed. Evaluate this action again.');
+  }
+  let humanApproved = hasHumanApprovalForEvaluation(caseRecord, evaluation.id, onboardingFlags.caseSessions && ['proposal.accept', 'case.complete', 'message.reply'].includes(binding.requestedAction) ? inboxId : null);
+  if (humanApproved && binding.signedPolicy) {
+    const inbox = await store.getJson(path.join('inboxes', inboxId, 'inbox.json'));
+    const signed = await store.getJson(signedCaseApprovalPath(inboxId, evaluation.id));
+    const expected = await currentSignedApprovalDocument(inbox, caseRecord, binding);
+    humanApproved = signed?.document && valueDigest(signed.document) === valueDigest(expected)
+      && Boolean(await verifySignedOwnerEnvelope(signed, inbox.ownerHumanId, store.now()));
+  }
   if (evaluation.decision === 'needsHuman' && !humanApproved && !allowPendingHuman) {
     throw Object.assign(new Error('This action requires human approval'), { statusCode: 409 });
   }
@@ -2025,6 +2118,9 @@ async function validatedPolicyBinding(inboxId, caseRecord, principal, evaluation
     expiresAt: binding.expiresAt,
     grantType: binding.grantType || 'oneTime'
   }, { id: store.id('policy_exec'), phase: 'execution', executionId, sourceEvaluationId: evaluation.id });
+  if (binding.signedPolicy?.digest !== refreshed.binding.signedPolicy?.digest) {
+    throw codedError(409, 'SIGNED_POLICY_CHANGED', 'The case policy changed. Evaluate this action again.');
+  }
   const executionPath = policyExecutionPath(inboxId, binding.grantType === 'oneTime' ? evaluation.id : refreshed.binding.id);
   const persisted = binding.grantType === 'oneTime'
     ? await store.putJsonIfAbsent(executionPath, refreshed.binding)
@@ -3526,6 +3622,10 @@ async function assertLiveToolSession(session) {
   if (current.expiresAt <= at) throw caseSessionErrors.expired();
   const reason = firstCondition(sessionConditions(current, await caseSessionFacts(current), at));
   if (reason) throw caseSessionErrors.ended(reason);
+  const policy = await resolveSignedCasePolicy(current);
+  if (current.signedPolicyDigest !== policy?.digest) {
+    throw codedError(409, 'SIGNED_POLICY_CHANGED', 'The case policy changed. Request a new case session.');
+  }
   return current;
 }
 
@@ -3592,7 +3692,7 @@ async function evaluateCaseToolAuthority(ctx, action, proposal, option, result, 
     actionPayload: proposal ? { proposalId: proposal.id, optionId: option.id } : { result } }, { id });
   const at = store.now();
   const evaluation = policyEvaluationFromInput({ id, requestedAction, decision: evaluated.decision, matchedPolicyId: evaluated.matchedPolicyId,
-    grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode }, ctx.agent.id, at);
+    grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode, signedPolicy: evaluated.signedPolicy }, ctx.agent.id, at);
   await saveCase(ctx.session.inboxId, addPolicyEvaluation(ctx.caseRecord, evaluation, { at }));
   await store.putJson(policyBindingPath(ctx.session.inboxId, id), evaluated.binding);
   await ctx.writeAudit('policy.evaluated', { caseId: ctx.session.caseId, policyEvaluationId: id, requestedAction, decision: evaluation.decision, reasonCode: evaluation.reasonCode }, at);
@@ -3692,6 +3792,7 @@ async function readCaseToolContent(ctx, asset) {
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 async function completeCaseTool(ctx, result, authority, evidence, id) {
+  if (ctx.session.signedPolicyDigest && !authority) throw caseToolError('AUTHORITY_REQUIRED');
   let humanDecision = caseToolCompletionApproval(ctx.caseRecord, ctx.agent.id);
   if (authority) {
     await authorizeCaseTool(ctx, authority, 'case.complete', { result }, null, null, id);
@@ -3827,11 +3928,13 @@ async function mintCaseSession(req, res, identity, workId, leaseTokenHash) {
       counterparty = { kind: 'agent', address: sender.address };
     }
     if (workKind === 'human_decision') counterparty = { kind: 'agent', address: message.counterpartyAddress };
+    const policyFields = await signedCaseSessionFields(identity.inboxId, requestedCaseId, identity.agent.id,
+      allowedCaseTools(current.agent.permissions, workKind, caseSessionMcp.implemented)
+        .filter(name => !message.groupCase || ['envoi_case_snapshot', 'envoi_case_reply'].includes(name)));
     const created = await caseSessions.create({
       inboxId: identity.inboxId, agentId: identity.agent.id, familyId: identity.familyId, installationId: installation.id,
       workId, workKind, caseId: requestedCaseId, fence: claim.fence, leaseTokenHash, counterparty,
-      allowedTools: allowedCaseTools(current.agent.permissions, workKind, caseSessionMcp.implemented)
-        .filter(name => !message.groupCase || ['envoi_case_snapshot', 'envoi_case_reply'].includes(name))
+      ...policyFields
     }, at, writeAudit);
     return { ...created, leaseExpiresAt: claim.leaseExpiresAt };
   }, related, requestedCaseId ? [caseMutationKey(requestedCaseId)] : []);
@@ -4160,10 +4263,12 @@ async function gatewayPrivateSession(binding, work, identity, claim, options) {
     if (firstCondition(conditions)) throw nativeGatewayError('LEASE_LOST');
     gatewayDeadline(options);
     await caseSessions.recordEnd(session, 'superseded', store.now(), gatewayAudit(options));
+    const policyFields = await signedCaseSessionFields(binding.inboxId, work.caseId, binding.agentId,
+      allowedCaseTools(identity.agent.permissions, session.workKind, caseSessionMcp.implemented));
     const created = await caseSessions.create({ inboxId: binding.inboxId, agentId: binding.agentId, familyId: identity.familyId,
       installationId: binding.installationId, workId: work.workId, workKind: session.workKind, caseId: work.caseId,
       fence: claim.fence, leaseTokenHash: claim.leaseTokenHash, counterparty: session.counterparty,
-      allowedTools: allowedCaseTools(identity.agent.permissions, session.workKind, caseSessionMcp.implemented) }, store.now(), gatewayAudit(options));
+      ...policyFields }, store.now(), gatewayAudit(options));
     session = created.session;
     work.caseSession = { id: session.id };
   }
@@ -4189,7 +4294,7 @@ async function gatewayOwnerRequest(binding, work, ctx, text, actionPayload, opti
   const evaluated = await evaluateServerPolicy(binding.inboxId, ctx.agent, value, { requestedAction: 'message.reply', actionPayload, humanDecisionRequired: true }, { id });
   if (evaluated.decision === 'deny') throw nativeGatewayError('GATEWAY_SCOPE_DENIED', 403);
   const evaluation = policyEvaluationFromInput({ id, requestedAction: 'message.reply', decision: evaluated.decision, matchedPolicyId: evaluated.matchedPolicyId,
-    grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode }, binding.agentId, at);
+    grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode, signedPolicy: evaluated.signedPolicy }, binding.agentId, at);
   const writeAudit = gatewayAudit(options);
   if (!value.policyEvaluations.some(item => item.id === id)) {
     await saveCase(binding.inboxId, addPolicyEvaluation(value, evaluation, { at }));
@@ -4221,7 +4326,7 @@ async function deferNativeWorkForOwner(identity, message, claim, proposedReply, 
   if (evaluated.decision !== 'needsHuman') throw codedError(403, 'WORK_REVIEW_UNAVAILABLE', 'Workspace policy does not allow this reply to be reviewed.');
   const at = store.now();
   const evaluation = policyEvaluationFromInput({ id: evaluationId, requestedAction: 'message.reply', decision: evaluated.decision,
-    matchedPolicyId: evaluated.matchedPolicyId, grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode }, agent.id, at);
+    matchedPolicyId: evaluated.matchedPolicyId, grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode, signedPolicy: evaluated.signedPolicy }, agent.id, at);
   await saveCase(inboxId, addPolicyEvaluation(value, evaluation, { at }));
   await store.putJson(policyBindingPath(inboxId, evaluationId), evaluated.binding);
   const request = await requestCaseToolHuman({ agent, writeAudit, session: {
@@ -4280,9 +4385,14 @@ const gatewayNativeAdapter = {
       const other = await store.getJson(path.join('inboxes', message.senderInboxId, 'agents', `${message.senderAgentId}.json`));
       counterparty = { kind: 'agent', address: other.address };
     }
+    const policyFields = await signedCaseSessionFields(binding.inboxId, message.caseId, binding.agentId,
+      allowedCaseTools(identity.agent.permissions, workKind, caseSessionMcp.implemented));
+    if (policyFields.signedPolicyDigest && !policyFields.allowedTools.includes('envoi_case_snapshot')) {
+      throw codedError(403, 'SIGNED_POLICY_SNAPSHOT_DENIED', 'The signed case policy does not allow a case snapshot.');
+    }
     const created = await caseSessions.create({ inboxId: binding.inboxId, agentId: binding.agentId, familyId: binding.credentialFamilyId,
       installationId: binding.installationId, workId: work.workId, workKind, caseId: message.caseId, fence: claim.fence, leaseTokenHash: claim.leaseTokenHash,
-      counterparty, allowedTools: allowedCaseTools(identity.agent.permissions, workKind, caseSessionMcp.implemented) }, store.now(), gatewayAudit(options));
+      counterparty, ...policyFields }, store.now(), gatewayAudit(options));
     const ctx = await loadCaseToolContext(created.session);
     const shown = projectCaseSnapshot({ ...ctx, codec: referenceCodec, now: store.now() }, { eventLimit: 10 });
     return { workId: work.workId, caseId: message.caseId, kind: workKind, leaseExpiresAt: work.leaseExpiresAt, leaseToken: work.leaseToken, fence: claim.fence,
@@ -6284,6 +6394,77 @@ async function route(req, res) {
     return json(res, 200, result);
   }
 
+  const signedPolicyRoute = suffix.match(/^cases\/([^/]+)\/(signed-policy(?:\/preview)?|signed-approval\/([^/]+))$/);
+  if (signedPolicyRoute && ['GET', 'POST'].includes(req.method)) {
+    const [, rawCaseId, operation, rawEvaluationId] = signedPolicyRoute;
+    const caseId = assertSafeIdentifier(rawCaseId, 'caseId');
+    const human = await auth.getHuman(req);
+    if (!human || human.id !== inbox.ownerHumanId || !await canManageInbox(human, inbox, { maxAgeMs: 0 })) {
+      return fail(res, 403, 'The authenticated inbox owner is required.');
+    }
+    const ownerAccount = Object.hasOwn(signedPolicyOwnerAccounts, human.id) ? signedPolicyOwnerAccounts[human.id] : null;
+    if (!ownerAccount || !signedPolicyNetwork || !signedPolicyRecordContract || !inbox.ownerAgentId) {
+      return fail(res, 404, 'Signed policy enrollment is unavailable for this inbox.');
+    }
+    const value = await getCase(inboxId, caseId);
+    if (!value?.schemaVersion || value.caseMode === 'group') return fail(res, 404, 'Supported structured case not found.');
+    const context = signedCasePolicyContext(inbox, caseId);
+    if (req.method === 'GET' && rawEvaluationId) {
+      const evaluationId = assertSafeIdentifier(rawEvaluationId, 'policyEvaluationId');
+      if (!value.policyEvaluations.some(item => item.id === evaluationId && item.decision === 'needsHuman')) {
+        return fail(res, 404, 'Pending policy evaluation not found.');
+      }
+      const binding = await store.getJson(policyBindingPath(inboxId, evaluationId));
+      const document = await currentSignedApprovalDocument(inbox, value, binding);
+      return json(res, 200, { document, display: [
+        `Approve ${document.action} once for agent ${document.agentId}.`,
+        `Case ${document.caseId}. Signed policy version ${document.policyVersion}.`,
+        `Action details ${JSON.stringify(document.target)}`
+      ] });
+    }
+    if (req.method === 'GET' && operation === 'signed-policy') {
+      const envelope = await store.getJson(signedCasePolicyPath(inboxId, caseId));
+      return json(res, 200, { ...context, version: (envelope?.document?.version ?? 0) + 1,
+        previousHash: envelope?.document ? valueDigest(envelope.document) : null, active: envelope?.document ?? null,
+        signing: { ownerAccount, recordContract: signedPolicyRecordContract, network: signedPolicyNetwork, rpId: signedPolicyRpId }
+      });
+    }
+    if (req.method === 'POST' && operation === 'signed-policy/preview') {
+      const document = await body(req);
+      if (!document || typeof document !== 'object') return fail(res, 400, 'A policy draft is required.');
+      const draft = { ...document, display: casePolicyDisplay(document) };
+      requireCasePolicyDocument(draft, context, Date.parse(store.now()));
+      return json(res, 200, { document: draft, display: draft.display });
+    }
+    if (req.method === 'POST' && operation === 'signed-policy') {
+      const input = await body(req);
+      const envelope = { document: input?.document, keyType: input?.keyType, publicKey: input?.publicKey, signature: input?.signature };
+      const active = await withCaseMutation(inboxId, caseId, async writeAudit => {
+        const current = await getCase(inboxId, caseId);
+        const currentInbox = await store.getJson(path.join('inboxes', inboxId, 'inbox.json'));
+        const currentHuman = await auth.getHuman(req);
+        if (!current?.schemaVersion || current.caseMode === 'group' || !currentInbox || currentHuman?.id !== currentInbox.ownerHumanId
+          || !await canManageInbox(currentHuman, currentInbox, { maxAgeMs: 0 })) {
+          throw codedError(403, 'SIGNED_POLICY_OWNER_REQUIRED', 'The authenticated inbox owner is required.');
+        }
+        const now = store.now();
+        requireCasePolicyDocument(envelope.document, signedCasePolicyContext(currentInbox, caseId), Date.parse(now));
+        const location = signedCasePolicyPath(inboxId, caseId);
+        const previous = await store.getJson(location);
+        const digest = await verifySignedOwnerEnvelope(envelope, currentInbox.ownerHumanId, now);
+        const previousHash = previous?.document ? valueDigest(previous.document) : null;
+        if (digest === previousHash) return { document: previous.document, digest };
+        if (envelope.document.version !== (previous?.document?.version ?? 0) + 1 || envelope.document.previousHash !== previousHash) {
+          throw codedError(409, 'SIGNED_POLICY_VERSION_CONFLICT', 'The signed policy version changed. Reload the draft.');
+        }
+        await store.putJson(location, envelope);
+        await writeAudit('case.signed_policy_updated', { caseId, version: envelope.document.version, digest, agentId: envelope.document.agentId });
+        return { document: envelope.document, digest };
+      });
+      return json(res, 200, active);
+    }
+  }
+
   const caseRoute = suffix.match(/^cases\/([^/]+)(?:\/(events|actions|policy-evaluations|proposals|receipt))?$/);
   if (req.method === 'GET' && caseRoute && !caseRoute[2]) {
     const value = await getCase(inboxId, caseRoute[1]);
@@ -6303,6 +6484,12 @@ async function route(req, res) {
       if (!value?.schemaVersion) throw Object.assign(new Error('Structured case not found'), { statusCode: 404 });
       if (!isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
       await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.appendEvent', { caseRecord: value });
+      if (await store.getJson(signedCasePolicyPath(inboxId, value.id))) {
+        if (!['message', 'error', 'toolAction'].includes(input.type)) throw codedError(403, 'SIGNED_POLICY_EVENT_FORBIDDEN', 'This event type is reserved for Envoi.');
+        await requireSignedMutation(inboxId, value, currentPrincipal, input.policyEvaluationId, 'case.appendEvent', {
+          type: input.type, payload: input.payload || {}, precedingEventRef: input.precedingEventRef || value.events.at(-1)?.id || null
+        }, writeAudit);
+      }
       const now = store.now();
       appendEvent(value, { id: store.id('evt'), type: input.type, actor: currentPrincipal.id, createdAt: now, payload: input.payload || {}, linkedPolicyEvaluation: input.linkedPolicyEvaluation || null, precedingEventRef: input.precedingEventRef || value.events.at(-1)?.id || null });
       await saveCase(inboxId, value);
@@ -6328,7 +6515,7 @@ async function route(req, res) {
       const now = store.now();
       const evaluationId = store.id('policy_eval');
       const evaluated = await evaluateServerPolicy(inboxId, currentPrincipal, value, { ...input, id: evaluationId }, { id: evaluationId });
-      const created = policyEvaluationFromInput({ id: evaluationId, requestedAction: input.requestedAction, decision: evaluated.decision, matchedPolicyId: evaluated.matchedPolicyId, grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode }, currentPrincipal.id, now);
+      const created = policyEvaluationFromInput({ id: evaluationId, requestedAction: input.requestedAction, decision: evaluated.decision, matchedPolicyId: evaluated.matchedPolicyId, grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode, signedPolicy: evaluated.signedPolicy }, currentPrincipal.id, now);
       const updated = addPolicyEvaluation(value, created, { at: now });
       await saveCase(inboxId, updated);
       await store.putJson(policyBindingPath(inboxId, created.id), evaluated.binding);
@@ -6349,6 +6536,9 @@ async function route(req, res) {
       if (!value?.schemaVersion) throw Object.assign(new Error('Structured case not found'), { statusCode: 404 });
       if (!isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
       await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.propose', { caseRecord: value });
+      await requireSignedMutation(inboxId, value, currentPrincipal, input.policyEvaluationId, 'proposal.create', {
+        kind: input.kind ?? null, options: input.options ?? [], expiresAt: input.expiresAt ?? null
+      }, writeAudit);
       const now = store.now();
       const created = proposalFromInput(input, now);
       const updated = addProposal(value, created);
@@ -6396,7 +6586,22 @@ async function route(req, res) {
           scopedBinding = await store.getJson(policyBindingPath(inboxId, scopedRequest.policyEvaluationId));
           if (!scopedBinding || !verifyDecisionRecord(scopedBinding, { keyring: policyKeyring, requireSigned: true }) || scopedBinding.agentId !== scopedRequest.agentId || scopedBinding.caseId !== value.id || scopedBinding.expiresAt <= now) throw Object.assign(new Error('A current open human decision request is required'), { statusCode: 409 });
         }
+        let signedApprovalDigest = null;
         if (input.actionKey === 'approveOnce') {
+          const enrolled = await store.getJson(signedCasePolicyPath(inboxId, value.id));
+          if (enrolled) {
+            const evaluationId = assertSafeIdentifier(input.externalRefs?.policyEvaluationId, 'policyEvaluationId');
+            const binding = await store.getJson(policyBindingPath(inboxId, evaluationId));
+            const expected = await currentSignedApprovalDocument(inbox, value, binding);
+            const approval = input.signedApproval;
+            if (!approval?.document || valueDigest(approval.document) !== valueDigest(expected) || human.id !== inbox.ownerHumanId) {
+              throw codedError(403, 'OWNER_SIGNATURE_REQUIRED', 'A device signature for this exact action is required.');
+            }
+            signedApprovalDigest = await verifySignedOwnerEnvelope(approval, inbox.ownerHumanId, now);
+            if (!await store.putJsonIfAbsent(signedCaseApprovalPath(inboxId, evaluationId), approval)) {
+              throw codedError(409, 'SIGNED_APPROVAL_ALREADY_RECORDED', 'This action already has an owner approval.');
+            }
+          }
           if (input.externalRefs?.requestedAction === 'case.complete' && !scopedRequest) {
             if (input.externalRefs?.policyEvaluationId) throw Object.assign(new Error('A current local human decision request is required'), { statusCode: 409 });
             if (value.state !== 'waitingForHuman' || typeof input.externalRefs?.result !== 'string' || !input.externalRefs.result.trim()) throw Object.assign(new Error('A pending case decision and result are required'), { statusCode: 409 });
@@ -6410,10 +6615,10 @@ async function route(req, res) {
               || !verifyDecisionRecord(binding, { keyring: policyKeyring, requireSigned: true }) || evaluation.decision !== 'needsHuman' || new Date(binding.expiresAt) <= new Date()) throw Object.assign(new Error('A current needsHuman policy evaluation is required for one-time approval'), { statusCode: 409 });
           }
         }
-        const { serverAuthenticatedHuman: _ignoredHumanClaim, ...suppliedRefs } = input.externalRefs || {};
+        const { serverAuthenticatedHuman: _ignoredHumanClaim, signedApprovalDigest: _ignoredSignatureClaim, ...suppliedRefs } = input.externalRefs || {};
         const boundRefs = scopedBinding?.requestedAction === 'case.complete' ? { requestedAction: 'case.complete', result: scopedBinding.actionPayload.result } : {};
-        result = applyHumanAction(value, { id: store.id('action'), actionKey: input.actionKey, actor: human.id, idempotencyKey, externalRefs: { ...suppliedRefs, ...boundRefs, caseId: value.id, sourceInboxId: inboxId, serverAuthenticatedHuman: true, requestDigest }, reasonCode: input.reasonCode || null },
-          { at: now, preserveState: Boolean(scopedRequest && (scopedRequest.kind === 'native_work_review' || input.actionKey === 'decline' || scopedBinding.requestedAction === 'proposal.accept')) });
+        result = applyHumanAction(value, { id: store.id('action'), actionKey: input.actionKey, actor: human.id, idempotencyKey, externalRefs: { ...suppliedRefs, ...boundRefs, ...(signedApprovalDigest ? { signedApprovalDigest } : {}), caseId: value.id, sourceInboxId: inboxId, serverAuthenticatedHuman: true, requestDigest }, reasonCode: input.reasonCode || null },
+          { at: now, preserveState: Boolean((signedApprovalDigest && !scopedRequest) || scopedRequest && (scopedRequest.kind === 'native_work_review' || input.actionKey === 'decline' || scopedBinding.requestedAction === 'proposal.accept')) });
         if (scopedRequest) await resolveCaseHumanRequest(scopedRequest, input.actionKey === 'approveOnce' ? 'approved' : 'declined', human.id, result.case, writeAudit);
       } else {
         if (currentPrincipal.id !== value.actingAgent || !isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
@@ -6429,9 +6634,13 @@ async function route(req, res) {
         const { serverAuthenticatedHuman: _ignoredAgentClaim, ...agentRefs } = input.externalRefs || {};
         let policyExternalRefs = { ...agentRefs, requestDigest };
         const actionId = store.id('action');
-        if (requiresPolicyEvaluation(input.actionKey)) {
+        const signedPolicyEnabled = Boolean(await store.getJson(signedCasePolicyPath(inboxId, value.id)));
+        if (requiresPolicyEvaluation(input.actionKey) || signedPolicyEnabled) {
           if (!input.policyEvaluationId) throw Object.assign(new Error('policyEvaluationId is required for policy-controlled or unknown agent actions'), { statusCode: 400 });
-          const authorization = await validatedPolicyBinding(inboxId, value, currentPrincipal, input.policyEvaluationId, { requestedAction: input.actionKey, actionPayload: input.actionPayload || {}, executionId: actionId, writeAudit });
+          const actionPayload = signedPolicyEnabled ? {
+            ...(input.actionPayload || {}), nextState: input.nextState || null, outcome: input.outcome ?? null, externalRefs: agentRefs
+          } : input.actionPayload || {};
+          const authorization = await validatedPolicyBinding(inboxId, value, currentPrincipal, input.policyEvaluationId, { requestedAction: input.actionKey, actionPayload, executionId: actionId, writeAudit });
           policyExternalRefs = { ...policyExternalRefs, policyEvaluationId: input.policyEvaluationId, policyExecutionId: authorization.refreshed.id };
         }
         result = applyAgentAction(value, { id: actionId, actionKey: input.actionKey, actor: currentPrincipal.id, idempotencyKey, outcome: input.outcome, externalRefs: policyExternalRefs, reasonCode: input.reasonCode || null }, { at: now, nextState: input.nextState || null });
@@ -6489,7 +6698,9 @@ async function route(req, res) {
       const evaluation = value.policyEvaluations.find(item => item.id === input.policyEvaluationId);
       if (!evaluation || evaluation.actor !== currentPrincipal.id) throw Object.assign(new Error('A case policy evaluation for this agent is required'), { statusCode: 403 });
       const actionId = store.id('action');
-      const authorization = await validatedPolicyBinding(inboxId, value, currentPrincipal, evaluation.id, { proposalId: proposalRoute[2], optionId: input.optionId, executionId: actionId, allowPendingHuman: true, writeAudit });
+      const signedTarget = await store.getJson(signedCasePolicyPath(inboxId, value.id))
+        ? { requestedAction: 'proposal.accept', actionPayload: { proposalId: proposalRoute[2], optionId: input.optionId } } : {};
+      const authorization = await validatedPolicyBinding(inboxId, value, currentPrincipal, evaluation.id, { ...signedTarget, proposalId: proposalRoute[2], optionId: input.optionId, executionId: actionId, allowPendingHuman: true, writeAudit });
       const effectiveEvaluation = evaluation.decision === 'needsHuman' && authorization.humanApproved ? { ...evaluation, decision: 'allow', reasonCode: 'humanApproved' } : evaluation;
       const result = acceptProposal(value, proposalRoute[2], input.optionId, effectiveEvaluation, { actor: currentPrincipal.id, idempotencyKey, actionId, externalRefs: { requestDigest, policyEvaluationId: evaluation.id, policyExecutionId: authorization.refreshed.phase === 'execution' ? authorization.refreshed.id : null }, at: now });
       await saveCase(inboxId, result.case);
@@ -6511,6 +6722,10 @@ async function route(req, res) {
       if (!value?.schemaVersion) throw Object.assign(new Error('Structured case not found'), { statusCode: 404 });
       if (!isCaseParticipant(value, currentPrincipal.id)) throw Object.assign(new Error('Case participant credential required'), { statusCode: 403 });
       await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.complete', { caseRecord: value });
+      await requireSignedMutation(inboxId, value, currentPrincipal, input.policyEvaluationId, 'case.complete', {
+        result: input.result ?? null, counterparties: input.counterparties || [], externalIds: input.externalIds || {},
+        authorityBasis: input.authorityBasis ?? null, evidenceRefs: input.evidenceRefs || []
+      }, writeAudit);
       const now = store.now();
       const verifiedDecision = verifiedHumanCaseDecision(value, input.authorityBasis, input.result);
       const approvalRequired = value.events.some(event => event.type === 'decision' && event.payload?.messageType === 'decision' && event.payload?.data?.decision?.kind === 'accept');

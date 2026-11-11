@@ -137,18 +137,18 @@ export function evaluatePolicy({
   calendarConnectorAvailable = null, outsideWorkingHours = false, proposalDigest = null,
   allowedOptionIds = [], policy = createWorkspacePolicy({ version: '2026-09-27' }),
   previousRecordDigest = null, phase = 'evaluation', executionId = null, sourceEvaluationId = null, grantType = 'oneTime',
-  signingKey = null, keyring = null, humanDecisionRequired = null, now = new Date().toISOString()
+  signingKey = null, keyring = null, humanDecisionRequired = null, signedGrant = null, now = new Date().toISOString()
 }) {
   const issuedAt = isoInstant(now);
   if (!issuedAt) throw new Error('A valid policy evaluation time is required');
   const action = String(requestedAction || '').trim();
   if (!action) throw new Error('A requested action is required');
-  const actionClass = classifyAction(action);
+  const actionClass = signedGrant && action === 'case.appendEvent' ? 'safeInternal' : classifyAction(action);
   const binding = actionBinding(actionPayload, policy.executeAtToleranceSeconds);
   const deadline = isoInstant(caseDeadline);
   const requestedExpiry = isoInstant(requestedExpiresAt);
   const maximumExpiry = new Date(new Date(issuedAt).getTime() + (humanDecisionRequired === true ? 86400 : policy.decisionTtlSeconds) * 1000).toISOString();
-  const expiresAt = earliestInstant(requestedExpiry, maximumExpiry, deadline, binding.executionWindow.notAfter) || maximumExpiry;
+  const expiresAt = earliestInstant(requestedExpiry, maximumExpiry, deadline, binding.executionWindow.notAfter, signedGrant?.expiresAt) || maximumExpiry;
   let result = permissionGranted ? { decision: 'allow', reasonCode: 'withinServerPolicy' } : denied('missingPermission');
 
   if (actionClass === 'unknown') result = denied('unsupportedAction');
@@ -169,12 +169,15 @@ export function evaluatePolicy({
   else if (/^payment\./.test(action) && binding.amount.minorUnits > policy.maxPaymentMinorWithoutHuman) result = permissionGranted ? { decision: 'needsHuman', reasonCode: 'paymentExceedsAutomaticLimit' } : result;
   else if (/^(contract\.|asset\.share|external\.)/.test(action)) result = permissionGranted ? { decision: 'needsHuman', reasonCode: 'consequentialExternalCommitment' } : result;
   if (permissionGranted && result.decision !== 'deny' && humanDecisionRequired === true) result = { decision: 'needsHuman', reasonCode: 'agreementNeedsHumanDecision' };
+  if (result.decision !== 'deny' && signedGrant?.decision === 'deny') result = denied(signedGrant.reasonCode);
+  if (result.decision === 'allow' && signedGrant) result = { decision: signedGrant.decision, reasonCode: signedGrant.reasonCode };
 
   const keys = normalizeKeyring({ signingKey, keyring });
   const unsigned = {
     schemaVersion: POLICY_ENGINE_SCHEMA_VERSION,
     id, phase, executionId, sourceEvaluationId, grantType, workspaceId, caseId, agentId, requestedAction: action, actionClass,
     policy: { id: policy.id, version: policy.version, digest: policy.digest },
+    ...(signedGrant ? { signedPolicy: { digest: signedGrant.digest, version: signedGrant.version, grantId: signedGrant.grantId } } : {}),
     decision: result.decision, reasonCode: result.reasonCode, reasons: [result.reasonCode],
     ...binding, proposalDigest, allowedOptionIds: [...new Set(allowedOptionIds)].sort(),
     effectiveAt: issuedAt, expiresAt, previousRecordDigest,

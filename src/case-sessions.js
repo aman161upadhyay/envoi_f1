@@ -182,7 +182,7 @@ export function createCaseSessions({ store, enabled, hashSecret, recordAudit }) 
       const session = {
         id: `${caseSessionIdPrefix}${crypto.randomBytes(16).toString('hex')}`,
         tokenHash, status: 'active', ...fields,
-        createdAt: at, expiresAt: new Date(new Date(at).getTime() + caseSessionTtlMs).toISOString(),
+        createdAt: at, expiresAt: new Date(Math.min(new Date(at).getTime() + caseSessionTtlMs, fields.signedPolicyExpiresAtMs ?? Infinity)).toISOString(),
         endedReason: null, endedAt: null, updatedAt: at
       };
       await store.putJsonBatch([
