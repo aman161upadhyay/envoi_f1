@@ -190,3 +190,12 @@
 .app-shell .split-view .case-row.inbox-message-row .case-row-meta { flex-basis: auto; max-width: 30%; }
 .app-shell .split-view .thread-tool[aria-label="Back to list"] { display: none; }
 .app-shell .split-view .case-main { min-width: 0; min-height: 0; }
+
+/* Sticky decision bar */
+.app-shell .decision-bar { display: flex; align-items: center; gap: 10px; max-width: var(--lx-column); margin: 0 auto 8px; padding: 8px 8px 8px 14px; border: 1px solid var(--lx-gold-line); border-left: 3px solid var(--lx-gold); border-radius: 12px; background: var(--lx-gold-soft); box-shadow: var(--lx-shadow-1); font-size: 13.5px; color: var(--lx-ink); animation: lx-rise var(--lx-fast) var(--lx-ease); }
+.app-shell .decision-bar-label { flex: none; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--lx-gold-ink); }
+.app-shell .decision-bar-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-shell .decision-bar button { flex: none; height: 30px; padding: 0 14px; border: 0; border-radius: var(--lx-radius-pill); background: var(--lx-ink); color: #fff; font: 600 13px/1 var(--lx-sans); cursor: pointer; transition: transform var(--lx-fast) var(--lx-ease); }
+.app-shell .decision-bar button:active { transform: scale(.97); }
+@keyframes lx-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (max-width: 700px) { .app-shell .decision-bar-label { display: none; } }

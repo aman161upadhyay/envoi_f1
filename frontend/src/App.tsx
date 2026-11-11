@@ -1235,6 +1235,25 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
 
   const hasOpenDecision = Boolean(workCase.schemaVersion) && !['completed', 'expired', 'revoked'].includes(state);
   const canAct = canManageInbox && hasOpenDecision;
+  const decisionRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [decisionHidden, setDecisionHidden] = useState(false);
+  useEffect(() => {
+    const target = decisionRef.current;
+    const root = scrollRef.current;
+    if (!hasOpenDecision || !target || !root || typeof IntersectionObserver === 'undefined') { setDecisionHidden(false); return; }
+    const observer = new IntersectionObserver(entries => {
+      const entry = entries[entries.length - 1];
+      if (entry) setDecisionHidden(!entry.isIntersecting && entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0));
+    }, { root, threshold: 0 });
+    observer.observe(target);
+    return () => { observer.disconnect(); setDecisionHidden(false); };
+  }, [workCase.id, hasOpenDecision]);
+  function reviewDecision() {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    decisionRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    decisionRef.current?.querySelector<HTMLElement>('.decision-actions button:not(:disabled)')?.focus({ preventScroll: true });
+  }
   const canOrganize = Boolean(workCase.inboxPreference && view.folders);
   const ownAgent = view.agents.find(agent => agent.id === localAgentId(workCase, view));
   const canInstruct = canAct && state !== 'paused' && ownAgent?.status === 'active' && ownAgent.onboardingStatus === 'approved' && !ownAgent.credentialRevoked && !ownAgent.paused && ownAgent.permissions.includes('receive_agent_messages');
@@ -1273,7 +1292,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
           <button className="thread-tool thread-tool-right" aria-pressed={railOpen} onClick={onRailToggle}><PanelRightOpen size={16} />Details</button>
           <div className="thread-more-wrap"><button className="thread-tool icon-only" aria-label="More case actions" aria-expanded={moreOpen} onClick={() => setMoreOpen(value => !value)}><MoreHorizontal size={17} /></button>{moreOpen && <div className="thread-more" role="menu">{canAct && <button role="menuitem" onClick={() => { setMoreOpen(false); if (state === 'paused') void act('resume'); else setConfirm('pause'); }}>{state === 'paused' ? 'Resume conversation' : 'Pause conversation'}</button>}<button role="menuitem" disabled title="Take over needs server support">Take over case</button><button role="menuitem" onClick={() => { setMoreOpen(false); void navigator.clipboard.writeText(workCase.id).then(() => notify('Copied')).catch(() => notify('Copy failed')); }}>Copy case ID</button>{canAct && <button role="menuitem" className="danger" onClick={() => { setMoreOpen(false); setConfirm('revoke'); }}>Revoke case authority</button>}</div>}</div>
         </div>
-        <div className="thread-scroll"><div className="thread-inner">
+        <div className="thread-scroll" ref={scrollRef}><div className="thread-inner">
           <h1 className="thread-subject">{caseSubject(workCase, view.messages)}</h1>
           <div className="thread-meta"><StatusBadge workCase={workCase} /><button className="add-folder" disabled={!canOrganize || preferenceBusy} onClick={() => { setPreferenceError(''); setMoveOpen(true); }}><Folder size={13} />{view.folders?.find(folder => folder.id === workCase.inboxPreference?.folderId)?.name || 'Folder'}</button></div>
           <div className="participant-duo">
@@ -1281,13 +1300,13 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
             <ArrowLeftRight size={18} className="participant-swap" aria-hidden="true" />
             <ParticipantCard participant={counterparty} label={`Agent for ${counterparty.orgRef || 'another organization'}`} nativeControl={Boolean(localAgentId(workCase, view)) && canManageInbox && counterparty.type === 'externalAgent' ? { inboxId: view.inbox.id, onRefresh, notify } : undefined} />
           </div>
-          {workCase.decision && hasOpenDecision && <DecisionCard workCase={workCase} view={view} events={events} policy={policy} canManageInbox={canManageInbox} busy={busy} onAction={key => key === 'decline' ? setConfirm(key) : void act(key)} onPolicy={() => policy && setDrawer({ type: 'policy', item: policy })} />}
+          {workCase.decision && hasOpenDecision && <div ref={decisionRef} className="decision-anchor"><DecisionCard workCase={workCase} view={view} events={events} policy={policy} canManageInbox={canManageInbox} busy={busy} onAction={key => key === 'decline' ? setConfirm(key) : void act(key)} onPolicy={() => policy && setDrawer({ type: 'policy', item: policy })} /></div>}
           {state === 'unknownExternalResult' && <InlineNotice title="Result unknown" body="The external service did not confirm the result. Do not retry with a new key." tone="unknown" />}
           {state === 'revoked' && <InlineNotice title="Authority revoked" body="New agent work for this case is blocked." tone="danger" />}
           {events.some(event => isExchangeEvent(event) && findHighlights(eventSummary(event)).length > 0) && <HighlightLegend />}<div className="conversation" aria-label="Conversation">{events.length ? events.map((event, index) => <ConversationEntry key={event.id} event={event} previous={events[index - 1]} workCase={workCase} view={view} />) : <div className="empty-list"><Inbox size={20} /><strong>No messages yet</strong></div>}</div>
           {workCase.receipt && <ReceiptCard workCase={workCase} />}
         </div></div>
-        <div className="thread-composer"><form className="composer-box" onSubmit={event => void sendInstruction(event)}><textarea rows={1} aria-label={local.relationship === 'localAgent' ? `Instructions for ${local.displayName}` : 'Instructions unavailable: local identity unknown'} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={15000} placeholder={canInstruct ? 'Send an instruction to your agent' : 'Instructions require an active agent and conversation'} disabled={!canInstruct || instructionBusy} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="composer-foot"><span className="composer-hint">Enter to send · Shift+Enter for a new line</span><button aria-label="Send instruction" disabled={!canInstruct || instructionBusy || !instruction.trim()}><span>Send</span><ArrowRight size={15} /></button></div></form><FormError message={instructionError || preferenceError} /></div>
+        <div className="thread-composer">{workCase.decision && hasOpenDecision && decisionHidden && <div className="decision-bar" role="status"><span className="decision-bar-label">Needs your decision</span><span className="decision-bar-text">{decisionQuestion(workCase)}</span><button type="button" onClick={reviewDecision}>Review</button></div>}<form className="composer-box" onSubmit={event => void sendInstruction(event)}><textarea rows={1} aria-label={local.relationship === 'localAgent' ? `Instructions for ${local.displayName}` : 'Instructions unavailable: local identity unknown'} value={instruction} onChange={event => setInstruction(event.target.value)} maxLength={15000} placeholder={canInstruct ? 'Send an instruction to your agent' : 'Instructions require an active agent and conversation'} disabled={!canInstruct || instructionBusy} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} /><div className="composer-foot"><span className="composer-hint">Enter to send · Shift+Enter for a new line</span><button aria-label="Send instruction" disabled={!canInstruct || instructionBusy || !instruction.trim()}><span>Send</span><ArrowRight size={15} /></button></div></form><FormError message={instructionError || preferenceError} /></div>
       </div>
       {moveOpen && <Modal title="Move conversation" dismissible={!preferenceBusy} onClose={() => setMoveOpen(false)}><MoveInboxCaseContent folders={view.folders || []} currentFolderId={workCase.inboxPreference?.folderId || null} busy={preferenceBusy} error={preferenceError} onClose={() => setMoveOpen(false)} onMove={folderId => void updatePreference({ folderId })} /></Modal>}
       {railOpen && <aside className="case-details" aria-label="Case details"><div className="details-heading"><strong>Details</strong><button className="icon-button" aria-label="Close details" onClick={onRailToggle}><X size={16} /></button></div><h2>{ownAgent ? `${local.displayName} can` : 'Local permissions unavailable'}</h2>{ownAgent?.permissions.map(permission => <div className="details-row" key={permission}><Check size={14} />{humanize(permission)}</div>) || <p>No permissions listed</p>}{ownAgent && <><h2>{local.displayName} asks you before</h2><p>Actions outside its permissions</p></>}<h2>Files</h2>{view.assets.filter(item => item.caseId === workCase.id).map(asset => <AssetRow key={asset.id} asset={asset} inboxId={view.inbox.id} notify={notify} />)}<h2>Case</h2><dl><dt>Deadline</dt><dd>{workCase.deadline ? formatDate(workCase.deadline) : 'None'}</dd><dt>ID</dt><dd className="case-id">{workCase.id}</dd></dl></aside>}
