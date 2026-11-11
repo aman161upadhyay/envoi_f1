@@ -2081,6 +2081,32 @@ async function nativeCaseDocuments(message, state, at, { revealRecipient = false
 
 const permanentDeliveryError = (message, reasonCode) => Object.assign(new Error(message), { permanent: true, ...(reasonCode ? { reasonCode } : {}) });
 
+async function assertSignedMessageGrant(inboxId, message, replyPolicyDigest = null) {
+  const policy = await resolveSignedCasePolicy({ inboxId, caseId: message.caseId, agentId: message.senderAgentId });
+  if (!policy) return;
+  // Only the gateway's already checked reply/approval path supplies this value.
+  if (replyPolicyDigest && policy.digest === replyPolicyDigest) return;
+  const target = {
+    recipientAgentId: message.recipientAgentId ?? null,
+    recipientHumanId: message.recipientHumanId ?? null,
+    type: message.type,
+    intent: message.intent ?? null,
+    text: message.text,
+    content: message.content ?? null,
+    payload: message.payload ?? null,
+    proposal: message.proposal ?? null,
+    artifactRefs: message.artifactRefs ?? [],
+    inReplyTo: message.inReplyTo ?? message.causationId ?? null,
+    taskId: message.taskId ?? null,
+    correlationId: message.correlationId ?? null,
+    requiresAck: message.requiresAck ?? null
+  };
+  const evaluation = evaluateSignedCaseGrant(policy, 'message.send', target);
+  if (evaluation.decision !== 'allow') {
+    throw codedError(403, 'SIGNED_MESSAGE_DENIED', 'The signed case policy has no current grant for this message.');
+  }
+}
+
 async function enqueueNativeMessage(message, senderInbox, recipientInboxId, eventType = 'message.queued', writeAudit = null, agentRequest = null, caseOptions = {}) {
   if (!writeAudit) {
     const queued = await withInboxMutation(senderInbox.id, auditWriter => enqueueNativeMessage(message, senderInbox, recipientInboxId, eventType, auditWriter, agentRequest), [recipientInboxId], [caseMutationKey(message.caseId)]);
@@ -2109,6 +2135,7 @@ async function enqueueNativeMessage(message, senderInbox, recipientInboxId, even
     if (existing.status !== 'pendingContactApproval') return existing;
   }
   const queuedAt = store.now();
+  await assertSignedMessageGrant(senderInbox.id, message, caseOptions.signedReplyPolicyDigest);
   const queued = { ...message, recipientInboxId, status: 'queued', queuedAt, updatedAt: queuedAt };
   const shared = await nativeCaseDocuments(queued, 'queued', queuedAt, caseOptions);
   const auditData = {
@@ -2128,6 +2155,7 @@ async function enqueueNativeMessage(message, senderInbox, recipientInboxId, even
     senderInboxId: senderInbox.id,
     recipientInboxId,
     senderCredentialFamilyId,
+    ...(caseOptions.signedReplyPolicyDigest ? { signedReplyPolicyDigest: caseOptions.signedReplyPolicyDigest } : {}),
     orderingKey: queued.caseId,
     requestHash: queued.requestHash,
     status: 'queued',
@@ -2167,6 +2195,11 @@ async function deliverNativeAgentMessage(outbox) {
   try { await assertCaseProgressAllowed(outbox.senderInboxId, queued.caseId); }
   catch (error) { throw permanentDeliveryError(error.message); }
 
+  try { await assertSignedMessageGrant(outbox.senderInboxId, queued, outbox.signedReplyPolicyDigest); }
+  catch (error) {
+    if (error.statusCode && error.statusCode < 500) throw permanentDeliveryError(error.message, error.code);
+    throw error;
+  }
   const deliveredAt = store.now();
   const delivered = { ...queued, status: 'delivered', deliveredAt };
   const receipt = {
@@ -2211,6 +2244,9 @@ async function deliverExternalEmail(outbox) {
   emailTransport.assertReady();
   const queued = await store.getJson(messagePath(outbox.senderInboxId, outbox.messageId));
   if (!queued) throw permanentDeliveryError('Queued external email no longer exists');
+  if (await resolveSignedCasePolicy({ inboxId: outbox.senderInboxId, caseId: queued.caseId, agentId: queued.senderAgentId })) {
+    throw permanentDeliveryError('External email is unavailable in signed cases.', 'SIGNED_EXTERNAL_EMAIL_UNAVAILABLE');
+  }
   const sender = await store.getJson(path.join('inboxes', outbox.senderInboxId, 'agents', `${queued.senderAgentId}.json`));
   if (!sender || !canAct(sender, 'use_email_transport')) throw permanentDeliveryError('Sender is not approved to use external email');
   const contact = await store.getJson(externalContactPath(outbox.senderInboxId, queued.recipientEmail));
@@ -3497,6 +3533,7 @@ async function sendCaseToolMessage(ctx, { id, type, intent, text, payload = null
       senderType: 'agent', senderAgentId: session.agentId, senderInboxId: session.inboxId, recipientInboxId: session.inboxId,
       recipientHumanId: ctx.workMessage.senderHumanId, from: { agentId: ctx.agent.id, address: ctx.agent.address },
       inReplyTo: ctx.workMessage.id, type: 'message', text, status: 'delivered', createdAt: at, deliveredAt: at, updatedAt: at };
+    await assertSignedMessageGrant(session.inboxId, reply, caseOptions.signedReplyPolicyDigest);
     await store.putJsonBatch([...(await humanInstructionReplyDocuments(store, ctx.workMessage, reply, at)), document(messagePath(session.inboxId, id), reply)]);
     await ctx.writeAudit('agent.instruction_replied', { messageId: id, caseId: session.caseId, inReplyTo: ctx.workMessage.id, senderAgentId: session.agentId }, at);
     return reply;
@@ -4231,19 +4268,24 @@ const gatewayNativeAdapter = {
     const approval = requests.find(request => request.status === 'approved' && Date.parse(request.expiresAt) > Date.now() && request.generation === binding.generation && request.actionDigest === semanticDigest(actionPayload));
     const hasPendingDecision = ctx.humanRequests.some(request => request.status === 'pending');
     if (options.action === 'request_owner' || requests.length && !approval || hasPendingDecision) return gatewayOwnerRequest(binding, work, ctx, options.text, actionPayload, options);
+    let signedReplyPolicyDigest = null;
     if (approval) {
-      try { await validatedPolicyBinding(binding.inboxId, ctx.caseRecord, ctx.agent, approval.policyEvaluationId, { requestedAction: 'message.reply', actionPayload,
-        executionId: `gateway_reply_${semanticDigest([work.workId, options.idempotencyKey]).slice(0, 32)}`, writeAudit: ctx.writeAudit }); }
+      try {
+        const authorization = await validatedPolicyBinding(binding.inboxId, ctx.caseRecord, ctx.agent, approval.policyEvaluationId, { requestedAction: 'message.reply', actionPayload,
+          executionId: `gateway_reply_${semanticDigest([work.workId, options.idempotencyKey]).slice(0, 32)}`, writeAudit: ctx.writeAudit });
+        signedReplyPolicyDigest = authorization.refreshed.signedPolicy?.digest ?? null;
+      }
       catch (error) { if (error.statusCode && error.statusCode < 500) throw nativeGatewayError('GATEWAY_SCOPE_DENIED', 403); throw error; }
     }
     else {
       const evaluated = await evaluateServerPolicy(binding.inboxId, ctx.agent, ctx.caseRecord, { requestedAction: 'message.reply', actionPayload });
       if (evaluated.decision === 'deny') throw nativeGatewayError('GATEWAY_SCOPE_DENIED', 403);
       if (evaluated.decision === 'needsHuman') return gatewayOwnerRequest(binding, work, ctx, options.text, actionPayload, options);
+      signedReplyPolicyDigest = evaluated.binding.signedPolicy?.digest ?? null;
     }
     gatewayDeadline(options);
     const id = `msg_gateway_${semanticDigest([binding.installationId, work.workId, options.idempotencyKey]).slice(0, 40)}`;
-    const reply = await sendCaseToolMessage(ctx, { id, type: 'message', intent: 'message', text: options.text, inReplyTo: message.id });
+    const reply = await sendCaseToolMessage(ctx, { id, type: 'message', intent: 'message', text: options.text, inReplyTo: message.id }, { signedReplyPolicyDigest });
     const completed = await settleCanonicalAgentWork({ identity, workId: work.workId, currentMessage: message, claim, action: 'complete' }, ctx.writeAudit);
     await options.audit('agent.gateway_work_replied', { agentId: binding.agentId, workId: work.workId, messageId: reply.id, caseId: work.caseId });
     return { state: 'sent', settled: true, receiptId: completed.payload.receipt.id };
@@ -4609,6 +4651,7 @@ async function route(req, res) {
           status: 'delivered', createdAt: now, deliveredAt: now, updatedAt: now
         };
         if (await store.getJson(messagePath(identity.inboxId, reply.id))) throw Object.assign(new Error('Reply exists without its idempotency record'), { statusCode: 409 });
+        await assertSignedMessageGrant(identity.inboxId, reply);
         const documents = await humanInstructionReplyDocuments(store, currentMessage, reply, now);
         documents.push(document(messagePath(identity.inboxId, reply.id), reply), document(idempotencyPath, {
           principalId: identity.agent.id, requestDigest, status: 'completed', response: reply, createdAt: now
@@ -5794,9 +5837,13 @@ async function route(req, res) {
     const requester = { id: human.id, auth: { provider: auth.provider, assurance: session.assurance || 'provider' } };
     const preferences = await getPrefsForCases(store, { scopeMode: 'personal', organizationId: inbox.organizationId, humanId: human.id, inboxId, cases: view.caseQueue });
     const personalizedView = attachInboxPreferencesToView(view, preferences);
-    if (sensitiveCasesEnabled && requesterCanManage && human.id === inbox.ownerHumanId) {
+    if (requesterCanManage && human.id === inbox.ownerHumanId) {
+      const canManageSignedPolicy = Boolean(inbox.ownerAgentId && signedPolicyNetwork && signedPolicyRecordContract
+        && Object.hasOwn(signedPolicyOwnerAccounts, human.id) && signedPolicyOwnerAccounts[human.id]);
       for (const item of personalizedView.caseQueue) {
-        if (!item.sensitive && item.principal === human.id && item.caseMode !== 'group') item.canMarkSensitive = true;
+        if (item.caseMode === 'group') continue;
+        if (sensitiveCasesEnabled && !item.sensitive && item.principal === human.id) item.canMarkSensitive = true;
+        if (canManageSignedPolicy) item.canManageSignedPolicy = true;
       }
     }
     return json(res, 200, { ...personalizedView, canManageInbox: requesterCanManage, requester });
@@ -6646,6 +6693,9 @@ async function route(req, res) {
       const createdAt = store.now();
       const caseId = input.caseId ? assertSafeIdentifier(input.caseId, 'caseId') : store.id('case');
       const replyAddress = `reply+${hashSecret(messageId).slice(0, 32)}@${emailTransport.publicDomain}`;
+      if (await resolveSignedCasePolicy({ inboxId, caseId, agentId: currentSender.id })) {
+        throw codedError(403, 'SIGNED_EXTERNAL_EMAIL_UNAVAILABLE', 'External email is unavailable in signed cases.');
+      }
       const message = { id: messageId, caseId, senderInboxId: inboxId, transport: 'email', direction: 'outbound', senderType: 'agent', senderAgentId, senderEmail: publicEmailAddressForAgent(currentSender), recipientEmail, subject, type: 'email', text, html, payload: input.payload || null, replyAddress, requestHash, createdAt, queuedAt: createdAt, status: 'queued', externalDeliveryState: 'queued' };
       const currentCase = await ensureStructuredCase(inbox, { ...input, caseId, type: 'message', text, objective: subject }, currentSender.id, createdAt);
       const queuedCase = setCaseMessageDeliveryState(structuredClone(currentCase), message, 'queued', createdAt);
