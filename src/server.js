@@ -1881,6 +1881,7 @@ const policyExecutionPath = (inboxId, executionId) => path.join('inboxes', inbox
 const signedCasePolicyPath = (inboxId, caseId) => path.join('inboxes', inboxId, 'signed-case-policies', `${caseId}.json`);
 const signedCaseIds = async inboxId => new Set((await store.listJson(path.join('inboxes', inboxId, 'signed-case-policies')))
   .map(envelope => envelope.document?.caseId).filter(Boolean));
+const signedCasePolicyVersionPath = (inboxId, caseId, digest) => path.join('inboxes', inboxId, 'signed-case-policy-versions', caseId, `${digest}.json`);
 const signedCaseApprovalPath = (inboxId, evaluationId) => path.join('inboxes', inboxId, 'signed-case-approvals', `${evaluationId}.json`);
 
 function signedCasePolicyContext(inbox, caseId, agentId = inbox.ownerAgentId) {
@@ -1895,8 +1896,8 @@ function verifySignedOwnerEnvelope(envelope, ownerId, now) {
 }
 
 async function resolveSignedCasePolicy({ inboxId, caseId, agentId }) {
-  if (!caseId) return null;
-  const envelope = await store.getJson(signedCasePolicyPath(inboxId, assertSafeIdentifier(caseId, 'caseId')));
+  if (typeof caseId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(caseId)) return null;
+  const envelope = await store.getJson(signedCasePolicyPath(inboxId, caseId));
   if (!envelope) return null;
   const inbox = await store.getJson(path.join('inboxes', inboxId, 'inbox.json'));
   if (!inbox || inbox.ownerAgentId !== agentId) throw codedError(403, 'SIGNED_POLICY_SCOPE_MISMATCH', 'The signed policy belongs to another agent.');
@@ -6467,7 +6468,10 @@ async function route(req, res) {
         if (envelope.document.version !== (previous?.document?.version ?? 0) + 1 || envelope.document.previousHash !== previousHash) {
           throw codedError(409, 'SIGNED_POLICY_VERSION_CONFLICT', 'The signed policy version changed. Reload the draft.');
         }
-        await store.putJson(location, envelope);
+        await store.putJsonBatch([
+          { path: signedCasePolicyVersionPath(inboxId, caseId, digest), value: envelope },
+          { path: location, value: envelope }
+        ]);
         await writeAudit('case.signed_policy_updated', { caseId, version: envelope.document.version, digest, agentId: envelope.document.agentId });
         return { document: envelope.document, digest };
       });

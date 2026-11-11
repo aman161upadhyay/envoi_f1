@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
-import { evaluatePolicy, valueDigest, verifyDecisionRecord } from '../src/policy-engine.js';
+import { assertExactBinding, createWorkspacePolicy, evaluatePolicy, valueDigest, verifyDecisionRecord } from '../src/policy-engine.js';
 import { casePolicyDisplay, evaluateSignedCaseGrant, requireCasePolicyDocument, requireOwnerSignature } from '../src/signed-case-policy.js';
 
 const nowMs = Date.now();
@@ -47,4 +47,27 @@ test('signed grants match exact resources and can only narrow existing checks', 
   assert.equal(verifyDecisionRecord(binding, { signingKey: input.signingKey }), true);
   assert.equal(verifyDecisionRecord({ ...binding, signedPolicy: { ...binding.signedPolicy, version: 2 } }, { signingKey: input.signingKey }), false);
   assert.equal(evaluatePolicy({ ...input, permissionGranted: false }).decision, 'deny');
+});
+
+test('an opted-in NEAR payment uses exact chain-aware amounts without weakening existing gates', () => {
+  const requestedAction = 'payment.near';
+  const actionPayload = { payee: 'payee.testnet', amount: { units: '500000000000000000000000', unit: 'yoctoNEAR', network: 'near-testnet' } };
+  const signingKey = 'existing-test-key';
+  const input = { id: 'payment', ...context, requestedAction, actionPayload, permissionGranted: true, signingKey,
+    signedGrant: { decision: 'allow', reasonCode: 'ownerSignedGrant', digest: valueDigest(document), version: 1, grantId: 'payment' },
+    now: new Date(nowMs).toISOString()
+  };
+  assert.equal(evaluatePolicy(input).reasonCode, 'consequentialActionsDisabled');
+  const policy = createWorkspacePolicy({ version: 'test', consequentialActionsEnabled: true });
+  const allowed = evaluatePolicy({ ...input, policy });
+  assert.equal(allowed.decision, 'needsHuman');
+  assert.deepEqual(allowed.amount, actionPayload.amount);
+  assert.doesNotThrow(() => assertExactBinding(allowed, { requestedAction, actionPayload, signingKey }));
+  for (const change of [{ units: '500000000000000000000001' }, { network: 'near-mainnet' }]) {
+    const changed = { ...actionPayload, amount: { ...actionPayload.amount, ...change } };
+    assert.throws(() => assertExactBinding(allowed, { requestedAction, actionPayload: changed, signingKey }), /changed after policy evaluation/);
+  }
+  const invalid = evaluatePolicy({ ...input, policy, actionPayload: { ...actionPayload, amount: { ...actionPayload.amount, units: 10 } } });
+  assert.equal(invalid.reasonCode, 'validPaymentAmountRequired');
+  assert.equal(evaluatePolicy({ ...input, policy, permissionGranted: false }).decision, 'deny');
 });

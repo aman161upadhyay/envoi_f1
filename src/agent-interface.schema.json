@@ -74,6 +74,16 @@
         "grantType": { "enum": ["oneTime", "categoryBased", "ongoing"] },
         "effectiveAt": { "$ref": "#/definitions/timestamp" },
         "expiresAt": { "anyOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "signedPolicy": {
+          "type": "object",
+          "required": ["digest", "version", "grantId"],
+          "additionalProperties": false,
+          "properties": {
+            "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "version": { "type": "integer", "minimum": 1 },
+            "grantId": { "type": ["string", "null"] }
+          }
+        },
         "reasonCode": { "type": "string", "minLength": 1 }
       }
     },

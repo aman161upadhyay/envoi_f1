@@ -55,18 +55,29 @@ const normalizedCounterparty = value => {
   return identifier ? `${type}:${identifier}` : '';
 };
 
-export function actionBinding(actionPayload = {}, executeAtToleranceSeconds = 60) {
+function exactNearAmount(source) {
+  const { units, unit, network } = source;
+  if (typeof units !== 'string' || !/^[1-9][0-9]{0,38}$/.test(units) || BigInt(units) >= 2n ** 128n
+    || unit !== 'yoctoNEAR' || !['near-mainnet', 'near-testnet'].includes(network)) return null;
+  return { units, unit, network };
+}
+
+export function actionBinding(actionPayload = {}, executeAtToleranceSeconds = 60, { exactNear = false } = {}) {
   const payload = actionPayload && typeof actionPayload === 'object' && !Array.isArray(actionPayload) ? canonicalValue(actionPayload) : {};
+  const nearPayee = exactNear && typeof payload.payee === 'string' && /^(?=.{2,64}$)[a-z0-9]+(?:[._-][a-z0-9]+)*$/.test(payload.payee)
+    ? payload.payee : null;
   const counterparties = [...new Set([
     ...(Array.isArray(payload.counterparties) ? payload.counterparties : []),
     payload.counterparty,
     payload.recipientEmail,
-    payload.recipientAgentId
+    payload.recipientAgentId,
+    nearPayee
   ].filter(Boolean).map(normalizedCounterparty).filter(Boolean))].sort();
   const amountSource = payload.amount && typeof payload.amount === 'object' ? payload.amount : payload;
   const minorUnits = amountSource.minorUnits ?? amountSource.amountMinor ?? null;
   const currency = amountSource.currency == null ? null : String(amountSource.currency).trim().toUpperCase();
-  const amount = minorUnits == null && currency == null ? null : { minorUnits: Number(minorUnits), currency };
+  const amount = exactNear ? nearPayee && exactNearAmount(amountSource)
+    : minorUnits == null && currency == null ? null : { minorUnits: Number(minorUnits), currency };
   const exactAt = isoInstant(payload.executeAt);
   const explicitNotBefore = isoInstant(payload.executeNotBefore || payload.notBefore);
   const explicitNotAfter = isoInstant(payload.executeNotAfter || payload.notAfter || payload.start);
@@ -144,7 +155,8 @@ export function evaluatePolicy({
   const action = String(requestedAction || '').trim();
   if (!action) throw new Error('A requested action is required');
   const actionClass = signedGrant && action === 'case.appendEvent' ? 'safeInternal' : classifyAction(action);
-  const binding = actionBinding(actionPayload, policy.executeAtToleranceSeconds);
+  const exactNear = action === 'payment.near' && Boolean(signedGrant);
+  const binding = actionBinding(actionPayload, policy.executeAtToleranceSeconds, { exactNear });
   const deadline = isoInstant(caseDeadline);
   const requestedExpiry = isoInstant(requestedExpiresAt);
   const maximumExpiry = new Date(new Date(issuedAt).getTime() + (humanDecisionRequired === true ? 86400 : policy.decisionTtlSeconds) * 1000).toISOString();
@@ -165,8 +177,10 @@ export function evaluatePolicy({
   else if (/^calendar\./.test(action) && calendarConnectorAvailable !== true) result = permissionGranted ? { decision: 'needsHuman', reasonCode: 'calendarConnectorUnavailable' } : result;
   else if (/^calendar\./.test(action) && outsideWorkingHours) result = permissionGranted ? { decision: 'needsHuman', reasonCode: 'outsideWorkingHours' } : result;
   else if (/^(email\.|payment\.|contract\.|asset\.share|external\.)/.test(action) && !binding.counterparties.length) result = denied('counterpartyRequired');
-  else if (/^payment\./.test(action) && (!binding.amount || !Number.isSafeInteger(binding.amount.minorUnits) || binding.amount.minorUnits <= 0 || !/^[A-Z]{3}$/.test(binding.amount.currency || ''))) result = denied('validPaymentAmountRequired');
-  else if (/^payment\./.test(action) && binding.amount.minorUnits > policy.maxPaymentMinorWithoutHuman) result = permissionGranted ? { decision: 'needsHuman', reasonCode: 'paymentExceedsAutomaticLimit' } : result;
+  else if (exactNear && !binding.amount) result = denied('validPaymentAmountRequired');
+  else if (exactNear && permissionGranted) result = { decision: 'needsHuman', reasonCode: 'paymentExceedsAutomaticLimit' };
+  else if (!exactNear && /^payment\./.test(action) && (!binding.amount || !Number.isSafeInteger(binding.amount.minorUnits) || binding.amount.minorUnits <= 0 || !/^[A-Z]{3}$/.test(binding.amount.currency || ''))) result = denied('validPaymentAmountRequired');
+  else if (!exactNear && /^payment\./.test(action) && binding.amount.minorUnits > policy.maxPaymentMinorWithoutHuman) result = permissionGranted ? { decision: 'needsHuman', reasonCode: 'paymentExceedsAutomaticLimit' } : result;
   else if (/^(contract\.|asset\.share|external\.)/.test(action)) result = permissionGranted ? { decision: 'needsHuman', reasonCode: 'consequentialExternalCommitment' } : result;
   if (permissionGranted && result.decision !== 'deny' && humanDecisionRequired === true) result = { decision: 'needsHuman', reasonCode: 'agreementNeedsHumanDecision' };
   if (result.decision !== 'deny' && signedGrant?.decision === 'deny') result = denied(signedGrant.reasonCode);
@@ -233,7 +247,9 @@ export function verifyDecisionChain(records, options = {}) {
 export function assertExactBinding(record, { requestedAction, actionPayload = {}, proposalDigest = null, optionId = null, signingKey = null, keyring = null, at = new Date().toISOString() }) {
   if (!verifyDecisionRecord(record, { signingKey, keyring, requireSigned: Boolean(keyring || signingKey) })) throw Object.assign(new Error('Policy decision record failed integrity verification'), { statusCode: 409 });
   if (record.requestedAction !== requestedAction) throw Object.assign(new Error('Policy decision does not authorize this action'), { statusCode: 403 });
-  const current = actionBinding(actionPayload, record.executionWindow?.toleranceSeconds ?? 60);
+  const current = actionBinding(actionPayload, record.executionWindow?.toleranceSeconds ?? 60, {
+    exactNear: record.requestedAction === 'payment.near' && Boolean(record.signedPolicy)
+  });
   for (const field of ['actionPayloadDigest', 'counterpartyDigest', 'amountDigest', 'executionWindowDigest']) {
     if (record[field] !== current[field]) throw Object.assign(new Error('Action authority binding changed after policy evaluation'), { statusCode: 409 });
   }
