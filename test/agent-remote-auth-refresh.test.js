@@ -294,7 +294,8 @@ for (const backend of backends) {
     const lapsed = await connected(server, docs);
     assertTokenResponse(await refresh(server, lapsed, lapsed.tokens.refresh_token));
     await edit(docs, recoveryParts(lapsed.tokens.refresh_token), value => { value.expiresAt = PAST; });
-    assert.equal(await reapAgentRotationRecovery(store), 1);
+    // PostgreSQL is shared by the suite and can contain other expired envelopes.
+    assert.ok(await reapAgentRotationRecovery(store) >= 1);
     assert.equal(await docs.get(recoveryParts(lapsed.tokens.refresh_token)), null);
     assert.ok(await docs.get(recoveryParts(live.tokens.refresh_token)), 'a live envelope is kept');
   });

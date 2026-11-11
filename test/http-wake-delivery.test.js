@@ -10,6 +10,7 @@ import { FileStore } from '../src/storage.js';
 import { PostgresStore } from '../src/postgres-storage.js';
 import { wakeQueueDir, wakeSubscriptionIndexPath, wakeSubscriptionPath } from '../src/http-wake-paths.js';
 import { claim, dataFile, eventually, launch, owner, pauseAgent, readData, resumeAgent, send, sleep, waitForMessageStatus, writeData } from './a3-harness.js';
+import { freshOwner } from './agent-remote-auth-token-harness.js';
 
 const key = crypto.generateKeyPairSync('ed25519').privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64');
 const enabled = { ENVOI_INSTALLATIONS_V2: 'true', ENVOI_HTTP_WAKE_V1: 'true', ENVOI_WAKE_SIGNING_KEYS: JSON.stringify([{ kid: 'delivery-tests', privateKey: key, activeFrom: '2026-01-01T00:00:00.000Z' }]) };
@@ -61,7 +62,7 @@ for (const backend of ['FileStore', 'PostgreSQL']) {
     t.after(() => server.stop());
     const store = databaseUrl ? new PostgresStore(databaseUrl) : new FileStore(server.dataDir);
     if (databaseUrl) t.after(() => store.close());
-    const [alice, bob] = await Promise.all([owner(server.baseUrl, '9610'), owner(server.baseUrl, '9611')]);
+    const [alice, bob] = await Promise.all([freshOwner(server), freshOwner(server)]);
     const sent = await send(server.baseUrl, alice, bob, { text: 'Recover an unread delivery' });
     assert.equal(sent.status, 202, sent.text);
     const messageId = sent.payload.id;
@@ -95,7 +96,7 @@ for (const backend of ['FileStore', 'PostgreSQL']) {
     t.after(() => server.stop());
     const store = databaseUrl ? new PostgresStore(databaseUrl) : new FileStore(server.dataDir);
     if (databaseUrl) t.after(() => store.close());
-    const [alice, bob] = await Promise.all([owner(server.baseUrl, '9612'), owner(server.baseUrl, '9613')]);
+    const [alice, bob] = await Promise.all([freshOwner(server), freshOwner(server)]);
     const sent = await send(server.baseUrl, alice, bob, { text: 'Recover an expired lease' });
     assert.equal(sent.status, 202, sent.text);
     const messageId = sent.payload.id;
