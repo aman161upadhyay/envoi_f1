@@ -62,3 +62,15 @@ describe('message highlights', () => {
     }
   });
 });
+
+describe('HighlightSummary', () => {
+  it('renders chips for the pushy message and nothing for routine text', async () => {
+    const { createElement } = await import('react');
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { HighlightSummary } = await import('../src/HighlightedText');
+    const pushy = renderToStaticMarkup(createElement(HighlightSummary, { text: messageText('conversation_ledger_invoice', 'evt_inv_5') }));
+    expect(pushy).toContain('need your decision');
+    expect(pushy).toContain('worth a look');
+    expect(renderToStaticMarkup(createElement(HighlightSummary, { text: 'Thanks, see you Tuesday.' }))).toBe('');
+  });
+});

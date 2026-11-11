@@ -86,3 +86,18 @@
 .app-shell .conversation-day span { padding: 3px 12px; border: 1px solid var(--lx-line); border-radius: var(--lx-radius-pill); background: var(--lx-paper); font-size: 12px; font-weight: 600; color: var(--lx-ink-2); }
 .app-shell .mine .message-content { align-items: flex-start; }
 .app-shell .mine .message-meta { justify-content: flex-start; }
+
+.app-shell .hl-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+.app-shell .hl-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: var(--lx-radius-pill); font: 500 12px/1 var(--lx-sans); cursor: pointer; transition: transform var(--lx-fast) var(--lx-ease), background-color var(--lx-fast) var(--lx-ease); }
+.app-shell .hl-chip::before { content: ""; width: 7px; height: 7px; border-radius: 2px; transform: rotate(45deg); }
+.app-shell .hl-chip-blocking { background: var(--lx-gold-soft); border: 1px solid var(--lx-gold-line); color: var(--lx-gold-ink); }
+.app-shell .hl-chip-blocking::before { background: var(--lx-gold); }
+.app-shell .hl-chip-review { background: var(--lx-green-soft); border: 1px solid var(--lx-green-line); color: var(--lx-green-ink); }
+.app-shell .hl-chip-review::before { background: #9ad78f; }
+.app-shell .hl-chip:active { transform: scale(.97); }
+
+.app-shell .conversation-event { display: flex; align-items: center; gap: 10px; max-width: none; margin: 10px 0; padding: 8px 12px 8px 60px; font-size: 13px; color: var(--lx-ink-2); text-align: left; }
+.app-shell .conversation-event svg { width: 24px; height: 24px; padding: 5px; border-radius: 8px; background: var(--lx-paper); border: 1px solid var(--lx-line); color: var(--lx-ink-3); flex: none; }
+.app-shell .conversation-event time { margin-left: auto; font-size: 12px; color: var(--lx-ink-3); }
+.app-shell .conversation-event.needs-you { margin-left: 48px; padding-left: 12px; border: 1px solid var(--lx-gold-line); background: var(--lx-gold-soft); border-radius: var(--lx-radius-card); color: var(--lx-gold-ink); font-weight: 500; }
+.app-shell .conversation-event.needs-you svg { color: var(--lx-gold); border-color: var(--lx-gold-line); }
