@@ -1296,8 +1296,9 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
     }
   }
 
-  const hasOpenDecision = !isGroup && Boolean(workCase.schemaVersion) && !['completed', 'expired', 'revoked'].includes(state);
-  const canAct = canManageInbox && hasOpenDecision;
+  const canReviewGroupMessage = isGroup && workCase.decision?.signedApprovalRequired && workCase.decision.requestedAction === 'group.message.send';
+  const hasOpenDecision = (!isGroup || canReviewGroupMessage) && Boolean(workCase.schemaVersion) && !['completed', 'expired', 'revoked'].includes(state);
+  const canAct = canManageInbox && !isGroup && hasOpenDecision;
   const decisionRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [decisionHidden, setDecisionHidden] = useState(false);

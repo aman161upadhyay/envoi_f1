@@ -1784,15 +1784,53 @@ async function groupSnapshotAllowed(identity, caseId) {
   return true;
 }
 
-async function requireGroupMessageGrant(binding, identity, { text, inReplyTo, assignees }) {
+const groupApprovalsPath = (inboxId, caseId) => path.join('inboxes', inboxId, 'group-message-approvals', caseId);
+const groupApprovalPath = (inboxId, caseId, id) => path.join(groupApprovalsPath(inboxId, caseId), `${id}.json`);
+const groupRecipients = (binding, agentId) => binding.agentIds.filter(id => id !== agentId);
+const groupApprovalStale = () => codedError(409, 'SIGNED_APPROVAL_STALE', 'The group message approval is no longer current.');
+
+function groupApprovalDocument(draft) {
+  return signedApprovalDocument({
+    id: draft.id, workspaceId: draft.inboxId, caseId: draft.caseId, agentId: draft.agentId,
+    requestedAction: 'group.message.send', actionPayload: draft.target, recordDigest: valueDigest(draft),
+    signedPolicy: { digest: draft.policyDigest, version: draft.policyVersion },
+    effectiveAt: draft.createdAt, expiresAt: draft.expiresAt
+  }, draft.ownerId);
+}
+
+async function assertCurrentGroupApproval(draft, binding, identity, policy) {
+  if (!groupMember(binding, identity) || draft.agentId !== identity.agent.id || draft.inboxId !== identity.inboxId
+    || draft.caseId !== binding.caseId || draft.expiresAt <= store.now()
+    || valueDigest(draft.target.recipientAgentIds) !== valueDigest(groupRecipients(binding, identity.agent.id))) throw groupApprovalStale();
+  const active = policy || await resolveSignedCasePolicy({ inboxId: draft.inboxId, caseId: draft.caseId, agentId: draft.agentId });
+  const grant = evaluateSignedCaseGrant(active, 'group.message.send', draft.target);
+  if (grant?.decision !== 'needsHuman' || grant.digest !== draft.policyDigest || active.document.ownerId !== draft.ownerId) throw groupApprovalStale();
+  return groupApprovalDocument(draft);
+}
+
+async function requireGroupMessageGrant(binding, identity, target, messageId, requestHash, writeAudit) {
   const policy = await resolveSignedCasePolicy({ inboxId: identity.inboxId, caseId: binding.caseId, agentId: identity.agent.id });
-  const grant = evaluateSignedCaseGrant(policy, 'group.message.send', {
-    text, inReplyTo, assigneeAgentIds: assignees,
-    recipientAgentIds: binding.agentIds.filter(id => id !== identity.agent.id)
-  });
-  if (!grant || grant.decision === 'allow') return;
-  if (grant.decision === 'needsHuman') throw codedError(409, 'SIGNED_GROUP_APPROVAL_REQUIRED', 'The signed case policy requires owner approval for this group message.');
-  throw codedError(403, 'SIGNED_GROUP_MESSAGE_DENIED', 'The signed case policy does not grant this group message.');
+  const location = groupApprovalPath(identity.inboxId, binding.caseId, messageId);
+  const request = await store.getJson(location);
+  const grant = evaluateSignedCaseGrant(policy, 'group.message.send', target);
+  if (request) {
+    if (request.draft.requestHash !== requestHash || valueDigest(request.draft.target) !== valueDigest(target)) throw nativeIdempotencyConflict();
+    const expected = await assertCurrentGroupApproval(request.draft, binding, identity, policy);
+    if (!request.approval) return { pendingApproval: messageId };
+    if (request.consumedAt || valueDigest(request.approval.document) !== valueDigest(expected)) throw groupApprovalStale();
+    await verifySignedOwnerEnvelope(request.approval, request.draft.ownerId, store.now());
+    return { approved: { location, request } };
+  }
+  if (!grant || grant.decision === 'allow') return {};
+  if (grant.decision !== 'needsHuman') throw codedError(403, 'SIGNED_GROUP_MESSAGE_DENIED', 'The signed case policy does not grant this group message.');
+  const createdAt = store.now();
+  const expiresAt = new Date(Math.min(Date.parse(grant.expiresAt), Date.parse(createdAt) + 10 * 60_000)).toISOString();
+  const draft = { id: messageId, inboxId: identity.inboxId, caseId: binding.caseId, agentId: identity.agent.id,
+    ownerId: policy.document.ownerId, requestHash, target, policyDigest: grant.digest,
+    policyVersion: grant.version, createdAt, expiresAt };
+  await store.putJson(location, { draft, createdAt });
+  await writeAudit('group.approval_requested', { caseId: binding.caseId, agentId: identity.agent.id, approvalId: messageId }, createdAt);
+  return { pendingApproval: messageId };
 }
 
 async function verifyGroupMembers(members, assignees = []) {
@@ -1826,6 +1864,8 @@ async function verifyGroupMembers(members, assignees = []) {
 
 async function writeGroupMessage(binding, identity, input, messageId, writeAudit) {
   if (!groupMember(binding, identity)) throw codedError(404, 'GROUP_CASE_NOT_FOUND', 'Group case not found.');
+  const currentBinding = await store.getJson(caseBindingPath(binding.caseId));
+  if (valueDigest(currentBinding) !== valueDigest(binding)) throw codedError(409, 'GROUP_MEMBER_CHANGED', 'Group membership changed. Retry.');
   if (!canAct(identity.agent, 'send_agent_messages')) throw codedError(403, 'INSUFFICIENT_SCOPE', 'Message send permission required.');
   const { text, inReplyTo = null, assigneeAgentIds = [] } = input;
   if (typeof text !== 'string' || !text.trim() || text.length > 16000
@@ -1846,10 +1886,12 @@ async function writeGroupMessage(binding, identity, input, messageId, writeAudit
     if (previous.requestHash !== requestHash) throw nativeIdempotencyConflict();
     return { message: previous.message, replayed: true };
   }
-  await requireGroupMessageGrant(binding, identity, { text, inReplyTo, assignees });
   if (inReplyTo !== null && !value.events.some(event => event.type === 'message' && event.payload?.id === inReplyTo)) {
     throw codedError(404, 'GROUP_REPLY_NOT_FOUND', 'Reply target is not in this group case.');
   }
+  const target = { text, inReplyTo, assigneeAgentIds: assignees, recipientAgentIds: groupRecipients(binding, identity.agent.id) };
+  const { pendingApproval, approved } = await requireGroupMessageGrant(binding, identity, target, messageId, requestHash, writeAudit);
+  if (pendingApproval) return { pendingApproval };
   const screened = screenNativeMessage ? await screenNativeMessage({ type: 'message', intent: 'message',
     text, content: [{ type: 'text', text }] }) : null;
   const at = store.now();
@@ -1862,6 +1904,7 @@ async function writeGroupMessage(binding, identity, input, messageId, writeAudit
   value.updatedAt = at;
   const documents = [
     document(requestPath, { requestHash, message }),
+    ...(approved ? [document(approved.location, { ...approved.request, consumedAt: at })] : []),
     ...(screened ? [screeningReceiptDocument({ ...message, senderInboxId: identity.inboxId }, screened.evidence, at)] : []),
     document(sharedCasePath(caseId), value),
     ...binding.inboxIds.map(inboxId => document(caseRecordPath(inboxId, caseId), value))
@@ -1923,6 +1966,10 @@ async function handleGroupCaseRoute(req, res, route) {
     const result = await withInboxMutation(identity.inboxId, async writeAudit =>
       writeGroupMessage(binding, await freshIdentity(), input, messageId, writeAudit),
     binding.inboxIds, [caseMutationKey(caseId)]);
+    if (result.pendingApproval) {
+      return json(res, 409, { code: 'SIGNED_GROUP_APPROVAL_REQUIRED', error: 'SIGNED_GROUP_APPROVAL_REQUIRED', approvalId: result.pendingApproval,
+        message: 'The signed case policy requires owner approval for this group message. Retry with the same idempotency key after approval.' });
+    }
     return json(res, result.replayed ? 200 : 201, result.message);
   }
   if (!Array.isArray(input.memberAddresses) || input.memberAddresses.length < 2 || input.memberAddresses.length > 19
@@ -2948,7 +2995,17 @@ async function humanView(inboxId, inbox, cursors = {}, { includeOwnerReviews = f
           ? { signedApprovalRequired: true } : {}),
         requestedAction: 'message.reply', grantType: 'oneTime', expiresAt: request.expiresAt, availableActions: ['approveOnce', 'decline']
       };
-    } else if (includeSignedOwnerReviews && item.caseMode !== 'group') {
+    } else if (includeSignedOwnerReviews && item.caseMode === 'group') {
+      const envelope = await store.getJson(signedCasePolicyPath(inboxId, item.id));
+      if (envelope?.document?.expiresAtMs > Date.parse(at)) {
+        const digest = valueDigest(envelope.document);
+        const requests = await store.queryJson(groupApprovalsPath(inboxId, item.id), { limit: 100, sortField: 'createdAt' });
+        const pending = requests.find(entry => !entry.approval && entry.draft.policyDigest === digest && entry.draft.expiresAt > at);
+        if (pending) decision = { question: 'Review and sign this group message', policyEvaluationId: pending.draft.id,
+          signedApprovalRequired: true, requestedAction: 'group.message.send', grantType: 'oneTime',
+          expiresAt: pending.draft.expiresAt, availableActions: ['approveOnce'] };
+      }
+    } else if (includeSignedOwnerReviews) {
       const candidates = item.policyEvaluations.filter(evaluation => evaluation.actor === inbox.ownerAgentId
         && evaluation.signedPolicy && evaluation.decision === 'needsHuman' && evaluation.expiresAt > at
         && /^(asset\.(?:read|upload|share|edit)|payment\.near)$/.test(evaluation.requestedAction));
@@ -3869,10 +3926,10 @@ async function sendCaseToolMessage(ctx, { id, type, intent, text, payload = null
     const binding = await store.getJson(caseBindingPath(session.caseId));
     try {
       const result = await writeGroupMessage(binding, { inboxId: session.inboxId, agent: ctx.agent }, { text, inReplyTo, assigneeAgentIds }, id, ctx.writeAudit);
-      return { ...result.message, status: 'delivered' };
+      return result.pendingApproval ? { awaitingOwnerApproval: true } : { ...result.message, status: 'delivered' };
     } catch (error) {
       if (error.code === 'SIGNED_GROUP_MESSAGE_DENIED') throw caseToolError('AUTHORITY_DENIED');
-      if (error.code === 'SIGNED_GROUP_APPROVAL_REQUIRED') throw caseToolError('AUTHORITY_PENDING');
+      if (error.code === 'SIGNED_APPROVAL_STALE') throw caseToolError('AUTHORITY_CHANGED');
       throw error;
     }
   }
@@ -6718,11 +6775,21 @@ async function route(req, res) {
       passkey: signedPolicyRpId && signedPolicyOrigins.length ? { rpId: signedPolicyRpId, origins: signedPolicyOrigins } : null };
     if (req.method === 'GET' && rawEvaluationId) {
       const evaluationId = assertSafeIdentifier(rawEvaluationId, 'policyEvaluationId');
-      if (!value.policyEvaluations.some(item => item.id === evaluationId && item.decision === 'needsHuman')) {
-        return fail(res, 404, 'Pending policy evaluation not found.');
+      let document;
+      if (value.caseMode === 'group') {
+        const approval = await store.getJson(groupApprovalPath(inboxId, caseId, evaluationId));
+        if (!approval || approval.draft.ownerId !== human.id) return fail(res, 404, 'Pending group message not found.');
+        if (approval.approval || value.state !== 'inProgress') throw groupApprovalStale();
+        const binding = await store.getJson(caseBindingPath(caseId));
+        await verifyGroupMembers(binding.members, approval.draft.target.assigneeAgentIds);
+        document = await assertCurrentGroupApproval(approval.draft, binding, { inboxId, agent: { id: inbox.ownerAgentId } });
+      } else {
+        if (!value.policyEvaluations.some(item => item.id === evaluationId && item.decision === 'needsHuman')) {
+          return fail(res, 404, 'Pending policy evaluation not found.');
+        }
+        const binding = await store.getJson(policyBindingPath(inboxId, evaluationId));
+        document = await currentSignedApprovalDocument(inbox, value, binding);
       }
-      const binding = await store.getJson(policyBindingPath(inboxId, evaluationId));
-      const document = await currentSignedApprovalDocument(inbox, value, binding);
       return json(res, 200, { document, signing, display: [
         `Approve ${document.action} once for agent ${document.agentId}.`,
         `Case ${document.caseId}. Signed policy version ${document.policyVersion}.`,
@@ -6887,6 +6954,45 @@ async function route(req, res) {
     const principal = await getAgentPrincipal(req, inboxId);
     const humanCanManage = human ? await canManageInbox(human, inbox) : false;
     if (!humanCanManage && (!principal || !canAct(principal, 'execute_cases'))) return fail(res, 403, 'Workspace administrator or agent credential with execute_cases permission required');
+    const caseId = caseRoute[1];
+    if ((await store.getJson(caseBindingPath(caseId)))?.mode === 'group' && input.actionKey === 'approveOnce') {
+      if (!humanCanManage || human.id !== inbox.ownerHumanId) return fail(res, 403, 'The authenticated inbox owner is required.');
+      const approvalId = assertSafeIdentifier(input.externalRefs?.policyEvaluationId, 'policyEvaluationId');
+      const response = await withCaseMutation(inboxId, caseId, async writeAudit => {
+        const currentHuman = await auth.getHuman(req);
+        const currentInbox = await store.getJson(path.join('inboxes', inboxId, 'inbox.json'));
+        if (!currentInbox || currentHuman?.id !== currentInbox.ownerHumanId
+          || !await canManageInbox(currentHuman, currentInbox, { maxAgeMs: 0 })) {
+          throw codedError(403, 'SIGNED_POLICY_OWNER_REQUIRED', 'The authenticated inbox owner is required.');
+        }
+        const binding = await store.getJson(caseBindingPath(caseId));
+        const value = await getCase(inboxId, caseId);
+        if (binding?.mode !== 'group' || value?.state !== 'inProgress') throw groupApprovalStale();
+        const location = groupApprovalPath(inboxId, caseId, approvalId);
+        const request = await store.getJson(location);
+        if (!request || request.draft.ownerId !== currentHuman.id) throw codedError(404, 'GROUP_APPROVAL_NOT_FOUND', 'Pending group message not found.');
+        const agent = await store.getJson(path.join('inboxes', inboxId, 'agents', `${currentInbox.ownerAgentId}.json`));
+        if (!canAct(agent, 'send_agent_messages')) throw groupApprovalStale();
+        await verifyGroupMembers(binding.members, request.draft.target.assigneeAgentIds);
+        const expected = await assertCurrentGroupApproval(request.draft, binding, { inboxId, agent });
+        const approval = input.signedApproval;
+        if (!approval?.document || valueDigest(approval.document) !== valueDigest(expected)) {
+          throw codedError(403, 'OWNER_SIGNATURE_REQUIRED', 'A device signature for this exact group message is required.');
+        }
+        const signedApprovalDigest = await verifySignedOwnerEnvelope(approval, currentHuman.id, store.now());
+        const action = { id: approvalId, actionKey: 'approveOnce', actor: currentHuman.id, outcome: 'ok' };
+        if (request.approval) {
+          if (request.idempotencyKey !== idempotencyKey || valueDigest(request.approval) !== valueDigest(approval)) {
+            throw codedError(409, 'SIGNED_APPROVAL_ALREADY_RECORDED', 'This group message already has an owner approval.');
+          }
+          return { replay: true, action };
+        }
+        await store.putJson(location, { ...request, approval, idempotencyKey });
+        await writeAudit('group.approval_recorded', { caseId, agentId: agent.id, approvalId, signedApprovalDigest });
+        return { replay: false, action };
+      }, { allowGroup: true });
+      return json(res, response.replay ? 200 : 201, response);
+    }
     const response = await withCaseMutation(inboxId, caseRoute[1], async writeAudit => {
       const currentHuman = humanCanManage ? await auth.getHuman(req) : null;
       if (humanCanManage && (!currentHuman || currentHuman.id !== human.id || !await canManageInbox(currentHuman, inbox))) throw Object.assign(new Error('Authenticated workspace administrator required'), { statusCode: 403 });

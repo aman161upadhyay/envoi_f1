@@ -17,6 +17,7 @@ export const WORKSPACE_EVENT_TYPES = [
   'case.human_decision_requested', 'case.human_decision_resolved',
   'case.marked_sensitive', 'case.signed_policy_updated',
   'group.case_created', 'group.message_posted', 'group.assignment_updated',
+  'group.approval_requested', 'group.approval_recorded',
   'agent.case_tool_used',
   'agent.wake_subscription_created', 'agent.wake_subscription_activated', 'agent.wake_subscription_ended',
   'agent.wake_target_secret_set', 'agent.wake_target_attention',

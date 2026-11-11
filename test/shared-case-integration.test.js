@@ -479,7 +479,7 @@ test('three agents chat and settle independent assignments under legacy and owne
     const issuedAtMs = Date.now();
     const result = await api(server.baseUrl, `${ownerPolicyRoute(member)}/preview`, { session: member.session,
       body: { schema: 'envoi.case-policy/v1', workspaceId, caseId, ownerId, agentId, version, previousHash,
-        issuedAtMs, expiresAtMs: issuedAtMs + 60_000, grants } });
+        issuedAtMs, expiresAtMs: issuedAtMs + 600_000, grants } });
     assert.equal(result.status, 200, JSON.stringify(result.payload));
     return result.payload.document;
   };
@@ -512,7 +512,32 @@ test('three agents chat and settle independent assignments under legacy and owne
   assert.equal((await call(carol, route)).status, 200);
   assert.equal((await post(alice, { ...assignInput, assigneeAgentIds: [carol.agent.id] })).payload.code, 'SIGNED_GROUP_MESSAGE_DENIED');
   assert.equal((await post(alice, { ...assignInput, text: 'Changed after signing' })).payload.code, 'SIGNED_GROUP_MESSAGE_DENIED');
-  assert.equal((await post(alice, { text: 'Owner review required.', idempotencyKey: 'signed-group-review' })).payload.code, 'SIGNED_GROUP_APPROVAL_REQUIRED');
+  const reviewInput = { text: 'Owner review required.', idempotencyKey: 'signed-group-review' };
+  const review = await post(alice, reviewInput);
+  assert.equal(review.status, 409, JSON.stringify(review.payload));
+  assert.equal(review.payload.code, 'SIGNED_GROUP_APPROVAL_REQUIRED');
+  assert.equal((await post(alice, reviewInput)).payload.approvalId, review.payload.approvalId);
+  assert.ok(!(await call(carol, route)).payload.messages.some(message => message.text === reviewInput.text));
+  const ownerCase = member => `/api/inboxes/${member.inbox.id}/cases/${caseId}`;
+  const approvalPreview = (member, id) => api(server.baseUrl, `${ownerCase(member)}/signed-approval/${id}`, { session: member.session });
+  const signAction = (member, approvalId, signedApproval, key) => api(server.baseUrl, `${ownerCase(member)}/actions`, {
+    session: member.session, key, body: { actionKey: 'approveOnce', externalRefs: { policyEvaluationId: approvalId }, signedApproval }
+  });
+  assert.equal((await approvalPreview(bob, review.payload.approvalId)).status, 404);
+  const approvalView = await api(server.baseUrl, `/api/inboxes/${alice.inbox.id}/human-view`, { session: alice.session });
+  assert.equal(approvalView.payload.caseQueue.find(item => item.id === caseId).decision.policyEvaluationId, review.payload.approvalId);
+  const approvalDraft = await approvalPreview(alice, review.payload.approvalId);
+  assert.equal(approvalDraft.status, 200, JSON.stringify(approvalDraft.payload));
+  const approval = approvalDraft.payload.document;
+  assert.deepEqual(approval.target, messageGrant(alice, 'needs-review', reviewInput.text).target);
+  assert.equal((await signAction(bob, review.payload.approvalId, signers.get(bob)(approval), 'group-other-owner')).status, 404);
+  assert.equal((await signAction(alice, review.payload.approvalId, signers.get(alice)({ ...approval,
+    target: { ...approval.target, recipientAgentIds: [bob.agent.id] } }), 'group-tampered')).status, 403);
+  const signedApproval = signers.get(alice)(approval);
+  assert.equal((await signAction(alice, review.payload.approvalId, signedApproval, 'group-approve')).status, 201);
+  assert.equal((await signAction(alice, review.payload.approvalId, signedApproval, 'group-approve')).status, 200);
+  assert.equal((await signAction(alice, review.payload.approvalId, signedApproval, 'group-different-approval-key')).status, 409);
+  assert.equal((await post(alice, { ...reviewInput, text: 'Edited approved message' })).status, 409);
   const authorized = await post(alice, assignInput);
   assert.equal(authorized.status, 201, JSON.stringify(authorized.payload));
   assert.equal((await claim(bob)).payload.work, null);
@@ -521,17 +546,36 @@ test('three agents chat and settle independent assignments under legacy and owne
   assert.equal(bobEvents.status, 200, JSON.stringify(bobEvents.payload));
   assert.ok(!bobEvents.payload.events.some(event => event.groupCase && event.caseId === caseId));
   const replyText = 'The scope matches.';
-  await save(bob, [snapshotGrant, messageGrant(bob, 'reply', replyText, [], authorized.payload.id)]);
+  await save(bob, [snapshotGrant, messageGrant(bob, 'reply', replyText, [], authorized.payload.id, 'needsHuman')]);
   const bobSignedWork = await claimAssignment(bob);
   const bobSignedSession = await mint(bob, bobSignedWork);
   const wrongReply = await tool(bobSignedSession.token, 'envoi_case_reply', {
     text: 'Different result', idempotencyKey: 'signed-group-reply'
   }, { allowError: true });
   assert.equal(wrongReply.code, 'AUTHORITY_DENIED', JSON.stringify(wrongReply));
+  const waiting = await tool(bobSignedSession.token, 'envoi_case_reply', {
+    text: replyText, idempotencyKey: 'signed-group-reply'
+  }, { allowError: true });
+  assert.equal(waiting.code, 'AUTHORITY_PENDING', JSON.stringify(waiting));
+  const bobApprovalView = await api(server.baseUrl, `/api/inboxes/${bob.inbox.id}/human-view`, { session: bob.session });
+  const bobApprovalId = bobApprovalView.payload.caseQueue.find(item => item.id === caseId).decision.policyEvaluationId;
+  const bobApproval = await approvalPreview(bob, bobApprovalId);
+  assert.equal(bobApproval.status, 200, JSON.stringify(bobApproval.payload));
+  assert.equal((await signAction(bob, bobApprovalId, signers.get(bob)(bobApproval.payload.document), 'group-approve-bob')).status, 201);
   const correctReply = await tool(bobSignedSession.token, 'envoi_case_reply', { text: replyText, idempotencyKey: 'signed-group-reply' });
   assert.equal(correctReply.ok, true, JSON.stringify(correctReply));
   const finalTimeline = await call(carol, route);
   assert.deepEqual(finalTimeline.payload.messages.slice(5).map(message => message.text), [assignText, replyText]);
   assert.deepEqual(finalTimeline.payload.messages[5].assigneeAgentIds, [bob.agent.id]);
   assert.ok([200, 201].includes((await settle(bob, bobSignedWork)).status));
+  const approvedSend = await post(alice, reviewInput);
+  assert.equal(approvedSend.status, 201, JSON.stringify(approvedSend.payload));
+  assert.equal((await post(alice, reviewInput)).status, 200);
+  const another = await post(alice, { ...reviewInput, idempotencyKey: 'signed-group-second-review' });
+  assert.equal(another.status, 409);
+  assert.notEqual(another.payload.approvalId, review.payload.approvalId);
+  await save(alice, [snapshotGrant, messageGrant(alice, 'needs-review', reviewInput.text, [], null, 'needsHuman')]);
+  assert.equal((await approvalPreview(alice, another.payload.approvalId)).status, 409);
+  assert.equal((await post(alice, { ...reviewInput, idempotencyKey: 'signed-group-second-review' })).payload.code, 'SIGNED_APPROVAL_STALE');
+  assert.equal((await call(carol, route)).payload.messages.filter(message => message.text === reviewInput.text).length, 1);
 });

@@ -105,6 +105,7 @@ export function createCaseTools({ store, codec, withSession, load, send, evaluat
       }
       const message = await send(ctx, { id, type: 'message', intent: args.intent, text: args.text, inReplyTo: target.id,
         ...(args.assigneeAgentIds?.length ? { assigneeAgentIds: args.assigneeAgentIds } : {}) });
+      if (message.awaitingOwnerApproval) return message;
       const group = Boolean(ctx.workMessage.groupCase);
       return { messageRef: refs(ctx, 'm', message.id), status: group || ctx.session.workKind === 'human_instruction' ? 'delivered' : 'queued',
         recipient: group ? { kind: 'group' } : ctx.session.counterparty, inReplyTo: refs(ctx, 'm', target.id), createdAt: message.createdAt, replayed: false };
@@ -223,6 +224,7 @@ export function createCaseTools({ store, codec, withSession, load, send, evaluat
           if (tool.writes && ['completed', 'failed', 'expired'].includes(ctx.caseRecord.state)) throw caseToolError('CASE_CLOSED');
           const id = `msg_tool_${valueDigest([ctx.agent.id, ctx.session.workId, tool.name, args.idempotencyKey]).slice(0, 40)}`;
           const result = await methods[tool.name](ctx, args, id);
+          if (result.awaitingOwnerApproval) return failure(tool.name, 'AUTHORITY_PENDING');
           if (tool.writes) {
             await store.putJson(keyPath, { digest, result, createdAt: store.now() });
             await ctx.writeAudit('agent.case_tool_used', { agentId: ctx.agent.id, caseId: ctx.session.caseId, workId: ctx.session.workId, tool: tool.name, idempotencyKeyHash: valueDigest(args.idempotencyKey) });
