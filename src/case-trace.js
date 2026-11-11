@@ -5,12 +5,13 @@ import { canonicalValue, valueDigest } from './policy-engine.js';
 const tracedTypes = new Set([
   'case.marked_sensitive', 'case.signed_policy_updated', 'policy.evaluated', 'policy.re_evaluated',
   'case.action_recorded', 'case.human_decision_requested', 'case.human_decision_resolved',
-  'asset.granted', 'asset.revision_published', 'message.private_screened', 'payment.confirmed'
+  'asset.granted', 'asset.scan_clean', 'message.private_screened', 'payment.confirmed'
 ]);
 const publicFields = [
   'actor', 'agentId', 'actorAgentId', 'recipientAgentId', 'requestedAction', 'actionKey',
   'policyEvaluationId', 'policyExecutionId', 'digest', 'version', 'grantId', 'reasonCode',
-  'decision', 'outcome', 'requestId', 'actionId', 'assetId', 'receiptDigest', 'txRef'
+  'decision', 'outcome', 'requestId', 'actionId', 'assetId', 'createdByAgentId', 'messageId',
+  'receiptDigest', 'txRef', 'payee', 'amount', 'network'
 ];
 const root = 'case-trace';
 export const traceQueue = path.join(root, 'queue');

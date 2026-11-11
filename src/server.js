@@ -6612,7 +6612,8 @@ async function route(req, res) {
         const confirmed = { ...payment, outcome, confirmedAt: store.now() };
         await store.putJson(location, confirmed);
         await writeAudit('payment.confirmed', { caseId, agentId: principal.id, policyEvaluationId: payment.policyEvaluationId,
-          actionId: payment.id, txRef: outcome.txRef, outcome: outcome.status, reasonCode: outcome.reason ?? null });
+          actionId: payment.id, txRef: outcome.txRef, outcome: outcome.status, reasonCode: outcome.reason ?? null,
+          payee: outcome.to, amount: outcome.amount, network: payment.instruction.network });
         return { status: 200, payment: confirmed };
       }
       const evaluationId = assertSafeIdentifier(input.policyEvaluationId, 'policyEvaluationId');
