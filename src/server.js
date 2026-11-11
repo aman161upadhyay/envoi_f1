@@ -2889,7 +2889,7 @@ async function participantDirectoryForHuman(inbox, agents, cases) {
   return Object.fromEntries(entries);
 }
 
-async function humanView(inboxId, inbox, cursors = {}, { includeOwnerReviews = false } = {}) {
+async function humanView(inboxId, inbox, cursors = {}, { includeOwnerReviews = false, includeSignedOwnerReviews = false } = {}) {
   const [agents, calendarConnectors, page] = await Promise.all([
     store.listJson(path.join('inboxes', inboxId, 'agents')),
     store.listJson(path.join('inboxes', inboxId, 'calendar-connectors')),
@@ -2917,18 +2917,37 @@ async function humanView(inboxId, inbox, cursors = {}, { includeOwnerReviews = f
     }
   }
   for (const item of projection.cases) {
+    if (['completed', 'failed', 'expired', 'revoked', 'paused'].includes(item.state)) continue;
     const request = pendingReviews.get(item.id);
-    if (!request || ['completed', 'failed', 'expired', 'revoked', 'paused'].includes(item.state)) continue;
+    let decision;
+    if (request) {
+      decision = {
+        question: `Review the proposed reply: ${request.proposedReply}`, policyEvaluationId: request.policyEvaluationId,
+        ...(item.policyEvaluations.some(evaluation => evaluation.id === request.policyEvaluationId && evaluation.signedPolicy)
+          ? { signedApprovalRequired: true } : {}),
+        requestedAction: 'message.reply', grantType: 'oneTime', expiresAt: request.expiresAt, availableActions: ['approveOnce', 'decline']
+      };
+    } else if (includeSignedOwnerReviews && item.caseMode !== 'group') {
+      const candidates = item.policyEvaluations.filter(evaluation => evaluation.actor === inbox.ownerAgentId
+        && evaluation.signedPolicy && evaluation.decision === 'needsHuman' && evaluation.expiresAt > at
+        && /^(asset\.(?:read|upload|share|edit)|payment\.near)$/.test(evaluation.requestedAction));
+      if (candidates.length) {
+        const envelope = await store.getJson(signedCasePolicyPath(inboxId, item.id));
+        const digest = envelope?.document?.expiresAtMs > Date.parse(at) ? valueDigest(envelope.document) : null;
+        const pending = candidates.reverse().find(evaluation => evaluation.signedPolicy.digest === digest &&
+          !item.events.some(event => event.type === 'humanAction'
+            && event.payload?.action?.externalRefs?.policyEvaluationId === evaluation.id));
+        if (pending) decision = { question: 'Review and sign this action', policyEvaluationId: pending.id,
+          signedApprovalRequired: true, requestedAction: pending.requestedAction, grantType: 'oneTime',
+          expiresAt: pending.expiresAt, availableActions: ['approveOnce'] };
+      }
+    }
+    if (!decision) continue;
     if (item.bucket !== 'needsMe') {
       projection.counts[item.bucket]--;
       projection.counts.needsMe++;
     }
-    Object.assign(item, { bucket: 'needsMe', needsAttention: true, nextActor: 'Owner review required', decision: {
-      question: `Review the proposed reply: ${request.proposedReply}`, policyEvaluationId: request.policyEvaluationId,
-      ...(item.policyEvaluations.some(evaluation => evaluation.id === request.policyEvaluationId && evaluation.signedPolicy)
-        ? { signedApprovalRequired: true } : {}),
-      requestedAction: 'message.reply', grantType: 'oneTime', expiresAt: request.expiresAt, availableActions: ['approveOnce', 'decline']
-    } });
+    Object.assign(item, { bucket: 'needsMe', needsAttention: true, nextActor: 'Owner review required', decision });
   }
   const participantDirectory = await participantDirectoryForHuman(inbox, agents, cases);
   const projectedInvitations = invitations
@@ -6161,7 +6180,10 @@ async function route(req, res) {
     const session = await auth.getSession(req);
     if (!session) return fail(res, 401, 'Authenticated human session required');
     const requesterCanManage = await canManageInbox(human, inbox);
-    const view = await humanView(inboxId, inbox, parseHistoryCursors(url.searchParams.get('history')), { includeOwnerReviews: requesterCanManage });
+    const view = await humanView(inboxId, inbox, parseHistoryCursors(url.searchParams.get('history')), {
+      includeOwnerReviews: requesterCanManage,
+      includeSignedOwnerReviews: requesterCanManage && human.id === inbox.ownerHumanId
+    });
     const requester = { id: human.id, auth: { provider: auth.provider, assurance: session.assurance || 'provider' } };
     const preferences = await getPrefsForCases(store, { scopeMode: 'personal', organizationId: inbox.organizationId, humanId: human.id, inboxId, cases: view.caseQueue });
     const personalizedView = attachInboxPreferencesToView(view, preferences);

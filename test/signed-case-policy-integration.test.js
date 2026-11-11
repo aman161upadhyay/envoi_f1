@@ -166,6 +166,10 @@ test('signed policy and one-time owner approval narrow the existing case action 
   const payPending = await call(`${route}/policy-evaluations`, { token, status: 201,
     body: { requestedAction: 'payment.near', actionPayload: paymentTarget } });
   assert.equal(payPending.decision, 'needsHuman');
+  const decision = async () => (await call(`/api/inboxes/${inbox.id}/human-view`, { status: 200 }))
+    .caseQueue.find(item => item.id === value.id).decision;
+  assert.equal((await decision()).policyEvaluationId, payPending.id);
+  assert.equal((await decision()).signedApprovalRequired, true);
   const payments = `${route}/near-payments`;
   const reserve = { policyEvaluationId: payPending.id };
   await call(payments, { token, body: reserve, status: 409 });
@@ -173,6 +177,7 @@ test('signed policy and one-time owner approval narrow the existing case action 
   await call(`${route}/actions`, { key: 'payment-approval', status: 201, body: {
     actionKey: 'approveOnce', externalRefs: { policyEvaluationId: payPending.id }, signedApproval: signed(paymentApproval)
   } });
+  assert.notEqual((await decision())?.policyEvaluationId, payPending.id);
   const issued = await call(payments, { token, body: reserve, status: 201 });
   authorizedCall = issued.instruction.args;
   assert.deepEqual(authorizedCall, { to: paymentTarget.payee, amount: paymentTarget.amount.units,
