@@ -15,6 +15,14 @@ npm run demo -- --serve
 
 Open http://127.0.0.1:4173/permissions for Settings and Evidence, or /check for the proof checker. The terminal demo screens a fictional invoice with local rules, refuses one payment, permits another, and checks an edited proof. Browser changes in offline mode are saved for the current tab. The offline records are generated separately against the demo’s original rules.
 
+## Envoi case-policy integration
+
+Signed policies are opt-in per supported pair case. To expose Case permissions, configure the Envoi server with `ENVOI_SIGNED_POLICY_NETWORK`, `ENVOI_SIGNED_POLICY_RECORD_CONTRACT`, `ENVOI_SIGNED_POLICY_RPC_URL`, and `ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS`. The last setting maps Envoi human IDs to their verified NEAR owner accounts as a JSON object. Register the browser device's public key from the matching owner account before submitting a signed policy. Passkey verification additionally requires `ENVOI_SIGNED_POLICY_RP_ID` and `ENVOI_SIGNED_POLICY_ORIGINS`.
+
+Use an isolated test environment for this setup. Enrolling a case makes uncovered actions unavailable, and expiring or revoking the signing key invalidates its grants. For agent case reads, use the scoped case session with a `case.snapshot` grant. Signed file grants use the immutable file checksum and exact recipient for sharing. The `payment.near` action evaluates and binds exact amounts, while the standalone testnet runner exercises transfers.
+
+`ENVOI_ENABLE_SENSITIVE_CASES=true` enables the one-way case label for owners. The label itself does not seal Envoi server activity. The separate Guard evidence runner and batcher handle the demo records. The Office version comparator can be tested independently with `python -B -m unittest discover -s test -p office_edit_scope_test.py` from the repository root. Envoi's existing file flow accepts immutable uploads, so a scanned version-publish path is still needed for scoped Office edits.
+
 ## Rehearse on NEAR testnet
 
 1. Build the contracts with `cargo build --locked --release --target wasm32-unknown-unknown --manifest-path contracts/near/Cargo.toml`. Deploy the resulting record and spend files to separate testnet accounts. Initialize the record with the testnet publisher account and initialize the spending contract. Save the published code hash for the checker. Keep the deployment keys with the testnet custodian while validating the run.
