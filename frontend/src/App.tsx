@@ -1467,7 +1467,7 @@ const screeningCheckLabels: Record<string, string> = {
 function MessageScreeningDetails({ screening }: { screening: unknown }) {
   if (!screening || typeof screening !== 'object') return null;
   const { provider, checks, outcome } = screening as { provider?: string; checks?: { id: string; status: string }[]; outcome?: string };
-  if (provider !== 'near-ai-cloud' || !Array.isArray(checks)
+  if (provider !== 'near-ai-cloud' || (outcome !== 'clean' && outcome !== 'redacted') || !Array.isArray(checks)
     || Object.keys(screeningCheckLabels).some(id => !checks.some(check => check?.id === id && check.status === 'passed'))) return null;
   return <details className="message-screening">
     <summary>{outcome === 'redacted' ? 'Text removed by private screening' : 'Private screening verified'}</summary>

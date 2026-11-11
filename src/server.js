@@ -2310,6 +2310,16 @@ const screeningReceiptDocument = (message, evidence, at) => document(
     encrypted: encryptConnectorTokens(evidence), createdAt: at }
 );
 
+async function recordPrivateScreening(screened, { id, caseId, senderInboxId }, at, writeAudit) {
+  const privateScreening = screened.message.privateScreening;
+  const receipt = screeningReceiptDocument({ id, caseId, senderInboxId, privateScreening }, screened.evidence, at);
+  await store.putJson(receipt.path, receipt.value);
+  if (writeAudit) {
+    const { outcome, receiptDigest } = privateScreening;
+    await writeAudit('message.private_screened', { caseId, messageId: id, outcome, receiptDigest }, at);
+  }
+}
+
 async function enqueueNativeMessage(message, senderInbox, recipientInboxId, eventType = 'message.queued', writeAudit = null, agentRequest = null, caseOptions = {}) {
   if (!writeAudit) {
     const queued = await withInboxMutation(senderInbox.id, auditWriter => enqueueNativeMessage(message, senderInbox, recipientInboxId, eventType, auditWriter, agentRequest), [recipientInboxId], [caseMutationKey(message.caseId)]);
@@ -6455,9 +6465,15 @@ async function route(req, res) {
       const currentPrincipal = await getAgentPrincipal(req, inboxId);
       if (!currentPrincipal || !canAct(currentPrincipal, 'execute_cases')) throw Object.assign(new Error('Agent credential with execute_cases permission required'), { statusCode: 403 });
       await requireV2Authorization(req, inboxId, currentPrincipal.id, 'case.create');
+      const screened = screenNativeMessage ? await screenNativeMessage({
+        type: 'case', text: String(input.objective), payload: input.constraints || {}
+      }) : null;
       const now = store.now();
       const created = createAgentCase({ id: store.id('case'), objective: input.objective, collaborationMode: input.collaborationMode || 'collaboration', principal: inbox.ownerHumanId, actingAgent: currentPrincipal.id, participants: input.participants || [], constraints: input.constraints || {}, deadline: input.deadline || null, createdAt: now });
       if (!await store.putJsonIfAbsent(caseRecordPath(inboxId, created.id), created)) throw Object.assign(new Error('Case ID already exists'), { statusCode: 409 });
+      if (screened) {
+        await recordPrivateScreening(screened, { id: created.id, caseId: created.id, senderInboxId: inboxId }, now);
+      }
       await writeAudit('case.created', { caseId: created.id, actingAgent: currentPrincipal.id, objective: created.objective });
       return created;
     });
@@ -6683,12 +6699,7 @@ async function route(req, res) {
         linkedPolicyEvaluation: input.linkedPolicyEvaluation || null, precedingEventRef: input.precedingEventRef || value.events.at(-1)?.id || null });
       await saveCase(inboxId, value);
       if (screened) {
-        const privateScreening = screened.message.privateScreening;
-        const receipt = screeningReceiptDocument({ id: eventId, caseId: value.id, senderInboxId: inboxId,
-          privateScreening }, screened.evidence, now);
-        await store.putJson(receipt.path, receipt.value);
-        await writeAudit('message.private_screened', { caseId: value.id, messageId: eventId,
-          outcome: privateScreening.outcome, receiptDigest: privateScreening.receiptDigest }, now);
+        await recordPrivateScreening(screened, { id: eventId, caseId: value.id, senderInboxId: inboxId }, now, writeAudit);
       }
       const appended = value.events.at(-1);
       await writeAudit('case.event_appended', { caseId: value.id, eventId: appended.id, eventType: input.type, actor: currentPrincipal.id });
@@ -6736,11 +6747,20 @@ async function route(req, res) {
       await requireSignedMutation(inboxId, value, currentPrincipal, input.policyEvaluationId, 'proposal.create', {
         kind: input.kind ?? null, options: input.options ?? [], expiresAt: input.expiresAt ?? null
       }, writeAudit);
+      const screened = screenNativeMessage ? await screenNativeMessage({
+        type: 'proposal', proposal: { kind: input.kind, options: input.options }
+      }) : null;
       const now = store.now();
       const created = proposalFromInput(input, now);
       const updated = addProposal(value, created);
-      appendEvent(updated, { id: store.id('evt'), type: 'decision', actor: currentPrincipal.id, createdAt: now, payload: { proposalId: created.id, status: created.status }, linkedPolicyEvaluation: null, precedingEventRef: updated.events.at(-1)?.id || null });
+      const eventId = store.id('evt');
+      appendEvent(updated, { id: eventId, type: 'decision', actor: currentPrincipal.id, createdAt: now, payload: { proposalId: created.id, status: created.status },
+        ...(screened ? { privateScreening: screened.message.privateScreening } : {}),
+        linkedPolicyEvaluation: null, precedingEventRef: updated.events.at(-1)?.id || null });
       await saveCase(inboxId, updated);
+      if (screened) {
+        await recordPrivateScreening(screened, { id: eventId, caseId: value.id, senderInboxId: inboxId }, now, writeAudit);
+      }
       await writeAudit('proposal.created', { caseId: value.id, proposalId: created.id, kind: created.kind, actor: currentPrincipal.id });
       return created;
     });

@@ -131,6 +131,13 @@ test('verified screening runs before native pair and group messages enter shared
     token: alice.agentApiToken, body: { type: 'message', payload: { text: quote } }
   });
   assert.equal(directEvent.status, 422);
+  const directProposal = await api(baseUrl, `/api/inboxes/${alice.inbox.id}/cases/${caseId}/proposals`, {
+    token: alice.agentApiToken, body: { options: [{ value: { condition: quote } }] }
+  });
+  assert.equal(directProposal.status, 422);
+  assert.equal((await api(baseUrl, `/api/inboxes/${alice.inbox.id}/cases`, {
+    token: alice.agentApiToken, body: { objective: 'Review the purchase request', constraints: { condition: quote } }
+  })).status, 422);
 
   const members = [alice, bob, carol];
   for (const member of members) {

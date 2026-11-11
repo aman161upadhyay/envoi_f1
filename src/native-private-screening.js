@@ -25,7 +25,9 @@ export function createNativePrivateScreening({ enabled, apiKey, model } = {}) {
       }
       result = await provider.check({ text });
       if (result.held || !result.evidence || result.evidence.provider !== 'near-ai-cloud'
-        || checkIds.some(id => result.checks?.find(check => check.id === id)?.status !== 'passed')) {
+        || checkIds.some(id => result.checks?.find(check => check.id === id)?.status !== 'passed')
+        || typeof result.flagged !== 'boolean'
+        || (result.flagged && (typeof result.quote !== 'string' || !result.quote || !text.includes(result.quote)))) {
         throw new Error('Attestation failed');
       }
     } catch (error) {
@@ -43,7 +45,11 @@ export function createNativePrivateScreening({ enabled, apiKey, model } = {}) {
       receiptDigest: valueDigest(result.evidence)
     };
     if (!result.flagged) return { message: { ...message, privateScreening: summary }, evidence: result.evidence };
-    const redactedText = message.text.split(result.quote).join('[removed by private screening]');
+    const marker = '[removed by private screening]';
+    const redactedText = message.text.split(result.quote).join(marker.includes(result.quote) ? '' : marker);
+    if (redactedText.includes(result.quote)) {
+      throw screeningError(422, 'PRIVATE_SCREENING_BLOCKED', 'Private screening blocked this message.');
+    }
     return {
       message: { ...message, text: redactedText, content: [{ type: 'text', text: redactedText }], privateScreening: summary },
       evidence: result.evidence

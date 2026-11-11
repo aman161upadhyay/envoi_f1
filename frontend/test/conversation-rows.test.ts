@@ -58,3 +58,19 @@ it('renders the deciding signed grant and version in the timeline', () => {
   expect(html).toContain('This action has no matching signed grant.');
   expect(html).toContain('Policy version 2');
 });
+
+it('shows verified screening only from the server event field', () => {
+  const privateScreening = {
+    provider: 'near-ai-cloud',
+    outcome: 'redacted',
+    checks: ['signed_text', 'signature', 'signer_attested', 'report_data', 'tdx_quote', 'gpu']
+      .map(id => ({ id, status: 'passed' }))
+  };
+  const event = message('screened', 'agent_other', '2026-10-06T12:00:00Z', { privateScreening });
+  expect(render(event)).not.toContain('private screening');
+  const verified = render({ ...event, privateScreening });
+  expect(verified).toContain('Text removed by private screening');
+  expect(verified).toContain('NVIDIA GPU verified');
+  const incomplete = { ...privateScreening, checks: privateScreening.checks.slice(0, -1) };
+  expect(render({ ...event, privateScreening: incomplete })).not.toContain('private screening');
+});
