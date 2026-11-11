@@ -16,59 +16,59 @@ var k = Object.create, A = Object.defineProperty, j = Object.getOwnPropertyDescr
 	} catch (e) {
 		throw n = [e], e;
 	}
-}, N = (e, t) => () => (t || (e((t = { exports: {} }).exports, t), e = null), t.exports), P = (e, t) => {
+}, N = (e, t) => () => (t || (e((t = { exports: {} }).exports, t), e = null), t.exports), re = (e, t) => {
 	let n = {};
 	for (var r in e) A(n, r, {
 		get: e[r],
 		enumerable: !0
 	});
 	return t || A(n, Symbol.toStringTag, { value: "Module" }), n;
-}, re = (e, t, n, r) => {
+}, ie = (e, t, n, r) => {
 	if (t && typeof t == "object" || typeof t == "function") for (var i = M(t), a = 0, o = i.length, s; a < o; a++) s = i[a], !te.call(e, s) && s !== n && A(e, s, {
 		get: ((e) => t[e]).bind(null, s),
 		enumerable: !(r = j(t, s)) || r.enumerable
 	});
 	return e;
-}, ie = (e, t, n) => (n = e == null ? {} : k(ee(e)), re(t || !e || !e.__esModule || !te.call(e, "default") ? A(n, "default", {
+}, ae = (e, t, n) => (n = e == null ? {} : k(ee(e)), ie(t || !e || !e.__esModule || !te.call(e, "default") ? A(n, "default", {
 	value: e,
 	enumerable: !0
-}) : n, e)), ae = (e) => te.call(e, "module.exports") ? e["module.exports"] : re(A({}, "__esModule", { value: !0 }), e), oe = [
+}) : n, e)), oe = (e) => te.call(e, "module.exports") ? e["module.exports"] : ie(A({}, "__esModule", { value: !0 }), e), se = [
 	"openclaw",
 	"hermes",
 	"grok"
-], F = class extends TypeError {
+], P = class extends TypeError {
 	constructor(e) {
 		super(e), this.name = "QuickConnectHandoffError";
 	}
 };
-function se(e) {
+function ce(e) {
 	let t;
 	try {
 		t = new URL(e);
 	} catch {
-		throw new F("The Envoi URL must be an HTTPS origin");
+		throw new P("The Envoi URL must be an HTTPS origin");
 	}
 	let n = [
 		"localhost",
 		"127.0.0.1",
 		"[::1]"
 	].includes(t.hostname);
-	if (t.protocol !== "https:" && !(t.protocol === "http:" && n)) throw new F("Envoi requires HTTPS; HTTP is supported only on loopback for development");
-	if (t.username || t.password || t.search || t.hash || t.pathname !== "/") throw new F("The Envoi URL must be an origin without credentials, a path, or a query");
+	if (t.protocol !== "https:" && !(t.protocol === "http:" && n)) throw new P("Envoi requires HTTPS; HTTP is supported only on loopback for development");
+	if (t.username || t.password || t.search || t.hash || t.pathname !== "/") throw new P("The Envoi URL must be an origin without credentials, a path, or a query");
 	return t.origin;
 }
-function ce(e, t = {}) {
-	if (!e || typeof e != "object" || Array.isArray(e)) throw new F("Invalid Envoi setup file");
+function le(e, t = {}) {
+	if (!e || typeof e != "object" || Array.isArray(e)) throw new P("Invalid Envoi setup file");
 	let n = e;
-	if (n.version !== 1 || !oe.includes(n.runtime)) throw new F("Unsupported Envoi setup version or runtime");
-	if (n.operation !== void 0 && !["enroll", "reconnect"].includes(n.operation)) throw new F("Unsupported setup operation");
-	if (typeof n.apiUrl != "string") throw new F("The setup file is missing the Envoi URL");
-	let r = se(n.apiUrl);
-	if (typeof n.enrollmentToken != "string" || !/^[A-Za-z0-9_-]{20,256}$/.test(n.enrollmentToken)) throw new F("The setup file has an invalid one-time enrollment token");
-	if (typeof n.expiresAt != "string" || !Number.isFinite(Date.parse(n.expiresAt))) throw new F("The setup file has an invalid expiry");
-	if (!t.allowExpired && Date.parse(n.expiresAt) <= (t.now ?? Date.now())) throw new F("This setup link expired. Create a new connection in Envoi and copy its setup prompt");
-	if (typeof n.agentName != "string" || !n.agentName.trim() || n.agentName.length > 200) throw new F("The setup file has an invalid agent name");
-	if (typeof n.address != "string" || !/^[a-z][a-z0-9.-]{2,31}@[a-z0-9.-]+$/i.test(n.address) || n.address.length > 254) throw new F("The setup file has an invalid Envoi address");
+	if (n.version !== 1 || !se.includes(n.runtime)) throw new P("Unsupported Envoi setup version or runtime");
+	if (n.operation !== void 0 && !["enroll", "reconnect"].includes(n.operation)) throw new P("Unsupported setup operation");
+	if (typeof n.apiUrl != "string") throw new P("The setup file is missing the Envoi URL");
+	let r = ce(n.apiUrl);
+	if (typeof n.enrollmentToken != "string" || !/^[A-Za-z0-9_-]{20,256}$/.test(n.enrollmentToken)) throw new P("The setup file has an invalid one-time enrollment token");
+	if (typeof n.expiresAt != "string" || !Number.isFinite(Date.parse(n.expiresAt))) throw new P("The setup file has an invalid expiry");
+	if (!t.allowExpired && Date.parse(n.expiresAt) <= (t.now ?? Date.now())) throw new P("This setup link expired. Create a new connection in Envoi and copy its setup prompt");
+	if (typeof n.agentName != "string" || !n.agentName.trim() || n.agentName.length > 200) throw new P("The setup file has an invalid agent name");
+	if (typeof n.address != "string" || !/^[a-z][a-z0-9.-]{2,31}@[a-z0-9.-]+$/i.test(n.address) || n.address.length > 254) throw new P("The setup file has an invalid Envoi address");
 	return {
 		version: 1,
 		runtime: n.runtime,
@@ -80,12 +80,12 @@ function ce(e, t = {}) {
 		...n.operation ? { operation: n.operation } : {}
 	};
 }
-var I = class extends Error {
+var F = class extends Error {
 	code;
 	constructor(e, t) {
 		super(t), this.code = e, this.name = "ConnectorSetupError";
 	}
-}, L = class extends Error {
+}, I = class extends Error {
 	status;
 	code;
 	reason;
@@ -94,10 +94,10 @@ var I = class extends Error {
 	constructor(e, t, n, r = {}) {
 		super(e), this.status = t, this.code = n, this.name = "EnvoiError", this.reason = r.reason, this.retryAfterSeconds = r.retryAfterSeconds, this.requestId = r.requestId;
 	}
-}, le = (e = 3e4) => {
+}, ue = (e = 3e4) => {
 	if (!Number.isSafeInteger(e) || e < 1 || e > 3e5) throw RangeError("timeoutMs must be an integer from 1 to 300000");
 	return e;
-}, ue = (e) => {
+}, de = (e) => {
 	if (!e) return null;
 	try {
 		let t = JSON.parse(e);
@@ -106,11 +106,11 @@ var I = class extends Error {
 		return null;
 	}
 };
-async function de(e, t) {
-	let n = await e.text(), r = ue(n);
+async function fe(e, t) {
+	let n = await e.text(), r = de(n);
 	if (!e.ok) {
 		let n = r && !Array.isArray(r) ? r : null, i = n?.error && typeof n.error == "object" && !Array.isArray(n.error) ? n.error : null, a = typeof n?.message == "string" && n.message.length > 0 && n.message.length <= 500 ? n.message : typeof i?.message == "string" && i.message.length <= 500 ? i.message : typeof n?.error == "string" ? n.error : null, o = a && a.length <= 500 ? a : `${t} with HTTP ${e.status}`, s = e.headers.get("retry-after"), c = s ? /^\d+$/.test(s) ? Number(s) : Math.max(0, (Date.parse(s) - Date.now()) / 1e3) : 0, l = typeof n?.retryAfterSeconds == "number" ? n.retryAfterSeconds : 0, u = Math.max(Number.isFinite(c) ? c : 0, Number.isFinite(l) ? l : 0);
-		throw new L(o, e.status, typeof n?.code == "string" ? n.code : typeof i?.code == "string" ? i.code : void 0, {
+		throw new I(o, e.status, typeof n?.code == "string" ? n.code : typeof i?.code == "string" ? i.code : void 0, {
 			...u > 0 ? { retryAfterSeconds: u } : {},
 			...typeof n?.reason == "string" && [
 				"revoked",
@@ -120,12 +120,12 @@ async function de(e, t) {
 			...typeof n?.requestId == "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(n.requestId) ? { requestId: n.requestId } : {}
 		});
 	}
-	if (!n) throw new L("Envoi returned an empty response", e.status);
-	if (r === null) throw new L("Envoi returned an invalid JSON response", e.status);
+	if (!n) throw new I("Envoi returned an empty response", e.status);
+	if (r === null) throw new I("Envoi returned an invalid JSON response", e.status);
 	return r;
 }
-async function fe(e, t, n, r) {
-	let i = new AbortController(), a = setTimeout(() => i.abort(), le(r)), o = () => i.abort();
+async function pe(e, t, n, r) {
+	let i = new AbortController(), a = setTimeout(() => i.abort(), ue(r)), o = () => i.abort();
 	n.signal?.addEventListener("abort", o, { once: !0 });
 	try {
 		return await e(t, {
@@ -133,24 +133,24 @@ async function fe(e, t, n, r) {
 			signal: i.signal
 		});
 	} catch {
-		throw i.signal.aborted && !n.signal?.aborted ? new L("Envoi request timed out", void 0, "TIMEOUT") : new L("Envoi could not be reached", void 0, "NETWORK_ERROR");
+		throw i.signal.aborted && !n.signal?.aborted ? new I("Envoi request timed out", void 0, "TIMEOUT") : new I("Envoi could not be reached", void 0, "NETWORK_ERROR");
 	} finally {
 		clearTimeout(a), n.signal?.removeEventListener("abort", o);
 	}
 }
-var pe = class {
+var me = class {
 	baseUrl;
 	accessToken;
 	requestTimeoutMs;
 	fetcher;
 	constructor(e, t, n = {}) {
-		this.baseUrl = e, this.accessToken = t, this.requestTimeoutMs = le(n.timeoutMs), this.fetcher = n.fetch || fetch;
+		this.baseUrl = e, this.accessToken = t, this.requestTimeoutMs = ue(n.timeoutMs), this.fetcher = n.fetch || fetch;
 	}
 	setAccessToken(e) {
 		this.accessToken = e;
 	}
 	async request(e, t = {}) {
-		return de(await fe(this.fetcher, `${this.baseUrl.replace(/\/$/, "")}${e}`, {
+		return fe(await pe(this.fetcher, `${this.baseUrl.replace(/\/$/, "")}${e}`, {
 			...t,
 			headers: {
 				"content-type": "application/json",
@@ -307,7 +307,7 @@ var pe = class {
 		return this.request(`/api/agent/a2a/agents/${encodeURIComponent(e)}/tasks/${encodeURIComponent(t)}`);
 	}
 };
-async function me(e, t, n = {}) {
+async function he(e, t, n = {}) {
 	if (e.method !== "PUT") throw TypeError("Signed upload must use PUT");
 	let r = new URL(e.url);
 	if (r.protocol !== "https:" && !(r.protocol === "http:" && [
@@ -315,17 +315,17 @@ async function me(e, t, n = {}) {
 		"127.0.0.1",
 		"[::1]"
 	].includes(r.hostname))) throw TypeError("Signed upload URL must use HTTPS");
-	let i = await fe(n.fetch || fetch, r.toString(), {
+	let i = await pe(n.fetch || fetch, r.toString(), {
 		method: "PUT",
 		headers: e.headers || {},
 		body: t,
 		redirect: "error"
-	}, le(n.timeoutMs));
-	if (!i.ok) throw new L(`Signed upload failed with HTTP ${i.status}`, i.status);
+	}, ue(n.timeoutMs));
+	if (!i.ok) throw new I(`Signed upload failed with HTTP ${i.status}`, i.status);
 }
-async function he(e, t, n, r = {}) {
+async function ge(e, t, n, r = {}) {
 	if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(n)) throw TypeError("Valid rotationId required");
-	let i = await de(await fe(r.fetch || fetch, `${e.replace(/\/$/, "")}/api/agent-token`, {
+	let i = await fe(await pe(r.fetch || fetch, `${e.replace(/\/$/, "")}/api/agent-token`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({
@@ -333,7 +333,7 @@ async function he(e, t, n, r = {}) {
 			agentRefreshToken: t,
 			rotationId: n
 		})
-	}, le(r.timeoutMs)), "Envoi token rotation failed");
+	}, ue(r.timeoutMs)), "Envoi token rotation failed");
 	return {
 		agentApiToken: i.agentApiToken,
 		agentRefreshToken: i.agentRefreshToken,
@@ -341,19 +341,19 @@ async function he(e, t, n, r = {}) {
 		agentRefreshTokenExpiresAt: i.agentRefreshTokenExpiresAt
 	};
 }
-var R = class extends Error {
+var L = class extends Error {
 	constructor(e) {
 		super(e), this.name = "QuickConnectError";
 	}
-}, ge = _(g);
-function _e(e, t = process.env) {
+}, _e = _(g);
+function ve(e, t = process.env) {
 	let n = Object.entries(t).find(([e]) => e.toLowerCase() === "systemroot")?.[1] ?? Object.entries(t).find(([e]) => e.toLowerCase() === "windir")?.[1];
-	if (!n || !/^[A-Za-z]:[\\/]/.test(n) || /[\x00-\x1f<>"|?*]/.test(n)) throw new I("WINDOWS_HELPER_UNAVAILABLE", "Windows system directory could not be located. Run the connector from a normal Windows terminal with SystemRoot set; preserve any saved connection for retry.");
+	if (!n || !/^[A-Za-z]:[\\/]/.test(n) || /[\x00-\x1f<>"|?*]/.test(n)) throw new F("WINDOWS_HELPER_UNAVAILABLE", "Windows system directory could not be located. Run the connector from a normal Windows terminal with SystemRoot set; preserve any saved connection for retry.");
 	return e === "powershell.exe" ? d.win32.join(n, "System32", "WindowsPowerShell", "v1.0", e) : d.win32.join(n, "System32", e);
 }
-async function ve() {
+async function ye() {
 	try {
-		let { stdout: e } = await ge(_e("whoami.exe"), [
+		let { stdout: e } = await _e(ve("whoami.exe"), [
 			"/user",
 			"/fo",
 			"csv",
@@ -365,20 +365,20 @@ async function ve() {
 		if (!t) throw Error();
 		return t;
 	} catch {
-		throw new I("WINDOWS_ACCOUNT_UNAVAILABLE", "Could not identify the current Windows account for private credential storage or user startup. Run the connector from your Windows account; preserve any saved connection for retry.");
+		throw new F("WINDOWS_ACCOUNT_UNAVAILABLE", "Could not identify the current Windows account for private credential storage or user startup. Run the connector from your Windows account; preserve any saved connection for retry.");
 	}
 }
-var ye = _(g);
-async function be(t) {
+var be = _(g);
+async function xe(t) {
 	let i = d.resolve(t);
 	await r(i, {
 		recursive: !0,
 		mode: 448
 	});
 	let a = d.resolve(await s(i));
-	if ((await n(i)).isSymbolicLink() || (process.platform === "win32" ? a.toLowerCase() !== i.toLowerCase() : a !== i)) throw new R("Choose a private state directory without symbolic links");
+	if ((await n(i)).isSymbolicLink() || (process.platform === "win32" ? a.toLowerCase() !== i.toLowerCase() : a !== i)) throw new L("Choose a private state directory without symbolic links");
 	if (process.platform === "win32") {
-		let e = await ve(), t = [
+		let e = await ye(), t = [
 			"$ErrorActionPreference='Stop'",
 			`$p='${i.replaceAll("'", "''")}'`,
 			`$s=New-Object System.Security.Principal.SecurityIdentifier('${e}')`,
@@ -394,7 +394,7 @@ async function be(t) {
 			"if ($v.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $s.Value -or !$v.AreAccessRulesProtected -or $g.Count -ne 1 -or $g[0].IdentityReference.Value -ne $s.Value -or $g[0].IsInherited -or $g[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $g[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or [int]$g[0].InheritanceFlags -ne 3 -or [int]$g[0].PropagationFlags -ne 0) { throw 'Credential directory ACL verification failed' }"
 		].join("; ");
 		try {
-			await ye(_e("powershell.exe"), [
+			await be(ve("powershell.exe"), [
 				"-NoProfile",
 				"-NonInteractive",
 				"-Command",
@@ -402,7 +402,7 @@ async function be(t) {
 			], {
 				windowsHide: !0,
 				timeout: 2e4
-			}), (await o(i)).length && await ye(_e("icacls.exe"), [
+			}), (await o(i)).length && await be(ve("icacls.exe"), [
 				d.join(i, "*"),
 				"/reset",
 				"/T",
@@ -413,12 +413,12 @@ async function be(t) {
 				timeout: 2e4
 			});
 		} catch {
-			throw new R("Windows could not restrict credential storage to your account. Choose an owned private state directory and retry; this check did not redeem an enrollment token");
+			throw new L("Windows could not restrict credential storage to your account. Choose an owned private state directory and retry; this check did not redeem an enrollment token");
 		}
 	} else await e(i, 448);
 	return i;
 }
-async function z(e, t) {
+async function R(e, t) {
 	let n = `${e}.${x()}.tmp`;
 	try {
 		let r = await i(n, "wx", 384);
@@ -439,7 +439,7 @@ async function z(e, t) {
 		await l(n, { force: !0 });
 	}
 }
-async function xe(e, t = () => e) {
+async function z(e, t = () => e) {
 	let r = d.join(e, "connector.lock"), o = {
 		pid: process.pid,
 		nonce: x()
@@ -453,9 +453,9 @@ async function xe(e, t = () => e) {
 				throw e;
 			});
 			if (r) {
-				if (!r.isFile() || r.isSymbolicLink() || r.size > 2048) throw new R("A private helper setup owns this connection");
+				if (!r.isFile() || r.isSymbolicLink() || r.size > 2048) throw new L("A private helper setup owns this connection");
 				let e = JSON.parse(await a(t, "utf8"));
-				if (!Number.isSafeInteger(e.pid) || e.pid <= 0) throw new R("A private helper setup owns this connection");
+				if (!Number.isSafeInteger(e.pid) || e.pid <= 0) throw new L("A private helper setup owns this connection");
 				if (e.pid !== process.pid) {
 					let t = !0;
 					try {
@@ -464,7 +464,7 @@ async function xe(e, t = () => e) {
 						if (e.code === "ESRCH") t = !1;
 						else throw e;
 					}
-					if (t) throw new R("A private helper setup owns this connection");
+					if (t) throw new L("A private helper setup owns this connection");
 				}
 			}
 		} catch (e) {
@@ -480,9 +480,9 @@ async function xe(e, t = () => e) {
 		try {
 			t = JSON.parse(await a(r, "utf8"));
 		} catch {
-			throw new R("The connector lock is incomplete. Check for a running setup before removing connector.lock");
+			throw new L("The connector lock is incomplete. Check for a running setup before removing connector.lock");
 		}
-		if (!Number.isSafeInteger(t.pid) || t.pid <= 0 || !t.nonce) throw new R("Invalid connector lock; inspect the state directory");
+		if (!Number.isSafeInteger(t.pid) || t.pid <= 0 || !t.nonce) throw new L("Invalid connector lock; inspect the state directory");
 		try {
 			process.kill(t.pid, 0);
 		} catch (e) {
@@ -493,16 +493,16 @@ async function xe(e, t = () => e) {
 					try {
 						t = JSON.parse(await a(e, "utf8"));
 					} catch {
-						throw new R("The recovery lock is incomplete. Verify no setup is running before removing connector.lock.recovery");
+						throw new L("The recovery lock is incomplete. Verify no setup is running before removing connector.lock.recovery");
 					}
-					if (!Number.isSafeInteger(t.pid) || t.pid <= 0 || !t.nonce) throw new R("Invalid recovery lock; inspect the state directory");
+					if (!Number.isSafeInteger(t.pid) || t.pid <= 0 || !t.nonce) throw new L("Invalid recovery lock; inspect the state directory");
 					try {
 						process.kill(t.pid, 0);
 					} catch (r) {
 						r.code === "ESRCH" && (JSON.parse(await a(e, "utf8")).nonce === t.nonce && await l(e), n = await i(e, "wx", 384).catch(() => null));
 					}
 				}
-				if (!n) throw new R("Another setup is recovering this connector. Try again shortly");
+				if (!n) throw new L("Another setup is recovering this connector. Try again shortly");
 				try {
 					await n.writeFile(JSON.stringify(o)), JSON.parse(await a(r, "utf8")).nonce === t.nonce && await l(r);
 				} finally {
@@ -511,16 +511,16 @@ async function xe(e, t = () => e) {
 				continue;
 			}
 		}
-		throw new R("This Envoi connection is already running. Stop its existing connector before setup or start");
+		throw new L("This Envoi connection is already running. Stop its existing connector before setup or start");
 	}
-	throw new R("Could not acquire the connector lock. Try again after the existing connector stops");
+	throw new L("Could not acquire the connector lock. Try again after the existing connector stops");
 }
 function Se(e = process.env, t) {
 	if (e.ENVOI_SCOPED_TOOLS !== void 0 && e.ENVOI_SCOPED_TOOLS !== "true" && e.ENVOI_SCOPED_TOOLS !== "false") throw TypeError("ENVOI_SCOPED_TOOLS must be true or false");
 	let n = t?.scopedTools;
 	if (n !== void 0 && n !== !0) throw TypeError("Invalid saved scoped mode");
 	if (n === !0) {
-		if (e.ENVOI_SCOPED_TOOLS === "false") throw new L("This connection was saved in scoped mode. Keep scoped mode enabled; do not downgrade its existing work to legacy execution.", void 0, "SCOPED_MODE_DOWNGRADE_UNAVAILABLE");
+		if (e.ENVOI_SCOPED_TOOLS === "false") throw new I("This connection was saved in scoped mode. Keep scoped mode enabled; do not downgrade its existing work to legacy execution.", void 0, "SCOPED_MODE_DOWNGRADE_UNAVAILABLE");
 		e = {
 			...e,
 			ENVOI_SCOPED_TOOLS: "true"
@@ -539,7 +539,7 @@ function Se(e = process.env, t) {
 			"relayPort",
 			"mcpWriteEnabled",
 			"assetManifestPath"
-		].some((e) => r?.[e] !== void 0)) throw new L("Scoped mode cannot use privileged legacy Envoi relay or asset settings. Remove those settings from the selected connector environment.", void 0, "SCOPED_LEGACY_CONFIGURATION_UNAVAILABLE");
+		].some((e) => r?.[e] !== void 0)) throw new I("Scoped mode cannot use privileged legacy Envoi relay or asset settings. Remove those settings from the selected connector environment.", void 0, "SCOPED_LEGACY_CONFIGURATION_UNAVAILABLE");
 	}
 	return e;
 }
@@ -557,7 +557,7 @@ async function Ce(e, t, r) {
 	return Se(i, s);
 }
 async function we(e, t) {
-	t.ENVOI_SCOPED_TOOLS === "true" && await z(d.join(e, "openclaw-mode.json"), {
+	t.ENVOI_SCOPED_TOOLS === "true" && await R(d.join(e, "openclaw-mode.json"), {
 		version: 1,
 		scopedTools: !0
 	});
@@ -1002,7 +1002,7 @@ var Ve = /* @__PURE__ */ new Set([
 	"lease_lost"
 ]), We = (e) => typeof e == "object" && !!e && !Array.isArray(e), Ge = (e, t) => Object.keys(e).length === t.length && t.every((t) => Object.hasOwn(e, t)), Ke = (e, t) => typeof e == "string" && RegExp(`^${t}[A-Za-z0-9_-]+$`).test(e), qe = (e) => typeof e == "string" && Number.isFinite(Date.parse(e));
 function Je(e) {
-	return e instanceof L && ([
+	return e instanceof I && ([
 		"NETWORK_ERROR",
 		"TIMEOUT",
 		"INTERNAL_SERVER_ERROR",
@@ -1033,9 +1033,9 @@ function Xe(e, t) {
 async function Ze(e) {
 	let t = e.ok ? null : e.clone();
 	try {
-		return await de(e, "Envoi case session request failed");
+		return await fe(e, "Envoi case session request failed");
 	} catch (e) {
-		if (!(e instanceof L)) throw new L("Envoi case session response was invalid", void 0, "CASE_SESSION_RESPONSE_INVALID");
+		if (!(e instanceof I)) throw new I("Envoi case session response was invalid", void 0, "CASE_SESSION_RESPONSE_INVALID");
 		let n = await t?.json().catch(() => null), r = typeof e.code == "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(e.code) ? e.code : "CASE_SESSION_TRANSPORT_ERROR", i = r === "CASE_SESSION_ENDED" ? Ue : r === "WORK_LEASE_STALE" ? /* @__PURE__ */ new Set([
 			"other_installation",
 			"superseded",
@@ -1052,7 +1052,7 @@ async function Ze(e) {
 			"replaced",
 			"refresh_replay"
 		]), a = typeof n?.reason == "string" && i.has(n.reason) ? n.reason : void 0;
-		throw new L("Envoi case session request failed", e.status, r, {
+		throw new I("Envoi case session request failed", e.status, r, {
 			reason: a,
 			retryAfterSeconds: e.retryAfterSeconds,
 			requestId: e.requestId
@@ -1060,7 +1060,7 @@ async function Ze(e) {
 	}
 }
 function Qe(e, t, n) {
-	let r = () => new L("Envoi returned an invalid case session", void 0, "CASE_SESSION_RESPONSE_INVALID");
+	let r = () => new I("Envoi returned an invalid case session", void 0, "CASE_SESSION_RESPONSE_INVALID");
 	if (!We(e) || !Ge(e, ["session", "lease"]) || !We(e.session) || !We(e.lease)) throw r();
 	let i = e.session;
 	if (!Ge(i, [
@@ -1109,13 +1109,13 @@ var $e = class {
 		this.#e = Qe(e, t, n.origin), this.#t = {
 			...t,
 			...t.groupMemberAgentIds ? { groupMemberAgentIds: Object.freeze([...t.groupMemberAgentIds]) } : {}
-		}, this.#n = { ...n }, this.#i = setTimeout(() => this.invalidate(new L("Case session expired", 401, "CASE_SESSION_EXPIRED")), Date.parse(this.#e.expiresAt) - Date.now()), this.#a = () => this.invalidate(new L("Case session was interrupted", void 0, "REQUEST_CANCELLED")), n.signal?.addEventListener("abort", this.#a, { once: !0 }), n.signal?.aborted && this.#a();
+		}, this.#n = { ...n }, this.#i = setTimeout(() => this.invalidate(new I("Case session expired", 401, "CASE_SESSION_EXPIRED")), Date.parse(this.#e.expiresAt) - Date.now()), this.#a = () => this.invalidate(new I("Case session was interrupted", void 0, "REQUEST_CANCELLED")), n.signal?.addEventListener("abort", this.#a, { once: !0 }), n.signal?.aborted && this.#a();
 	}
 	get signal() {
 		return this.#r.signal;
 	}
 	#s() {
-		if (this.#o || (Date.parse(this.#e.expiresAt) <= Date.now() && this.invalidate(new L("Case session expired", 401, "CASE_SESSION_EXPIRED")), this.#o)) throw this.#o;
+		if (this.#o || (Date.parse(this.#e.expiresAt) <= Date.now() && this.invalidate(new I("Case session expired", 401, "CASE_SESSION_EXPIRED")), this.#o)) throw this.#o;
 	}
 	modelContext() {
 		return this.#s(), Object.freeze({
@@ -1134,7 +1134,7 @@ var $e = class {
 		let e = this.#e.id;
 		this.invalidate(), await this.#n.end?.(e);
 	}
-	invalidate(e = new L("Case session ended", 401, "CASE_SESSION_ENDED", { reason: "ended_by_host" })) {
+	invalidate(e = new I("Case session ended", 401, "CASE_SESSION_ENDED", { reason: "ended_by_host" })) {
 		if (!this.#o) {
 			this.#o = e, this.#e.token = "", clearTimeout(this.#i), this.#n.signal?.removeEventListener("abort", this.#a), this.#r.abort(e);
 			try {
@@ -1143,7 +1143,7 @@ var $e = class {
 		}
 	}
 	observeEvent(e) {
-		return e.type !== "case_session.ended" || e.agentId !== this.#e.agentId || e.workId !== this.#e.workId || e.caseId !== this.#e.caseId || e.sessionId !== this.#e.id || typeof e.reason != "string" || !Ue.has(e.reason) ? !1 : (this.invalidate(new L("Case session ended", 401, "CASE_SESSION_ENDED", { reason: e.reason })), !0);
+		return e.type !== "case_session.ended" || e.agentId !== this.#e.agentId || e.workId !== this.#e.workId || e.caseId !== this.#e.caseId || e.sessionId !== this.#e.id || typeof e.reason != "string" || !Ue.has(e.reason) ? !1 : (this.invalidate(new I("Case session ended", 401, "CASE_SESSION_ENDED", { reason: e.reason })), !0);
 	}
 	async forward(e, t = "2025-11-25") {
 		let n = 0;
@@ -1170,8 +1170,8 @@ var $e = class {
 			"tools/call"
 		].includes(String(n.method))) throw TypeError("Invalid case session MCP method");
 		if (n.method === "tools/call") {
-			if (!We(n.params) || typeof n.params.name != "string" || !this.#e.allowedTools.includes(n.params.name)) throw new L("Tool is not in this case session", void 0, "TOOL_NOT_IN_SESSION");
-			if (!We(n.params.arguments) || Object.keys(n.params.arguments).some((e) => He.has(e))) throw new L("Tool arguments cannot override session scope", void 0, "TOOL_ARGUMENTS_INVALID");
+			if (!We(n.params) || typeof n.params.name != "string" || !this.#e.allowedTools.includes(n.params.name)) throw new I("Tool is not in this case session", void 0, "TOOL_NOT_IN_SESSION");
+			if (!We(n.params.arguments) || Object.keys(n.params.arguments).some((e) => He.has(e))) throw new I("Tool arguments cannot override session scope", void 0, "TOOL_ARGUMENTS_INVALID");
 		}
 		await this.#n.assertActive?.(), this.#s();
 		let r = AbortSignal.timeout(this.#n.timeoutMs ?? 3e4), i = AbortSignal.any([r, this.signal]), a;
@@ -1190,11 +1190,11 @@ var $e = class {
 				}
 			}), i);
 		} catch {
-			throw this.#s(), new L("Case session transport failed", void 0, r.aborted ? "TIMEOUT" : "NETWORK_ERROR");
+			throw this.#s(), new I("Case session transport failed", void 0, r.aborted ? "TIMEOUT" : "NETWORK_ERROR");
 		}
 		if (this.#s(), a.status !== 202 && a.status !== 204) {
 			let e = a.body?.getReader();
-			if (!e) throw new L("Case session returned an empty response", void 0, "CASE_SESSION_RESPONSE_INVALID");
+			if (!e) throw new I("Case session returned an empty response", void 0, "CASE_SESSION_RESPONSE_INVALID");
 			let t = [], n = 0, i = () => {
 				e.cancel().catch(() => {});
 			};
@@ -1202,13 +1202,13 @@ var $e = class {
 			try {
 				for (;;) {
 					let i = await e.read();
-					if (this.#s(), r.aborted) throw new L("Case session response timed out", void 0, "TIMEOUT");
+					if (this.#s(), r.aborted) throw new I("Case session response timed out", void 0, "TIMEOUT");
 					if (i.done) break;
-					if (n += i.value.byteLength, n > 4e6) throw new L("Case session response is too large", void 0, "CASE_SESSION_RESPONSE_INVALID");
+					if (n += i.value.byteLength, n > 4e6) throw new I("Case session response is too large", void 0, "CASE_SESSION_RESPONSE_INVALID");
 					t.push(i.value);
 				}
 			} catch (t) {
-				throw await e.cancel().catch(() => {}), this.#s(), t instanceof L ? t : new L("Case session response could not be read", void 0, "NETWORK_ERROR");
+				throw await e.cancel().catch(() => {}), this.#s(), t instanceof I ? t : new I("Case session response could not be read", void 0, "NETWORK_ERROR");
 			} finally {
 				this.signal.removeEventListener("abort", i), r.removeEventListener("abort", i), e.releaseLock();
 			}
@@ -1222,7 +1222,7 @@ var $e = class {
 		if (this.#s(), !a.ok) try {
 			await Ze(a);
 		} catch (e) {
-			throw this.#s(), a.status === 401 && e instanceof L && this.invalidate(e), e;
+			throw this.#s(), a.status === 401 && e instanceof I && this.invalidate(e), e;
 		}
 		return await this.#n.assertActive?.(), this.#s(), a;
 	}
@@ -1234,7 +1234,7 @@ function et(e) {
 	return e.kind === "humanDecision";
 }
 function tt(e) {
-	let t = () => new L("Envoi returned an invalid human decision"), n = (e, t) => typeof e == "string" && RegExp(`^${t}[A-Za-z0-9_-]+$`).test(e), r = [
+	let t = () => new I("Envoi returned an invalid human decision"), n = (e, t) => typeof e == "string" && RegExp(`^${t}[A-Za-z0-9_-]+$`).test(e), r = [
 		"id",
 		"kind",
 		"type",
@@ -1275,7 +1275,7 @@ function tt(e) {
 }
 function nt(e) {
 	let t = (e) => typeof e == "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(e);
-	if (e.senderType !== "human" || e.type !== "instruction" || !t(e.senderHumanId) || !t(e.recipientInboxId) || !t(e.caseId) || typeof e.text != "string" || !e.text.trim() || !e.from || typeof e.from != "object" || Array.isArray(e.from) || e.from.humanId !== e.senderHumanId || Object.keys(e.from).some((e) => e !== "humanId") || "senderAgentId" in e || "senderInboxId" in e || "senderEmail" in e) throw new L("Envoi returned an invalid human instruction");
+	if (e.senderType !== "human" || e.type !== "instruction" || !t(e.senderHumanId) || !t(e.recipientInboxId) || !t(e.caseId) || typeof e.text != "string" || !e.text.trim() || !e.from || typeof e.from != "object" || Array.isArray(e.from) || e.from.humanId !== e.senderHumanId || Object.keys(e.from).some((e) => e !== "humanId") || "senderAgentId" in e || "senderInboxId" in e || "senderEmail" in e) throw new I("Envoi returned an invalid human instruction");
 }
 var rt = class extends Error {
 	requestId;
@@ -1283,7 +1283,7 @@ var rt = class extends Error {
 	constructor(e, t) {
 		super("Connector credential persistence failed; stop this installation and recover its saved rotation state"), this.requestId = e, this.status = t, this.name = "ConnectorPersistenceError";
 	}
-}, it = class extends L {
+}, it = class extends I {
 	requestId;
 	constructor(e, t, n) {
 		super(`Envoi enrollment failed (${e}${n ? `; HTTP ${n}` : ""})`, n, e), this.requestId = t, this.name = "ConnectorEnrollmentError";
@@ -1305,7 +1305,7 @@ var ot = class extends Error {
 	constructor() {
 		super("Envoi fenced work API is unavailable; agent processing cannot start"), this.name = "ConnectorContractError";
 	}
-}, st = class extends L {
+}, st = class extends I {
 	constructor() {
 		super("Connector credentials are missing or expired; ask the owner to reconnect this existing agent", void 0, "CREDENTIAL_EXPIRED"), this.name = "ConnectorCredentialsError";
 	}
@@ -1329,13 +1329,13 @@ async function lt(e) {
 	return Array.from(new Uint8Array(t), (e) => e.toString(16).padStart(2, "0")).join("");
 }
 function ut(e) {
-	if (typeof e.id != "string" || typeof e.type != "string" || typeof e.cursor != "string" || !e.cursor) throw new L("Envoi returned an invalid event");
+	if (typeof e.id != "string" || typeof e.type != "string" || typeof e.cursor != "string" || !e.cursor) throw new I("Envoi returned an invalid event");
 	return e;
 }
 async function dt(e, t, n, r = {}) {
 	let i = ct(e);
 	if (!t) throw TypeError("Enrollment token is required");
-	if (r.runtime !== void 0 && !oe.includes(r.runtime)) throw TypeError("Unsupported connector runtime");
+	if (r.runtime !== void 0 && !se.includes(r.runtime)) throw TypeError("Unsupported connector runtime");
 	let a = new AbortController(), o = r.timeoutMs ?? 3e4;
 	if (!Number.isSafeInteger(o) || o < 1 || o > 3e5) throw RangeError("timeoutMs must be an integer from 1 to 300000");
 	let s = crypto.randomUUID(), c = setTimeout(() => a.abort(), o);
@@ -1496,7 +1496,7 @@ var W = class {
 			].includes(e)) {
 				this.actionEpoch++;
 				for (let e of [...this.activeActions, ...this.activeWork]) e.abort();
-				for (let t of this.activeCaseSessions) t.invalidate(new L("Case session ended", 401, "CASE_SESSION_ENDED", { reason: o.paused ? "agent_paused" : e === "STOPPED" ? "ended_by_host" : "credential_ended" }));
+				for (let t of this.activeCaseSessions) t.invalidate(new I("Case session ended", 401, "CASE_SESSION_ENDED", { reason: o.paused ? "agent_paused" : e === "STOPPED" ? "ended_by_host" : "credential_ended" }));
 			}
 			return {
 				...i,
@@ -1516,7 +1516,7 @@ var W = class {
 		}
 	}
 	async observeError(e, t) {
-		if (!(e instanceof L) || this.observedErrors.has(e)) return;
+		if (!(e instanceof I) || this.observedErrors.has(e)) return;
 		this.observedErrors.add(e);
 		let n = Le(e);
 		if (n.lifecycle === "UNCHANGED" || n.lifecycle === "NOT_APPLICABLE") return;
@@ -1537,15 +1537,15 @@ var W = class {
 				...e,
 				type: t
 			}) || n;
-			n && e.reason === "agent_paused" && await this.observeError(new L("Paused", void 0, "AGENT_PAUSED"));
+			n && e.reason === "agent_paused" && await this.observeError(new I("Paused", void 0, "AGENT_PAUSED"));
 			return;
 		}
 		if (t === "credential.ended") {
-			typeof e.code == "string" && await this.observeError(new L("Credential ended", void 0, e.code, { reason: typeof e.reason == "string" ? e.reason : void 0 }));
+			typeof e.code == "string" && await this.observeError(new I("Credential ended", void 0, e.code, { reason: typeof e.reason == "string" ? e.reason : void 0 }));
 			return;
 		}
 		let n = U(await this.store.load());
-		e.agentId === n.agentId && (t === "agent.paused" && await this.observeError(new L("Paused", void 0, "AGENT_PAUSED")), t === "agent.resumed" && (await this.transition("RUNNING", {
+		e.agentId === n.agentId && (t === "agent.paused" && await this.observeError(new I("Paused", void 0, "AGENT_PAUSED")), t === "agent.resumed" && (await this.transition("RUNNING", {
 			paused: !1,
 			failures: 0,
 			retryAt: void 0,
@@ -1557,8 +1557,8 @@ var W = class {
 	async guard(e = !1) {
 		if (this.persistenceFailed) throw new rt();
 		let t = await this.lifecycle();
-		if (["REVOKED", "NEEDS_RECONNECT"].includes(t.state)) throw new L(t.guidance ?? "Ask the owner to reconnect this installation", void 0, t.code ?? "CREDENTIAL_EXPIRED");
-		if (e && (t.paused || t.state === "STOPPED")) throw new L(t.guidance ?? "Connector actions are stopped", void 0, t.paused ? "AGENT_PAUSED" : "CONNECTOR_STOPPED");
+		if (["REVOKED", "NEEDS_RECONNECT"].includes(t.state)) throw new I(t.guidance ?? "Ask the owner to reconnect this installation", void 0, t.code ?? "CREDENTIAL_EXPIRED");
+		if (e && (t.paused || t.state === "STOPPED")) throw new I(t.guidance ?? "Connector actions are stopped", void 0, t.paused ? "AGENT_PAUSED" : "CONNECTOR_STOPPED");
 	}
 	async healthy() {
 		let e = await this.lifecycle();
@@ -1590,7 +1590,7 @@ var W = class {
 			this.activeRefresh.add(i);
 			let a;
 			try {
-				a = await he(this.origin, t.agentRefreshToken, r.rotationId, {
+				a = await ge(this.origin, t.agentRefreshToken, r.rotationId, {
 					...this.options,
 					fetch: (e, t) => (this.options.fetch || fetch)(e, {
 						...t,
@@ -1601,7 +1601,7 @@ var W = class {
 				this.activeRefresh.delete(i);
 			}
 			return await this.guard(), this.mutate((e) => {
-				if (["REVOKED", "NEEDS_RECONNECT"].includes(e.lifecycle?.state ?? "")) throw new L(e.lifecycle?.guidance ?? "Credential ended", void 0, e.lifecycle?.code);
+				if (["REVOKED", "NEEDS_RECONNECT"].includes(e.lifecycle?.state ?? "")) throw new I(e.lifecycle?.guidance ?? "Credential ended", void 0, e.lifecycle?.code);
 				let { pendingRotation: t, ...n } = e;
 				return U({
 					...n,
@@ -1624,28 +1624,28 @@ var W = class {
 		let i = this.actionEpoch, a = new AbortController();
 		t && this.activeActions.add(a);
 		let o = async (n) => {
-			if (await this.guard(t), t && i !== this.actionEpoch) throw new L("Connector action was interrupted", void 0, "REQUEST_CANCELLED");
+			if (await this.guard(t), t && i !== this.actionEpoch) throw new I("Connector action was interrupted", void 0, "REQUEST_CANCELLED");
 			let r = await e(n, a.signal);
-			if (await this.guard(t), t && i !== this.actionEpoch) throw new L("Connector action was interrupted");
+			if (await this.guard(t), t && i !== this.actionEpoch) throw new I("Connector action was interrupted");
 			return await this.healthy(), r;
 		};
 		try {
 			try {
 				return await o(r);
 			} catch (e) {
-				if (!(e instanceof L) || Le(e).retry !== "refresh_then_retry_once") throw e;
+				if (!(e instanceof I) || Le(e).retry !== "refresh_then_retry_once") throw e;
 				await this.guard(t);
 				let n = U(await this.store.load());
 				return await o(n.agentApiToken === r.agentApiToken ? await this.freshSession(!0) : n);
 			}
 		} catch (e) {
-			throw t && a.signal.aborted ? (await this.guard(t), new L("Connector action was interrupted", void 0, "REQUEST_CANCELLED")) : (n && e instanceof L && Le(e).lifecycle === "DEGRADED" || await this.observeError(e), e);
+			throw t && a.signal.aborted ? (await this.guard(t), new I("Connector action was interrupted", void 0, "REQUEST_CANCELLED")) : (n && e instanceof I && Le(e).lifecycle === "DEGRADED" || await this.observeError(e), e);
 		} finally {
 			this.activeActions.delete(a);
 		}
 	}
 	withFreshClient(e, t = !0) {
-		return this.withFreshSession((t, n) => e(new pe(this.origin, t.agentApiToken, {
+		return this.withFreshSession((t, n) => e(new me(this.origin, t.agentApiToken, {
 			...this.options,
 			fetch: (e, t) => (this.options.fetch || fetch)(e, {
 				...t,
@@ -1654,7 +1654,7 @@ var W = class {
 		}), t), t);
 	}
 	async currentAccessToken(e = this.refreshSkewMs) {
-		if (this.options.caseSessionHandler) throw new L("Scoped runtimes cannot expose installation access credentials", void 0, "LEGACY_MODEL_ACCESS_DISABLED");
+		if (this.options.caseSessionHandler) throw new I("Scoped runtimes cannot expose installation access credentials", void 0, "LEGACY_MODEL_ACCESS_DISABLED");
 		if (!Number.isSafeInteger(e) || e < 0 || e > 3e5) throw RangeError("minValidityMs must be an integer from 0 to 300000");
 		let t = await this.freshSession();
 		if (Date.parse(t.agentTokenExpiresAt) <= Date.now() + e && (t = await this.freshSession(!0)), Date.parse(t.agentTokenExpiresAt) <= Date.now() + e) throw new st();
@@ -1688,7 +1688,7 @@ var W = class {
 					])
 				});
 			} catch {
-				throw new L("Wake service is unavailable", void 0, n?.aborted ? "REQUEST_CANCELLED" : "NETWORK_ERROR");
+				throw new I("Wake service is unavailable", void 0, n?.aborted ? "REQUEST_CANCELLED" : "NETWORK_ERROR");
 			}
 			let c = o.body?.getReader(), l = [], u = 0;
 			try {
@@ -1708,22 +1708,22 @@ var W = class {
 					let t = JSON.parse(new TextDecoder("utf-8", { fatal: !0 }).decode(e));
 					if (!t || typeof t != "object" || Array.isArray(t)) throw Error();
 					let n = typeof t.code == "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(t.code) ? t.code : void 0, r = typeof t.reason == "string" && /^[a-z][a-z0-9_]{0,63}$/.test(t.reason) ? t.reason : void 0, i = typeof t.requestId == "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(t.requestId) ? t.requestId : void 0, a = o.headers.get("retry-after"), s = Math.max(a && /^\d{1,6}$/.test(a) ? Number(a) : 0, typeof t.retryAfterSeconds == "number" && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 ? t.retryAfterSeconds : 0);
-					throw new L("Wake request was refused", o.status, n, {
+					throw new I("Wake request was refused", o.status, n, {
 						reason: r,
 						requestId: i,
 						...s ? { retryAfterSeconds: Math.min(s, 86400) } : {}
 					});
 				}
-				return await de(r, "Wake request was refused");
+				return await fe(r, "Wake request was refused");
 			} catch (e) {
-				throw n?.aborted ? new L("Wake request was cancelled", void 0, "REQUEST_CANCELLED") : a.aborted ? new L("Wake request timed out", void 0, "TIMEOUT") : e instanceof L ? e : new L("Invalid wake response");
+				throw n?.aborted ? new I("Wake request was cancelled", void 0, "REQUEST_CANCELLED") : a.aborted ? new I("Wake request timed out", void 0, "TIMEOUT") : e instanceof I ? e : new I("Invalid wake response");
 			} finally {
 				await c?.cancel().catch(() => {});
 			}
 		}, !1);
 	}
 	mintMcpReadToken(e = null) {
-		if (this.options.caseSessionHandler) throw new L("Scoped runtimes cannot mint legacy model credentials", void 0, "LEGACY_MODEL_ACCESS_DISABLED");
+		if (this.options.caseSessionHandler) throw new I("Scoped runtimes cannot mint legacy model credentials", void 0, "LEGACY_MODEL_ACCESS_DISABLED");
 		if (e !== null && (typeof e != "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(e))) throw TypeError("A safe case ID is required for an MCP read token");
 		return this.withFreshSession(async (t, n) => {
 			let r = AbortSignal.timeout(this.options.timeoutMs ?? 3e4), i;
@@ -1739,21 +1739,21 @@ var W = class {
 					body: JSON.stringify(e === null ? {} : { caseId: e })
 				});
 			} catch {
-				throw new L(r.aborted ? "Envoi MCP token request timed out" : "Envoi MCP token service could not be reached", void 0, n?.aborted ? "REQUEST_CANCELLED" : "NETWORK_ERROR");
+				throw new I(r.aborted ? "Envoi MCP token request timed out" : "Envoi MCP token service could not be reached", void 0, n?.aborted ? "REQUEST_CANCELLED" : "NETWORK_ERROR");
 			}
-			i.ok || await de(i, "Envoi MCP read credential was denied");
+			i.ok || await fe(i, "Envoi MCP read credential was denied");
 			let a;
 			try {
 				a = await i.json();
 			} catch {
-				throw new L("Envoi returned an invalid MCP read credential");
+				throw new I("Envoi returned an invalid MCP read credential");
 			}
-			if (!a || typeof a.mcpAccessToken != "string" || !a.mcpAccessToken || a.tokenType !== "Bearer" || a.scope !== "case_read" || a.caseId !== e || typeof a.expiresAt != "string" || Date.parse(a.expiresAt) <= Date.now() + 12e4) throw new L("Envoi returned an invalid or short-lived MCP read credential");
+			if (!a || typeof a.mcpAccessToken != "string" || !a.mcpAccessToken || a.tokenType !== "Bearer" || a.scope !== "case_read" || a.caseId !== e || typeof a.expiresAt != "string" || Date.parse(a.expiresAt) <= Date.now() + 12e4) throw new I("Envoi returned an invalid or short-lived MCP read credential");
 			return a;
 		}, !0);
 	}
 	forwardMcpRequest(e, { protocolVersion: t, signal: n } = {}) {
-		if (this.options.caseSessionHandler) throw new L("Scoped runtimes cannot use privileged legacy MCP", void 0, "LEGACY_MODEL_ACCESS_DISABLED");
+		if (this.options.caseSessionHandler) throw new I("Scoped runtimes cannot use privileged legacy MCP", void 0, "LEGACY_MODEL_ACCESS_DISABLED");
 		if (t && !/^\d{4}-\d{2}-\d{2}$/.test(t)) throw TypeError("Invalid MCP protocol version");
 		return this.withFreshSession(async (r, i) => {
 			let a = AbortSignal.timeout(this.options.timeoutMs ?? 3e4), o = AbortSignal.any([
@@ -1775,9 +1775,9 @@ var W = class {
 					}
 				});
 			} catch {
-				throw new L(o.aborted ? "Envoi MCP request timed out or canceled" : "Envoi MCP could not be reached", void 0, i?.aborted ? "REQUEST_CANCELLED" : "NETWORK_ERROR");
+				throw new I(o.aborted ? "Envoi MCP request timed out or canceled" : "Envoi MCP could not be reached", void 0, i?.aborted ? "REQUEST_CANCELLED" : "NETWORK_ERROR");
 			}
-			return s.ok || await de(s.clone(), "Envoi MCP request failed"), s;
+			return s.ok || await fe(s.clone(), "Envoi MCP request failed"), s;
 		}, !0);
 	}
 	reportConnectionStatus(e) {
@@ -1794,9 +1794,9 @@ var W = class {
 					signal: AbortSignal.timeout(this.options.timeoutMs ?? 3e4)
 				});
 			} catch {
-				throw new L("Envoi status service could not be reached", void 0, "NETWORK_ERROR");
+				throw new I("Envoi status service could not be reached", void 0, "NETWORK_ERROR");
 			}
-			n.ok ? await n.body?.cancel() : await de(n, "Envoi could not record setup checks");
+			n.ok ? await n.body?.cancel() : await fe(n, "Envoi could not record setup checks");
 		});
 	}
 	startCase(e, t) {
@@ -1864,10 +1864,10 @@ var W = class {
 					])
 				});
 			} catch {
-				throw new L(s.aborted ? "Envoi request timed out" : "Envoi could not be reached", void 0, o?.aborted ? "REQUEST_CANCELLED" : s.aborted ? "TIMEOUT" : "NETWORK_ERROR");
+				throw new I(s.aborted ? "Envoi request timed out" : "Envoi could not be reached", void 0, o?.aborted ? "REQUEST_CANCELLED" : s.aborted ? "TIMEOUT" : "NETWORK_ERROR");
 			}
 			r?.throwIfAborted();
-			let l = await (i ? Ze(c) : de(c, "Envoi work request failed"));
+			let l = await (i ? Ze(c) : fe(c, "Envoi work request failed"));
 			return r?.throwIfAborted(), l;
 		}, !0);
 	}
@@ -1882,10 +1882,10 @@ var W = class {
 	}
 	async createCaseSession(e, t) {
 		if (t.signal?.throwIfAborted(), et(e.message) && tt(e.message), !/^msg_[A-Za-z0-9_-]+$/.test(e.workId) || typeof e.leaseToken != "string" || e.leaseToken.length < 1 || e.leaseToken.length > 256 || !e.message.caseId || !Number.isFinite(Date.parse(e.leaseExpiresAt)) || Date.parse(e.leaseExpiresAt) <= Date.now()) throw TypeError("A live case-bound work lease is required");
-		if (await this.checkStatus(), t.signal?.throwIfAborted(), !this.caseSessionsAvailable) throw new L("Case sessions are unavailable; update the server before processing", 404, "FEATURE_DISABLED");
+		if (await this.checkStatus(), t.signal?.throwIfAborted(), !this.caseSessionsAvailable) throw new I("Case sessions are unavailable; update the server before processing", 404, "FEATURE_DISABLED");
 		let n = U(await this.store.load());
-		if (e.message.recipientAgentId !== n.agentId) throw new L("Work belongs to another agent", void 0, "CASE_SESSION_RESPONSE_INVALID");
-		if (et(e.message) && e.message.recipientInboxId !== n.inboxId) throw new L("Work belongs to another inbox", void 0, "CASE_SESSION_RESPONSE_INVALID");
+		if (e.message.recipientAgentId !== n.agentId) throw new I("Work belongs to another agent", void 0, "CASE_SESSION_RESPONSE_INVALID");
+		if (et(e.message) && e.message.recipientInboxId !== n.inboxId) throw new I("Work belongs to another inbox", void 0, "CASE_SESSION_RESPONSE_INVALID");
 		let r = `/api/agent/work/${encodeURIComponent(e.workId)}/session`, i = await this.postWork(r, { leaseToken: e.leaseToken }, void 0, t.signal, !0);
 		t.signal?.throwIfAborted();
 		let a;
@@ -1912,12 +1912,12 @@ var W = class {
 					leaseToken: e.leaseToken,
 					sessionId: t
 				}, void 0, void 0, !0);
-				if (n.session?.id !== t || n.session.status !== "ended") throw new L("Envoi returned an invalid case session end", void 0, "CASE_SESSION_RESPONSE_INVALID");
+				if (n.session?.id !== t || n.session.status !== "ended") throw new I("Envoi returned an invalid case session end", void 0, "CASE_SESSION_RESPONSE_INVALID");
 			}
 		}), a.signal.aborted || this.activeCaseSessions.add(a), a;
 	}
 	async reply(e, t, n, r = {}, i) {
-		if (et(e)) throw new L("Human decisions require the scoped tool channel", void 0, "LEGACY_MODEL_ACCESS_DISABLED");
+		if (et(e)) throw new I("Human decisions require the scoped tool channel", void 0, "LEGACY_MODEL_ACCESS_DISABLED");
 		if (H(e)) {
 			if (nt(e), !n || n.length > 200 || /[\x00-\x1f\x7f]/.test(n)) throw TypeError("A stable reply idempotency key is required");
 			if (Object.keys(r).length) throw TypeError("Human instruction replies accept text only");
@@ -1926,7 +1926,7 @@ var W = class {
 				text: t,
 				leaseToken: i
 			}, n);
-			if (typeof a.id != "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(a.id) || a.kind !== "humanInstructionReply" || a.inReplyTo !== e.id || a.caseId !== e.caseId || a.inboxId !== e.recipientInboxId || a.senderInboxId !== e.recipientInboxId || a.recipientInboxId !== e.recipientInboxId || a.senderType !== "agent" || a.senderAgentId !== e.recipientAgentId || a.recipientHumanId !== e.senderHumanId || a.from?.agentId !== e.recipientAgentId || typeof a.from?.address != "string" || !a.from.address || a.type !== "message" || a.status !== "delivered" || a.text !== t.trim()) throw new L("Envoi returned an invalid human instruction reply");
+			if (typeof a.id != "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(a.id) || a.kind !== "humanInstructionReply" || a.inReplyTo !== e.id || a.caseId !== e.caseId || a.inboxId !== e.recipientInboxId || a.senderInboxId !== e.recipientInboxId || a.recipientInboxId !== e.recipientInboxId || a.senderType !== "agent" || a.senderAgentId !== e.recipientAgentId || a.recipientHumanId !== e.senderHumanId || a.from?.agentId !== e.recipientAgentId || typeof a.from?.address != "string" || !a.from.address || a.type !== "message" || a.status !== "delivered" || a.text !== t.trim()) throw new I("Envoi returned an invalid human instruction reply");
 			return a;
 		}
 		if (e.groupCase) {
@@ -1948,10 +1948,10 @@ var W = class {
 	}
 	scopedWakeWorkDriver() {
 		let e = this.options.caseSessionHandler, t = () => {
-			if (!e || this.options.caseSessionHandler !== e || this.options.handler) throw new L("A scoped CaseSession handler is required for wake processing", void 0, "SCOPED_HANDLER_REQUIRED");
+			if (!e || this.options.caseSessionHandler !== e || this.options.handler) throw new I("A scoped CaseSession handler is required for wake processing", void 0, "SCOPED_HANDLER_REQUIRED");
 		};
 		t();
-		let n = (e) => e instanceof L && [
+		let n = (e) => e instanceof I && [
 			"CASE_CONTROLLED",
 			"WORK_LEASE_STALE",
 			"WORK_NOT_ELIGIBLE",
@@ -1963,7 +1963,7 @@ var W = class {
 		return Object.freeze({
 			processWorkOnce: (e) => (t(), this.processWorkOnce(e).catch((t) => {
 				if (n(t) && !e?.aborted) return !0;
-				if (t instanceof L && ["AGENT_PAUSED", "FEATURE_DISABLED"].includes(t.code ?? "") && !e?.aborted) return !1;
+				if (t instanceof I && ["AGENT_PAUSED", "FEATURE_DISABLED"].includes(t.code ?? "") && !e?.aborted) return !1;
 				throw t;
 			})),
 			revalidateLiveLeases: async (e) => {
@@ -1973,11 +1973,11 @@ var W = class {
 				}));
 				try {
 					await Promise.all([this.checkStatus().then(async () => {
-						if (await this.guard(!0), !this.caseSessionsAvailable) throw new L("Case sessions are unavailable", 404, "FEATURE_DISABLED");
+						if (await this.guard(!0), !this.caseSessionsAvailable) throw new I("Case sessions are unavailable", 404, "FEATURE_DISABLED");
 					}), ...i]), e?.throwIfAborted();
 				} catch (t) {
 					for (let [, e] of r) e.abort();
-					if (t instanceof L && ["AGENT_PAUSED", "FEATURE_DISABLED"].includes(t.code ?? "") && !e?.aborted) return;
+					if (t instanceof I && ["AGENT_PAUSED", "FEATURE_DISABLED"].includes(t.code ?? "") && !e?.aborted) return;
 					throw t;
 				}
 			},
@@ -2007,7 +2007,7 @@ var W = class {
 		if (!n) throw TypeError("A durable work handler is required");
 		if (e?.aborted || (await this.guard(), (await this.lifecycle()).paused)) return !1;
 		if (t) {
-			if (await this.checkStatus(), !this.caseSessionsAvailable) throw new L("Case sessions are unavailable", 404, "FEATURE_DISABLED");
+			if (await this.checkStatus(), !this.caseSessionsAvailable) throw new I("Case sessions are unavailable", 404, "FEATURE_DISABLED");
 			if ((await this.lifecycle()).paused) return !1;
 		}
 		let r;
@@ -2015,7 +2015,7 @@ var W = class {
 		try {
 			r = await this.postWork("/api/agent/work/claim", { acceptHumanInstructions: !0 });
 		} catch (e) {
-			throw e instanceof L && [
+			throw e instanceof I && [
 				404,
 				405,
 				501
@@ -2024,41 +2024,41 @@ var W = class {
 		if (r.state === "paused") return this.lastClaimResponse = {
 			at: (/* @__PURE__ */ new Date()).toISOString(),
 			result: "paused"
-		}, await this.observeError(new L("Paused", void 0, "AGENT_PAUSED")), !1;
+		}, await this.observeError(new I("Paused", void 0, "AGENT_PAUSED")), !1;
 		if (this.nextClaimAt = Infinity, r.work === null) return this.lastClaimResponse = {
 			at: (/* @__PURE__ */ new Date()).toISOString(),
 			result: "idle"
 		}, r.state === "idle" && Number.isSafeInteger(r.nextAvailableInMs) && r.nextAvailableInMs >= 0 && (this.nextClaimAt = Date.now() + Math.max(1e3, r.nextAvailableInMs)), !1;
 		let i = r.work;
-		if (!i || typeof i.workId != "string" || typeof i.leaseToken != "string" || !Number.isFinite(Date.parse(i.leaseExpiresAt)) || typeof i.message?.id != "string" || !i.message.id) throw new L("Envoi returned an invalid work claim");
+		if (!i || typeof i.workId != "string" || typeof i.leaseToken != "string" || !Number.isFinite(Date.parse(i.leaseExpiresAt)) || typeof i.message?.id != "string" || !i.message.id) throw new I("Envoi returned an invalid work claim");
 		this.lastClaimResponse = {
 			at: (/* @__PURE__ */ new Date()).toISOString(),
 			result: "claimed"
 		};
 		let a = U(await this.store.load());
 		if (et(i.message)) {
-			if (!t) throw new L("Human decisions require a scoped runtime", void 0, "FEATURE_DISABLED");
-			if (tt(i.message), i.message.recipientInboxId !== a.inboxId || i.message.id !== i.workId) throw new L("Envoi returned work for the wrong inbox");
+			if (!t) throw new I("Human decisions require a scoped runtime", void 0, "FEATURE_DISABLED");
+			if (tt(i.message), i.message.recipientInboxId !== a.inboxId || i.message.id !== i.workId) throw new I("Envoi returned work for the wrong inbox");
 		} else if (H(i.message)) {
-			if (nt(i.message), i.message.recipientInboxId !== a.inboxId) throw new L("Envoi returned work for the wrong inbox");
-		} else if (i.message.senderType === "human" || "senderHumanId" in i.message || i.message.from && "humanId" in i.message.from || !i.message.from?.address) throw new L("Envoi returned an invalid native work sender");
-		if (i.message.recipientAgentId !== a.agentId || i.message.status === "processed") throw new L("Envoi returned work for the wrong recipient");
+			if (nt(i.message), i.message.recipientInboxId !== a.inboxId) throw new I("Envoi returned work for the wrong inbox");
+		} else if (i.message.senderType === "human" || "senderHumanId" in i.message || i.message.from && "humanId" in i.message.from || !i.message.from?.address) throw new I("Envoi returned an invalid native work sender");
+		if (i.message.recipientAgentId !== a.agentId || i.message.status === "processed") throw new I("Envoi returned work for the wrong recipient");
 		let o = `/api/agent/work/${encodeURIComponent(i.workId)}`, s = globalThis.crypto.randomUUID(), c = `connector:${i.message.id}:${s}:ack`, l = `connector:${i.message.id}:${s}:complete`, u = new AbortController();
 		this.activeWork.add(u);
 		let d = () => u.abort();
 		e?.addEventListener("abort", d, { once: !0 }), e?.aborted && u.abort();
 		let f = i.leaseExpiresAt, p = null, m, h = () => {
 			clearTimeout(m), m = setTimeout(() => {
-				p = new L("Work lease expired during processing", void 0, "REQUEST_CANCELLED"), u.abort();
+				p = new I("Work lease expired during processing", void 0, "REQUEST_CANCELLED"), u.abort();
 			}, Math.max(0, Date.parse(f) - Date.now()));
 		};
 		h();
 		let g = null, _ = !1, v = () => g || (g = (async () => {
-			if (u.signal.aborted) throw new L("Work lease was interrupted", void 0, "REQUEST_CANCELLED");
+			if (u.signal.aborted) throw new I("Work lease was interrupted", void 0, "REQUEST_CANCELLED");
 			let e = await this.postWork(`${o}/renew`, { leaseToken: i.leaseToken }, void 0, u.signal, !!t);
-			if (u.signal.aborted) throw new L("Work lease was interrupted", void 0, "REQUEST_CANCELLED");
-			if (e.workId !== i.workId || e.leaseToken !== i.leaseToken || !Number.isFinite(Date.parse(e.leaseExpiresAt))) throw new L("Envoi returned an invalid lease renewal");
-			if (Date.parse(e.leaseExpiresAt) <= Date.now()) throw new L("Envoi returned an expired lease renewal");
+			if (u.signal.aborted) throw new I("Work lease was interrupted", void 0, "REQUEST_CANCELLED");
+			if (e.workId !== i.workId || e.leaseToken !== i.leaseToken || !Number.isFinite(Date.parse(e.leaseExpiresAt))) throw new I("Envoi returned an invalid lease renewal");
+			if (Date.parse(e.leaseExpiresAt) <= Date.now()) throw new I("Envoi returned an expired lease renewal");
 			f = e.leaseExpiresAt, h();
 		})().catch((e) => {
 			if (!_) throw t && (p = e, u.abort()), e;
@@ -2077,7 +2077,7 @@ var W = class {
 					await v(), e = 0;
 				} catch (n) {
 					if (u.signal.aborted) break;
-					let r = n instanceof L && (["NETWORK_ERROR", "TIMEOUT"].includes(n.code ?? "") || !n.code && [
+					let r = n instanceof I && (["NETWORK_ERROR", "TIMEOUT"].includes(n.code ?? "") || !n.code && [
 						502,
 						503,
 						504
@@ -2091,15 +2091,15 @@ var W = class {
 			_ = !0, this.activeLeaseChecks.delete(y), clearTimeout(m), u.abort(), await b, await g?.catch(() => {});
 		}, S = !1, C = null;
 		try {
-			if (u.signal.aborted) throw new L("Work claim was interrupted before admission");
-			if (await this.guard(!0), await n.admit(i.message), u.signal.aborted) throw new L("Work lease was interrupted before acknowledgement");
+			if (u.signal.aborted) throw new I("Work claim was interrupted before admission");
+			if (await this.guard(!0), await n.admit(i.message), u.signal.aborted) throw new I("Work lease was interrupted before acknowledgement");
 			let r = await this.postWork(`${o}/acknowledge`, { leaseToken: i.leaseToken }, c, u.signal, !!t);
-			if (r.workId !== i.workId || r.status !== "acknowledged" || r.receipt?.state !== "acknowledged" || r.receipt.messageId !== i.message.id) throw new L("Envoi returned an invalid acknowledgement");
-			if (u.signal.aborted) throw new L("Work lease was interrupted before processing");
+			if (r.workId !== i.workId || r.status !== "acknowledged" || r.receipt?.state !== "acknowledged" || r.receipt.messageId !== i.message.id) throw new I("Envoi returned an invalid acknowledgement");
+			if (u.signal.aborted) throw new I("Work lease was interrupted before processing");
 			if (t ? await this.processCaseSessionWork(i, t, u.signal, () => f) : await this.options.handler.process(i.message, {
 				signal: u.signal,
 				reply: async (t, n, r) => {
-					if (u.signal.aborted || e?.aborted || Date.parse(f) <= Date.now()) throw new L("Work lease is no longer valid for a reply");
+					if (u.signal.aborted || e?.aborted || Date.parse(f) <= Date.now()) throw new I("Work lease is no longer valid for a reply");
 					try {
 						let e = await this.reply(i.message, t, n, r, i.leaseToken);
 						return H(i.message) && (C = null), e;
@@ -2109,11 +2109,11 @@ var W = class {
 				}
 			}), C) throw C;
 			if (p) throw p;
-			if (u.signal.aborted || e?.aborted || Date.parse(f) <= Date.now()) throw new L("Work lease expired before completion");
+			if (u.signal.aborted || e?.aborted || Date.parse(f) <= Date.now()) throw new I("Work lease expired before completion");
 			let a = await this.postWork(`${o}/complete`, { leaseToken: i.leaseToken }, l, u.signal, !!t);
 			if (p) throw p;
-			if (u.signal.aborted || e?.aborted || Date.parse(f) <= Date.now()) throw new L("Work lease was interrupted during completion", void 0, "REQUEST_CANCELLED");
-			if (a.workId !== i.workId || a.status !== "processed" || a.receipt?.state !== "processed" || a.receipt.messageId !== i.message.id) throw new L("Envoi returned an invalid completion");
+			if (u.signal.aborted || e?.aborted || Date.parse(f) <= Date.now()) throw new I("Work lease was interrupted during completion", void 0, "REQUEST_CANCELLED");
+			if (a.workId !== i.workId || a.status !== "processed" || a.receipt?.state !== "processed" || a.receipt.messageId !== i.message.id) throw new I("Envoi returned an invalid completion");
 			return S = !0, await x(), !0;
 		} catch (n) {
 			let r = u.signal.aborted;
@@ -2121,7 +2121,7 @@ var W = class {
 				"REVOKED",
 				"NEEDS_RECONNECT",
 				"STOPPED"
-			].includes((await this.lifecycle()).state) && !(n instanceof L && (n.code === "CASE_CONTROLLED" || t && [
+			].includes((await this.lifecycle()).state) && !(n instanceof I && (n.code === "CASE_CONTROLLED" || t && [
 				"CASE_SESSION_ENDED",
 				"CASE_SESSION_EXPIRED",
 				"WORK_LEASE_STALE",
@@ -2133,7 +2133,7 @@ var W = class {
 				leaseToken: i.leaseToken,
 				retryable: !0,
 				reasonCode: "HANDLER_FAILED"
-			}, void 0, void 0, !!t).catch(() => {}), r && !p && n instanceof L && !n.code ? new L(n.message, n.status, "REQUEST_CANCELLED") : (n instanceof L || await this.observeError(new L("Work handler failed", void 0, "HANDLER_FAILED")), p ?? n);
+			}, void 0, void 0, !!t).catch(() => {}), r && !p && n instanceof I && !n.code ? new I(n.message, n.status, "REQUEST_CANCELLED") : (n instanceof I || await this.observeError(new I("Work handler failed", void 0, "HANDLER_FAILED")), p ?? n);
 		} finally {
 			this.activeWork.delete(u), e?.removeEventListener("abort", d), await x();
 		}
@@ -2177,9 +2177,9 @@ var W = class {
 				n.throwIfAborted();
 				return;
 			} catch (e) {
-				let t = a.signal.aborted && !(a.signal.reason instanceof L && a.signal.reason.reason === "ended_by_host") ? a.signal.reason : e;
-				await a.end().catch(() => {}), t instanceof L && t.code === "CASE_SESSION_ENDED" && t.reason === "agent_paused" && await this.observeError(new L("Paused", void 0, "AGENT_PAUSED"));
-				let o = t instanceof L && (t.code === "CASE_SESSION_EXPIRED" || t.code === "AUTHENTICATION_REQUIRED" || t.code === "CASE_SESSION_ENDED" && t.reason === "superseded");
+				let t = a.signal.aborted && !(a.signal.reason instanceof I && a.signal.reason.reason === "ended_by_host") ? a.signal.reason : e;
+				await a.end().catch(() => {}), t instanceof I && t.code === "CASE_SESSION_ENDED" && t.reason === "agent_paused" && await this.observeError(new I("Paused", void 0, "AGENT_PAUSED"));
+				let o = t instanceof I && (t.code === "CASE_SESSION_EXPIRED" || t.code === "AUTHENTICATION_REQUIRED" || t.code === "CASE_SESSION_ENDED" && t.reason === "superseded");
 				if (!i && o && !n.aborted && Date.parse(r()) > Date.now()) {
 					i = !0;
 					continue;
@@ -2192,15 +2192,15 @@ var W = class {
 		n.throwIfAborted();
 	}
 	async pollOnce() {
-		let e = U(await this.store.load()), t = await this.withFreshSession(async (t) => (e = t, new pe(this.origin, t.agentApiToken, this.options).delta(t.inboxId, this.cursorFor(t) || void 0, this.pageSize)));
-		if (!Array.isArray(t.events) || typeof t.hasMore != "boolean" || t.hasMore && t.events.length === 0) throw new L("Envoi returned an invalid event page");
+		let e = U(await this.store.load()), t = await this.withFreshSession(async (t) => (e = t, new me(this.origin, t.agentApiToken, this.options).delta(t.inboxId, this.cursorFor(t) || void 0, this.pageSize)));
+		if (!Array.isArray(t.events) || typeof t.hasMore != "boolean" || t.hasMore && t.events.length === 0) throw new I("Envoi returned an invalid event page");
 		let n = 0;
 		for (let r of t.events) {
 			let t = ut(r);
 			if (this.cursorFor(e) && t.cursor <= this.cursorFor(e)) continue;
 			await this.observeEvent(t), await this.options.onEvent?.(t);
 			let i = U(await this.store.load());
-			if (i.agentId !== e.agentId || i.inboxId !== e.inboxId) throw new L("Connector session changed while reading events");
+			if (i.agentId !== e.agentId || i.inboxId !== e.inboxId) throw new I("Connector session changed while reading events");
 			e = await this.saveCursor(e, t.cursor), n += 1;
 		}
 		return {
@@ -2213,7 +2213,7 @@ var W = class {
 	}
 	saveCursor(e, t) {
 		return this.mutate((n) => {
-			if (n.inboxId !== e.inboxId || n.agentId !== e.agentId) throw new L("Connector session changed while reading events");
+			if (n.inboxId !== e.inboxId || n.agentId !== e.agentId) throw new I("Connector session changed while reading events");
 			return {
 				...n,
 				cursor: t,
@@ -2235,13 +2235,13 @@ var W = class {
 					signal: AbortSignal.timeout(this.options.timeoutMs ?? 3e4)
 				});
 			} catch {
-				throw new L("Envoi status could not be reached", void 0, "NETWORK_ERROR");
+				throw new I("Envoi status could not be reached", void 0, "NETWORK_ERROR");
 			}
-			let n = await de(t, "Envoi status failed");
-			if (!["active", "paused"].includes(n.state) || n.inboxId !== e.inboxId || n.agent?.id !== e.agentId) throw new L("Envoi returned an invalid agent status");
+			let n = await fe(t, "Envoi status failed");
+			if (!["active", "paused"].includes(n.state) || n.inboxId !== e.inboxId || n.agent?.id !== e.agentId) throw new I("Envoi returned an invalid agent status");
 			return n;
 		});
-		e === this.actionEpoch && (this.caseSessionsAvailable = t.caseSessions?.available === !0 && t.caseSessions.version === 1, t.state === "paused" ? await this.observeError(new L("Paused", void 0, "AGENT_PAUSED"), e) : (await this.lifecycle()).paused && (await this.transition("RUNNING", {
+		e === this.actionEpoch && (this.caseSessionsAvailable = t.caseSessions?.available === !0 && t.caseSessions.version === 1, t.state === "paused" ? await this.observeError(new I("Paused", void 0, "AGENT_PAUSED"), e) : (await this.lifecycle()).paused && (await this.transition("RUNNING", {
 			paused: !1,
 			code: void 0,
 			reason: void 0,
@@ -2256,17 +2256,17 @@ var W = class {
 			r && (i = !0), u();
 		}, f = (e) => s && e?.state !== "DEGRADED" ? 3e4 + Math.random() * 3e4 : 12e3 + Math.random() * 6e3, p = async (e, r = !1) => {
 			if (n.aborted) return;
-			if (r && e instanceof L && Le(e).lifecycle === "DEGRADED") {
+			if (r && e instanceof I && Le(e).lifecycle === "DEGRADED") {
 				c = Math.min(c, Date.now() + f()), u();
 				return;
 			}
-			if (await this.observeError(e), this.options.caseSessionHandler && e instanceof L && e.code === "CASE_SESSION_ENDED" && e.reason === "credential_ended") try {
+			if (await this.observeError(e), this.options.caseSessionHandler && e instanceof I && e.code === "CASE_SESSION_ENDED" && e.reason === "credential_ended") try {
 				await this.checkStatus();
 			} catch (t) {
 				e = t, await this.observeError(e);
 			}
 			let i = await this.lifecycle();
-			i.state === "DEGRADED" && (c = Math.min(c, Date.now() + 12e3 + Math.random() * 6e3)), (e instanceof rt || e instanceof ot || ["REVOKED", "NEEDS_RECONNECT"].includes(i.state) || !(e instanceof L) && i.state !== "DEGRADED" || e instanceof L && !(Le(e).lifecycle === "DEGRADED" || [
+			i.state === "DEGRADED" && (c = Math.min(c, Date.now() + 12e3 + Math.random() * 6e3)), (e instanceof rt || e instanceof ot || ["REVOKED", "NEEDS_RECONNECT"].includes(i.state) || !(e instanceof I) && i.state !== "DEGRADED" || e instanceof I && !(Le(e).lifecycle === "DEGRADED" || [
 				"REQUEST_CANCELLED",
 				"AGENT_PAUSED",
 				"CASE_CONTROLLED"
@@ -2301,7 +2301,7 @@ var W = class {
 				try {
 					if ((await this.lifecycle()).paused && (await this.checkStatus(), l = Date.now() + 3e4 + Math.random() * 3e4), r.aborted) break;
 					let e = await this.withFreshSession(async (e) => {
-						if (e.inboxId !== g.inboxId || e.agentId !== g.agentId) throw new L("Connector session changed while connecting");
+						if (e.inboxId !== g.inboxId || e.agentId !== g.agentId) throw new I("Connector session changed while connecting");
 						g = e;
 						let t = {
 							authorization: `Bearer ${e.agentApiToken}`,
@@ -2319,9 +2319,9 @@ var W = class {
 									signal: AbortSignal.any([r, n.signal])
 								});
 							} catch {
-								throw new L("Envoi event stream could not be reached", void 0, "NETWORK_ERROR");
+								throw new I("Envoi event stream could not be reached", void 0, "NETWORK_ERROR");
 							}
-							return i.ok || await de(i, "Envoi event stream failed"), i;
+							return i.ok || await fe(i, "Envoi event stream failed"), i;
 						} finally {
 							clearTimeout(i);
 						}
@@ -2331,26 +2331,26 @@ var W = class {
 						for await (let t of Be(e, r, y)) {
 							if (n.aborted) break;
 							if (t.id !== void 0) {
-								if (!/^\d{20}$/.test(t.id) || t.data.cursor !== t.id || t.data.type !== t.type) throw new L("Envoi returned an invalid stored event");
+								if (!/^\d{20}$/.test(t.id) || t.data.cursor !== t.id || t.data.type !== t.type) throw new I("Envoi returned an invalid stored event");
 								let e = U(await this.store.load());
-								if (e.inboxId !== g.inboxId || e.agentId !== g.agentId) throw new L("Connector session changed while reading events");
+								if (e.inboxId !== g.inboxId || e.agentId !== g.agentId) throw new I("Connector session changed while reading events");
 								if (this.cursorFor(e) && t.id <= this.cursorFor(e)) continue;
 								let n = ut(t.data);
 								await this.observeEvent(n, t.type), await this.options.onEvent?.(n), await this.saveCursor(g, t.id), (t.type === "work.available" && n.agentId === g.agentId || (t.type === "message.delivered" || t.type === "human.instruction_created") && n.recipientAgentId === g.agentId) && d();
 							} else if (t.type === "ready") {
-								if (t.data.inboxId !== g.inboxId || t.data.cursor !== null && (typeof t.data.cursor != "string" || !/^\d{20}$/.test(t.data.cursor))) throw new L("Envoi returned an invalid ready frame");
+								if (t.data.inboxId !== g.inboxId || t.data.cursor !== null && (typeof t.data.cursor != "string" || !/^\d{20}$/.test(t.data.cursor))) throw new I("Envoi returned an invalid ready frame");
 								v && !this.cursorFor(U(await this.store.load())) && await this.saveCursor(g, t.data.cursor), s = !0, c = Date.now() + f(), (await this.lifecycle()).paused && (await this.checkStatus(), l = Date.now() + 3e4 + Math.random() * 3e4), d();
 							} else if (t.type === "replay_required") {
 								m = !0;
 								break;
-							} else if (t.type === "replay_error") throw new L("Envoi event replay failed", void 0, "NETWORK_ERROR");
-							else if (t.type === "credential.ended") throw await this.observeEvent(t.data, t.type), await this.guard(), new L("Credential ended", void 0, String(t.data.code));
+							} else if (t.type === "replay_error") throw new I("Envoi event replay failed", void 0, "NETWORK_ERROR");
+							else if (t.type === "credential.ended") throw await this.observeEvent(t.data, t.type), await this.guard(), new I("Credential ended", void 0, String(t.data.code));
 						}
 					} catch (e) {
-						throw e instanceof L || e instanceof rt ? e : new L("Envoi event stream was interrupted", void 0, "NETWORK_ERROR");
+						throw e instanceof I || e instanceof rt ? e : new I("Envoi event stream was interrupted", void 0, "NETWORK_ERROR");
 					}
 				} catch (e) {
-					e instanceof L && e.code === "EVENT_CURSOR_INVALID" ? (await this.saveCursor(g, null), d()) : (h = e instanceof L ? (e.retryAfterSeconds ?? 0) * 1e3 : 0, await p(e, !0));
+					e instanceof I && e.code === "EVENT_CURSOR_INVALID" ? (await this.saveCursor(g, null), d()) : (h = e instanceof I ? (e.retryAfterSeconds ?? 0) * 1e3 : 0, await p(e, !0));
 				} finally {
 					clearTimeout(o), t.abort(), this.activeStreams.delete(t), a = i ? Date.now() - i : 0, s = !1, c = Math.min(c, Date.now() + f()), u();
 				}
@@ -2360,7 +2360,7 @@ var W = class {
 						for (; !n.aborted && (await this.pollOnce()).hasMore;);
 						d();
 					} catch (e) {
-						e instanceof L && e.code === "EVENT_CURSOR_INVALID" ? (await this.saveCursor(g, null), d()) : (await p(e), m = !1);
+						e instanceof I && e.code === "EVENT_CURSOR_INVALID" ? (await this.saveCursor(g, null), d()) : (await p(e), m = !1);
 					}
 					if (m) continue;
 				}
@@ -2589,7 +2589,7 @@ async function St(e) {
 	if (r?.state !== "clean") {
 		let t = null;
 		try {
-			await me(n.upload, e.bytes, { fetch: e.fetch });
+			await he(n.upload, e.bytes, { fetch: e.fetch });
 		} catch (e) {
 			t = e;
 		}
@@ -3658,7 +3658,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 		for (let n in t) e[n] = (e[n] || 0) - (t[n] || 0);
 	}
 	function j(e) {
-		return typeof e == "boolean" || typeof e == "number" || e === null ? !e : (0, t._)`!${P(e)}`;
+		return typeof e == "boolean" || typeof e == "number" || e === null ? !e : (0, t._)`!${re(e)}`;
 	}
 	e.not = j;
 	var M = N(e.operators.AND);
@@ -3672,9 +3672,9 @@ var Lt = /* @__PURE__ */ N(((e) => {
 	}
 	e.or = ne;
 	function N(e) {
-		return (n, r) => n === t.nil ? r : r === t.nil ? n : (0, t._)`${P(n)} ${e} ${P(r)}`;
+		return (n, r) => n === t.nil ? r : r === t.nil ? n : (0, t._)`${re(n)} ${e} ${re(r)}`;
 	}
-	function P(e) {
+	function re(e) {
 		return e instanceof t.Name ? e : (0, t._)`(${e})`;
 	}
 })), q = /* @__PURE__ */ N(((e) => {
@@ -4650,7 +4650,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 	function ee(e, t, n, a) {
 		let { gen: o, schema: s, data: u, allErrors: f, opts: p, self: m } = e, { RULES: h } = m;
 		if (s.$ref && (p.ignoreKeywordsWithRef || !(0, d.schemaHasRulesButRef)(s, h))) {
-			o.block(() => ce(e, "$ref", h.all.$ref.definition));
+			o.block(() => le(e, "$ref", h.all.$ref.definition));
 			return;
 		}
 		p.jtd || ne(e, t), o.block(() => {
@@ -4664,11 +4664,11 @@ var Lt = /* @__PURE__ */ N(((e) => {
 	function te(e, t) {
 		let { gen: n, schema: i, opts: { useDefaults: o } } = e;
 		o && (0, a.assignDefaults)(e, t.type), n.block(() => {
-			for (let n of t.rules) (0, r.shouldUseRule)(i, n) && ce(e, n.keyword, n.definition, t.type);
+			for (let n of t.rules) (0, r.shouldUseRule)(i, n) && le(e, n.keyword, n.definition, t.type);
 		});
 	}
 	function ne(e, t) {
-		!e.schemaEnv.meta && e.opts.strictTypes && (N(e, t), e.opts.allowUnionTypes || P(e, t), re(e, e.dataTypes));
+		!e.schemaEnv.meta && e.opts.strictTypes && (N(e, t), e.opts.allowUnionTypes || re(e, t), ie(e, e.dataTypes));
 	}
 	function N(e, t) {
 		if (t.length) {
@@ -4677,41 +4677,41 @@ var Lt = /* @__PURE__ */ N(((e) => {
 				return;
 			}
 			t.forEach((t) => {
-				ae(e.dataTypes, t) || F(e, `type "${t}" not allowed by context "${e.dataTypes.join(",")}"`);
-			}), oe(e, t);
+				oe(e.dataTypes, t) || P(e, `type "${t}" not allowed by context "${e.dataTypes.join(",")}"`);
+			}), se(e, t);
 		}
 	}
-	function P(e, t) {
-		t.length > 1 && !(t.length === 2 && t.includes("null")) && F(e, "use allowUnionTypes to allow union type keyword");
-	}
 	function re(e, t) {
+		t.length > 1 && !(t.length === 2 && t.includes("null")) && P(e, "use allowUnionTypes to allow union type keyword");
+	}
+	function ie(e, t) {
 		let n = e.self.RULES.all;
 		for (let i in n) {
 			let a = n[i];
 			if (typeof a == "object" && (0, r.shouldUseRule)(e.schema, a)) {
 				let { type: n } = a.definition;
-				n.length && !n.some((e) => ie(t, e)) && F(e, `missing type "${n.join(",")}" for keyword "${i}"`);
+				n.length && !n.some((e) => ae(t, e)) && P(e, `missing type "${n.join(",")}" for keyword "${i}"`);
 			}
 		}
 	}
-	function ie(e, t) {
+	function ae(e, t) {
 		return e.includes(t) || t === "number" && e.includes("integer");
 	}
-	function ae(e, t) {
+	function oe(e, t) {
 		return e.includes(t) || t === "integer" && e.includes("number");
 	}
-	function oe(e, t) {
+	function se(e, t) {
 		let n = [];
-		for (let r of e.dataTypes) ae(t, r) ? n.push(r) : t.includes("integer") && r === "number" && n.push("integer");
+		for (let r of e.dataTypes) oe(t, r) ? n.push(r) : t.includes("integer") && r === "number" && n.push("integer");
 		e.dataTypes = n;
 	}
-	function F(e, t) {
+	function P(e, t) {
 		let n = e.schemaEnv.baseId + e.errSchemaPath;
 		t += ` at "${n}" (strictTypes)`, (0, d.checkStrictMode)(e, t, e.opts.strictTypes);
 	}
-	var se = class {
+	var ce = class {
 		constructor(e, t, n) {
-			if ((0, o.validateKeywordUsage)(e, t, n), this.gen = e.gen, this.allErrors = e.allErrors, this.keyword = n, this.data = e.data, this.schema = e.schema[n], this.$data = t.$data && e.opts.$data && this.schema && this.schema.$data, this.schemaValue = (0, d.schemaRefOrVal)(e, this.schema, n, this.$data), this.schemaType = t.schemaType, this.parentSchema = e.schema, this.params = {}, this.it = e, this.def = t, this.$data) this.schemaCode = e.gen.const("vSchema", le(this.$data, e));
+			if ((0, o.validateKeywordUsage)(e, t, n), this.gen = e.gen, this.allErrors = e.allErrors, this.keyword = n, this.data = e.data, this.schema = e.schema[n], this.$data = t.$data && e.opts.$data && this.schema && this.schema.$data, this.schemaValue = (0, d.schemaRefOrVal)(e, this.schema, n, this.$data), this.schemaType = t.schemaType, this.parentSchema = e.schema, this.params = {}, this.it = e, this.def = t, this.$data) this.schemaCode = e.gen.const("vSchema", ue(this.$data, e));
 			else if (this.schemaCode = this.schemaValue, !(0, o.validSchemaType)(this.schema, t.schemaType, t.allowUndefined)) throw Error(`${n} value must be ${JSON.stringify(t.schemaType)}`);
 			("code" in t ? t.trackErrors : t.errors !== !1) && (this.errsCount = e.gen.const("_errs", l.default.errors));
 		}
@@ -4809,20 +4809,20 @@ var Lt = /* @__PURE__ */ N(((e) => {
 			if (n.opts.unevaluated && (n.props !== !0 || n.items !== !0)) return r.if(t, () => this.mergeEvaluated(e, c.Name)), !0;
 		}
 	};
-	e.KeywordCxt = se;
-	function ce(e, t, n, r) {
-		let i = new se(e, n, t);
+	e.KeywordCxt = ce;
+	function le(e, t, n, r) {
+		let i = new ce(e, n, t);
 		"code" in n ? n.code(i, r) : i.$data && n.validate ? (0, o.funcKeywordCode)(i, n) : "macro" in n ? (0, o.macroKeywordCode)(i, n) : (n.compile || n.validate) && (0, o.funcKeywordCode)(i, n);
 	}
-	var I = /^\/(?:[^~]|~0|~1)*$/, L = /^([0-9]+)(#|\/(?:[^~]|~0|~1)*)?$/;
-	function le(e, { dataLevel: t, dataNames: n, dataPathArr: r }) {
+	var F = /^\/(?:[^~]|~0|~1)*$/, I = /^([0-9]+)(#|\/(?:[^~]|~0|~1)*)?$/;
+	function ue(e, { dataLevel: t, dataNames: n, dataPathArr: r }) {
 		let i, a;
 		if (e === "") return l.default.rootData;
 		if (e[0] === "/") {
-			if (!I.test(e)) throw Error(`Invalid JSON-pointer: ${e}`);
+			if (!F.test(e)) throw Error(`Invalid JSON-pointer: ${e}`);
 			i = e, a = l.default.rootData;
 		} else {
-			let o = L.exec(e);
+			let o = I.exec(e);
 			if (!o) throw Error(`Invalid JSON-pointer: ${e}`);
 			let s = +o[1];
 			if (i = o[2], i === "#") {
@@ -4839,7 +4839,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 			return `Cannot access ${e} ${n} levels up, current level is ${t}`;
 		}
 	}
-	e.getData = le;
+	e.getData = ue;
 })), Qt = /* @__PURE__ */ N(((e) => {
 	Object.defineProperty(e, "__esModule", { value: !0 }), e.default = class extends Error {
 		constructor(e) {
@@ -5015,7 +5015,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 			baseId: t
 		}), o.schema !== o.root.schema) return o;
 	}
-})), tn = /* @__PURE__ */ P({
+})), tn = /* @__PURE__ */ re({
 	$id: () => nn,
 	additionalProperties: () => !1,
 	default: () => cn,
@@ -5346,7 +5346,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 		}
 		return t;
 	}
-	function P(e) {
+	function re(e) {
 		let t = "";
 		for (let n = 0; n < e.length; n++) {
 			if (e[n] === "%" && n + 2 < e.length) {
@@ -5360,7 +5360,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 		}
 		return t;
 	}
-	function re(e) {
+	function ie(e) {
 		let t = [];
 		if (e.userinfo !== void 0 && (t.push(M(e.userinfo)), t.push("@")), e.host !== void 0) {
 			let n = e.host;
@@ -5379,7 +5379,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 	}
 	t.exports = {
 		nonSimpleDomain: g,
-		recomposeAuthority: re,
+		recomposeAuthority: ie,
 		reescapeHostDelimiters: D,
 		normalizePercentEncoding: O,
 		normalizePathEncoding: k,
@@ -5388,7 +5388,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 		encodeUserinfo: M,
 		encodeQuery: ee,
 		encodeFragment: te,
-		escapePreservingEscapes: P,
+		escapePreservingEscapes: re,
 		removeDotSegments: S,
 		removeDotSegmentsRelative: C,
 		isIPv4: r,
@@ -5510,10 +5510,10 @@ var Lt = /* @__PURE__ */ N(((e) => {
 		return t;
 	}
 	function S(e, t) {
-		return typeof e == "string" ? e = ie(e, t) : typeof e == "object" && (e = re(E(e, t), t)), e;
+		return typeof e == "string" ? e = ae(e, t) : typeof e == "object" && (e = ie(E(e, t), t)), e;
 	}
 	function C(e, t, r) {
-		let i = r ? Object.assign({ scheme: "null" }, r) : { scheme: "null" }, { parsed: a, malformedAuthorityOrPort: o, malformedPercentEncoding: s, malformedSchemeSpecific: c, malformedHost: l, malformedScheme: u } = P(e, i), { parsed: d, malformedAuthorityOrPort: f, malformedPercentEncoding: m, malformedSchemeSpecific: h, malformedHost: _, malformedScheme: v } = P(t, i);
+		let i = r ? Object.assign({ scheme: "null" }, r) : { scheme: "null" }, { parsed: a, malformedAuthorityOrPort: o, malformedPercentEncoding: s, malformedSchemeSpecific: c, malformedHost: l, malformedScheme: u } = re(e, i), { parsed: d, malformedAuthorityOrPort: f, malformedPercentEncoding: m, malformedSchemeSpecific: h, malformedHost: _, malformedScheme: v } = re(t, i);
 		if (o || f || s || m || c || h || l || _ || u || v) throw Error(a.error || d.error || "URI is malformed.");
 		let b = w(a, d, i, !0), x = g(r && r.scheme || b.scheme), S = b.host, C = S !== void 0 && S !== "" && (p(S) || n(S).isIPV6);
 		if (ne(b, r || {}, x, C)) throw Error(y);
@@ -5524,7 +5524,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 	}
 	function w(e, t, n, a) {
 		let o = {};
-		if (a || (e = re(E(e, n), n), t = re(E(t, n), n)), n ||= {}, !n.tolerant && t.scheme) o.scheme = t.scheme, o.userinfo = t.userinfo, o.host = t.host, o.port = t.port, o.path = r(t.path || ""), o.query = t.query;
+		if (a || (e = ie(E(e, n), n), t = ie(E(t, n), n)), n ||= {}, !n.tolerant && t.scheme) o.scheme = t.scheme, o.userinfo = t.userinfo, o.host = t.host, o.port = t.port, o.path = r(t.path || ""), o.query = t.query;
 		else {
 			if (t.userinfo !== void 0 || t.host !== void 0 || t.port !== void 0) o.userinfo = t.userinfo, o.host = t.host, o.port = t.port, o.path = r(t.path || ""), o.query = t.query;
 			else {
@@ -5544,7 +5544,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 		return o.fragment = t.fragment, o;
 	}
 	function T(e, t, n) {
-		let r = oe(e, n), i = oe(t, n);
+		let r = se(e, n), i = se(t, n);
 		return r !== void 0 && i !== void 0 && r === i;
 	}
 	function E(e, t) {
@@ -5617,7 +5617,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 	function N(e) {
 		return e.username === "" && e.password === "" && e.port === "" && e.pathname === "/" && e.search === "" && e.hash === "" && e.hostname !== "";
 	}
-	function P(e, t) {
+	function re(e, t) {
 		let r = Object.assign({}, t), i = {
 			scheme: void 0,
 			userinfo: void 0,
@@ -5662,14 +5662,14 @@ var Lt = /* @__PURE__ */ N(((e) => {
 			malformedScheme: b
 		};
 	}
-	function re(e, t) {
-		return P(e, t).parsed;
-	}
 	function ie(e, t) {
-		return ae(e, t).normalized;
+		return re(e, t).parsed;
 	}
 	function ae(e, t) {
-		let { parsed: n, malformedAuthorityOrPort: r, malformedPercentEncoding: i, malformedSchemeSpecific: a, malformedHost: o, malformedScheme: s } = P(e, t);
+		return oe(e, t).normalized;
+	}
+	function oe(e, t) {
+		let { parsed: n, malformedAuthorityOrPort: r, malformedPercentEncoding: i, malformedSchemeSpecific: a, malformedHost: o, malformedScheme: s } = re(e, t);
 		return {
 			normalized: r || i || a || o || s ? e : E(n, t),
 			malformedAuthorityOrPort: r,
@@ -5679,7 +5679,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 			malformedScheme: s
 		};
 	}
-	function oe(e, t) {
+	function se(e, t) {
 		if (typeof e != "string" && typeof e != "object") return;
 		let n;
 		try {
@@ -5687,19 +5687,19 @@ var Lt = /* @__PURE__ */ N(((e) => {
 		} catch {
 			return;
 		}
-		let { normalized: r, malformedAuthorityOrPort: i, malformedPercentEncoding: a, malformedSchemeSpecific: o, malformedHost: s, malformedScheme: c } = ae(n, t);
+		let { normalized: r, malformedAuthorityOrPort: i, malformedPercentEncoding: a, malformedSchemeSpecific: o, malformedHost: s, malformedScheme: c } = oe(n, t);
 		return i || a || o || s || c ? void 0 : r;
 	}
-	var F = {
+	var P = {
 		SCHEMES: h,
 		normalize: S,
 		resolve: C,
 		resolveComponent: w,
 		equal: T,
 		serialize: E,
-		parse: re
+		parse: ie
 	};
-	t.exports = F, t.exports.default = F, t.exports.fastUri = F;
+	t.exports = P, t.exports.default = P, t.exports.fastUri = P;
 })), pn = /* @__PURE__ */ N(((e) => {
 	Object.defineProperty(e, "__esModule", { value: !0 });
 	var t = fn();
@@ -5745,7 +5745,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 			return n.CodeGen;
 		}
 	});
-	var r = Qt(), i = $t(), a = Ht(), o = en(), s = K(), c = Xt(), l = Wt(), u = q(), d = (ln(), ae(tn).default), f = pn(), p = (e, t) => new RegExp(e, t);
+	var r = Qt(), i = $t(), a = Ht(), o = en(), s = K(), c = Xt(), l = Wt(), u = q(), d = (ln(), oe(tn).default), f = pn(), p = (e, t) => new RegExp(e, t);
 	p.code = "new RegExp";
 	var m = [
 		"removeAdditional",
@@ -7256,7 +7256,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 			}
 		}
 	};
-})), er = /* @__PURE__ */ P({
+})), er = /* @__PURE__ */ re({
 	$id: () => nr,
 	$schema: () => tr,
 	default: () => sr,
@@ -7401,7 +7401,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 	};
 })), lr = /* @__PURE__ */ N(((e, t) => {
 	Object.defineProperty(e, "__esModule", { value: !0 }), e.MissingRefError = e.ValidationError = e.CodeGen = e.Name = e.nil = e.stringify = e.str = e._ = e.KeywordCxt = e.Ajv = void 0;
-	var n = mn(), r = Zn(), i = $n(), a = (cr(), ae(er).default), o = ["/properties"], s = "http://json-schema.org/draft-07/schema", c = class extends n.default {
+	var n = mn(), r = Zn(), i = $n(), a = (cr(), oe(er).default), o = ["/properties"], s = "http://json-schema.org/draft-07/schema", c = class extends n.default {
 		_addVocabularies() {
 			super._addVocabularies(), r.default.forEach((e) => this.addVocabulary(e)), this.opts.discriminator && this.addKeyword(i.default);
 		}
@@ -7700,7 +7700,7 @@ var Lt = /* @__PURE__ */ N(((e) => {
 		for (let r of t) e.addFormat(r, n[r]);
 	}
 	t.exports = e = s, Object.defineProperty(e, "__esModule", { value: !0 }), e.default = s;
-})), pr = /* @__PURE__ */ ie(lr(), 1), mr = /* @__PURE__ */ ie(fr(), 1), hr = {
+})), pr = /* @__PURE__ */ ae(lr(), 1), mr = /* @__PURE__ */ ae(fr(), 1), hr = {
 	contract: "case-tools",
 	version: 1,
 	publicationSha: "15fff09f336fe941858287511471b07b9f5184f8",
@@ -8040,7 +8040,7 @@ var _r = (e) => gr.compile({
 	input: _r(e.inputSchema),
 	result: _r({ $ref: `#/definitions/${e.resultSchema}` }),
 	writes: e.writes
-}])), Sr = (e) => typeof e == "object" && !!e && !Array.isArray(e), Cr = (e) => new TextEncoder().encode(e).byteLength, wr = (e) => Cr(JSON.stringify(e)), Y = () => new L("Case tool returned an invalid response", void 0, "CASE_TOOL_RESPONSE_INVALID"), Tr = (e) => wr(e.filename) <= 255 && wr(e.mimeType) <= 128;
+}])), Sr = (e) => typeof e == "object" && !!e && !Array.isArray(e), Cr = (e) => new TextEncoder().encode(e).byteLength, wr = (e) => Cr(JSON.stringify(e)), Y = () => new I("Case tool returned an invalid response", void 0, "CASE_TOOL_RESPONSE_INVALID"), Tr = (e) => wr(e.filename) <= 255 && wr(e.mimeType) <= 128;
 function Er(e) {
 	return wr(e) <= e.limits.resultMaxBytes && wr({
 		...e,
@@ -8054,7 +8054,7 @@ function Dr(e) {
 	}
 	return e;
 }
-var Or = class extends L {
+var Or = class extends I {
 	retryable;
 	constructor(e, t) {
 		super("Case tool refused the operation", void 0, e), this.retryable = t;
@@ -8079,17 +8079,17 @@ var Or = class extends L {
 	}
 	call(e, t) {
 		let n = xr.get(e);
-		if (!n || !n.input(t)) return Promise.reject(new L("Invalid case tool arguments", void 0, "TOOL_ARGUMENTS_INVALID"));
+		if (!n || !n.input(t)) return Promise.reject(new I("Invalid case tool arguments", void 0, "TOOL_ARGUMENTS_INVALID"));
 		let r;
 		try {
 			r = JSON.parse(JSON.stringify(t));
 		} catch {
-			return Promise.reject(new L("Invalid case tool arguments", void 0, "TOOL_ARGUMENTS_INVALID"));
+			return Promise.reject(new I("Invalid case tool arguments", void 0, "TOOL_ARGUMENTS_INVALID"));
 		}
-		if (!n.input(r)) return Promise.reject(new L("Invalid case tool arguments", void 0, "TOOL_ARGUMENTS_INVALID"));
-		if ("terms" in r && Cr(JSON.stringify(r.terms)) > 1024) return Promise.reject(new L("Case terms exceed the byte limit", void 0, "TOOL_ARGUMENTS_INVALID"));
+		if (!n.input(r)) return Promise.reject(new I("Invalid case tool arguments", void 0, "TOOL_ARGUMENTS_INVALID"));
+		if ("terms" in r && Cr(JSON.stringify(r.terms)) > 1024) return Promise.reject(new I("Case terms exceed the byte limit", void 0, "TOOL_ARGUMENTS_INVALID"));
 		let i = this.#i.then(async () => {
-			if (this.signal.throwIfAborted(), this.#r) throw new L("End this turn and wait for the human decision", void 0, "TURN_END_REQUIRED");
+			if (this.signal.throwIfAborted(), this.#r) throw new I("End this turn and wait for the human decision", void 0, "TURN_END_REQUIRED");
 			return !this.#n && (e !== "envoi_case_snapshot" || Object.hasOwn(r, "eventsBefore")) && await this.#a("envoi_case_snapshot", {}), this.#a(e, r);
 		});
 		return this.#i = i.catch(() => {}), i;
@@ -8124,7 +8124,7 @@ var Or = class extends L {
 	async #a(e, t) {
 		this.signal.throwIfAborted();
 		let n = this.#e.modelContext();
-		if (!n.allowedTools.includes(e)) throw new L("Tool is not in this case session", void 0, "TOOL_NOT_IN_SESSION");
+		if (!n.allowedTools.includes(e)) throw new I("Tool is not in this case session", void 0, "TOOL_NOT_IN_SESSION");
 		let r = ++this.#t, i = await this.#e.forward(JSON.stringify({
 			jsonrpc: "2.0",
 			id: r,
@@ -8143,7 +8143,7 @@ var Or = class extends L {
 		}
 		if (yr(a) && Sr(a) && a.id === r) {
 			let e = a.error;
-			throw new L("Case tool request was refused", void 0, e.data.code);
+			throw new I("Case tool request was refused", void 0, e.data.code);
 		}
 		if (!vr(a) || !Sr(a) || a.id !== r || !Sr(a.result)) throw Y();
 		let o = a.result, s = o.content;
@@ -8226,7 +8226,7 @@ function jr(e) {
 			]), s = t.modelContext(), c = Object.freeze(hr.tools.filter((e) => s.allowedTools.includes(e.name)).map((e) => Object.freeze({
 				name: e.name,
 				inputSchema: Object.freeze(structuredClone(e.inputSchema))
-			}))), l = new L("Turn ended for human input", void 0, "TURN_END_REQUIRED"), u = 0, d = Promise.resolve(), f, p = new Promise((e, t) => {
+			}))), l = new I("Turn ended for human input", void 0, "TURN_END_REQUIRED"), u = 0, d = Promise.resolve(), f, p = new Promise((e, t) => {
 				f = () => t(o.reason), o.addEventListener("abort", f, { once: !0 }), o.aborted && f();
 			});
 			try {
@@ -8254,11 +8254,11 @@ function jr(e) {
 							}
 						}
 					}, Object.freeze({ workId: n.workId }));
-				})]), o.throwIfAborted(), u) throw new L("Runtime returned before its tools finished", void 0, "SCOPED_TURN_INCOMPLETE");
+				})]), o.throwIfAborted(), u) throw new I("Runtime returned before its tools finished", void 0, "SCOPED_TURN_INCOMPLETE");
 			} catch (e) {
 				if (e !== l || n.signal.aborted || t.signal.aborted) throw e;
 			} finally {
-				o.removeEventListener("abort", f), a.abort(), u && !r.endTurnRequired && t.invalidate(new L("Runtime ended with outstanding tools", void 0, "SCOPED_TURN_INCOMPLETE"));
+				o.removeEventListener("abort", f), a.abort(), u && !r.endTurnRequired && t.invalidate(new I("Runtime ended with outstanding tools", void 0, "SCOPED_TURN_INCOMPLETE"));
 			}
 		}
 	};
@@ -8334,7 +8334,7 @@ var Nr = /* @__PURE__ */ new Map(), Pr = class {
 			await l(a, { force: !0 });
 		}
 	}
-}, Fr = (e) => typeof e == "object" && !!e && !Array.isArray(e), Ir = () => new L("Runtime returned an invalid scoped tool response", void 0, "SCOPED_PROVIDER_RESPONSE_INVALID");
+}, Fr = (e) => typeof e == "object" && !!e && !Array.isArray(e), Ir = () => new I("Runtime returned an invalid scoped tool response", void 0, "SCOPED_PROVIDER_RESPONSE_INVALID");
 async function Lr(e, t) {
 	let n = e.body?.getReader();
 	if (!n) throw Ir();
@@ -8358,14 +8358,14 @@ async function Lr(e, t) {
 function Rr(e) {
 	let t = e.identity ?? e.model;
 	return async (n, r) => {
-		if (!r.workId) throw new L("Scoped runtime needs trusted work identity", void 0, "SCOPED_HOST_CONTEXT_REQUIRED");
+		if (!r.workId) throw new I("Scoped runtime needs trusted work identity", void 0, "SCOPED_HOST_CONTEXT_REQUIRED");
 		let i = r.workId;
 		return e.store.exclusive(i, async () => {
 			n.signal.throwIfAborted();
 			let r = await e.store.load(i);
-			if (r?.admission) throw new L("Resume with the dedicated admission host", void 0, "SCOPED_ADMISSION_REQUIRED");
+			if (r?.admission) throw new I("Resume with the dedicated admission host", void 0, "SCOPED_ADMISSION_REQUIRED");
 			let a = r !== null;
-			if (r && r.model !== t) throw new L("Resume with the original scoped model", void 0, "SCOPED_MODEL_CHANGED");
+			if (r && r.model !== t) throw new I("Resume with the original scoped model", void 0, "SCOPED_MODEL_CHANGED");
 			if (r ||= {
 				version: 1,
 				workId: i,
@@ -8389,7 +8389,7 @@ function Rr(e) {
 				name: e.name,
 				parameters: e.inputSchema
 			})), s = new Set(n.tools.map((e) => e.name)), c = async () => {
-				if (n.signal.throwIfAborted(), Buffer.byteLength(JSON.stringify(r)) > 524288) throw new L("Scoped turn context limit reached", void 0, "SCOPED_TURN_LIMIT");
+				if (n.signal.throwIfAborted(), Buffer.byteLength(JSON.stringify(r)) > 524288) throw new I("Scoped turn context limit reached", void 0, "SCOPED_TURN_LIMIT");
 				await e.store.save(r);
 			};
 			for (; !r.completed;) {
@@ -8404,7 +8404,7 @@ function Rr(e) {
 					}
 					let a;
 					try {
-						if (!Fr(i)) throw new L("Invalid case tool arguments", void 0, "TOOL_ARGUMENTS_INVALID");
+						if (!Fr(i)) throw new I("Invalid case tool arguments", void 0, "TOOL_ARGUMENTS_INVALID");
 						let e = 0;
 						for (;;) {
 							n.signal.throwIfAborted();
@@ -8417,8 +8417,8 @@ function Rr(e) {
 							}
 						}
 					} catch (t) {
-						if (t instanceof L && t.code === "TURN_END_REQUIRED") throw r.completed = !0, r.pending = [], await e.store.save(r), t;
-						if (t instanceof Or && t.retryable || !(t instanceof Or) && !(t instanceof L && t.code === "TOOL_ARGUMENTS_INVALID")) throw t;
+						if (t instanceof I && t.code === "TURN_END_REQUIRED") throw r.completed = !0, r.pending = [], await e.store.save(r), t;
+						if (t instanceof Or && t.retryable || !(t instanceof Or) && !(t instanceof I && t.code === "TOOL_ARGUMENTS_INVALID")) throw t;
 						a = {
 							ok: !1,
 							code: t.code,
@@ -8438,7 +8438,7 @@ function Rr(e) {
 						context: n.context,
 						snapshot: n.snapshot
 					})
-				}), !1), r.providerCalls >= 16) throw new L("Scoped turn request limit reached", void 0, "SCOPED_TURN_LIMIT");
+				}), !1), r.providerCalls >= 16) throw new I("Scoped turn request limit reached", void 0, "SCOPED_TURN_LIMIT");
 				r.providerCalls++, await c();
 				let t = AbortSignal.any([n.signal, AbortSignal.timeout(12e4)]), i;
 				try {
@@ -8452,9 +8452,9 @@ function Rr(e) {
 						tools: o
 					}, t);
 				} catch {
-					throw n.signal.throwIfAborted(), new L(`${e.label} scoped request could not be completed`, void 0, "SCOPED_PROVIDER_UNAVAILABLE");
+					throw n.signal.throwIfAborted(), new I(`${e.label} scoped request could not be completed`, void 0, "SCOPED_PROVIDER_UNAVAILABLE");
 				}
-				if (!i.ok) throw await i.body?.cancel(), new L(`${e.label} scoped request failed with HTTP ${i.status}`, i.status, "SCOPED_PROVIDER_UNAVAILABLE");
+				if (!i.ok) throw await i.body?.cancel(), new I(`${e.label} scoped request failed with HTTP ${i.status}`, i.status, "SCOPED_PROVIDER_UNAVAILABLE");
 				let l;
 				try {
 					l = await Lr(i, t);
@@ -8617,11 +8617,11 @@ function Vr(e) {
 		"relayPort",
 		"mcpWriteEnabled",
 		"assetManifestPath"
-	].includes(e)) || typeof e.gatewayUrl != "string" || typeof e.gatewayToken != "string" || typeof e.agentId != "string" || typeof e.configPath != "string" || e.chatCompletionsEnabled !== void 0 && typeof e.chatCompletionsEnabled != "boolean" || e.responsesEnabled !== void 0 && typeof e.responsesEnabled != "boolean" || e.scopedTools !== void 0 && e.scopedTools !== !0) throw new I("STATE_INVALID", "The saved OpenClaw configuration is invalid; preserve the private connection directory.");
-	if (e.relayToken !== void 0 && (typeof e.relayToken != "string" || !e.relayToken || e.relayToken.length > 16384 || /[\x00-\x20\x7f]/.test(e.relayToken))) throw new I("RUNTIME_CONFIGURATION_INVALID", "Set a valid OPENCLAW_MCP_RELAY_TOKEN privately on this host.");
-	if (e.relayPort !== void 0 && (typeof e.relayPort != "string" || !/^\d+$/.test(e.relayPort) || Number(e.relayPort) < 1 || Number(e.relayPort) > 65535)) throw new I("RUNTIME_CONFIGURATION_INVALID", "OPENCLAW_MCP_RELAY_PORT must be from 1 to 65535.");
-	if (e.mcpWriteEnabled !== void 0 && typeof e.mcpWriteEnabled != "boolean" || (e.relayPort || e.mcpWriteEnabled) && !e.relayToken) throw new I("RUNTIME_CONFIGURATION_INVALID", "OpenClaw MCP relay ports and writes require a private relay token.");
-	if (e.assetManifestPath !== void 0 && (typeof e.assetManifestPath != "string" || !d.isAbsolute(e.assetManifestPath) || /[\x00-\x1f\x7f]/.test(e.assetManifestPath))) throw new I("RUNTIME_CONFIGURATION_INVALID", "The approved asset manifest path must be an absolute local path.");
+	].includes(e)) || typeof e.gatewayUrl != "string" || typeof e.gatewayToken != "string" || typeof e.agentId != "string" || typeof e.configPath != "string" || e.chatCompletionsEnabled !== void 0 && typeof e.chatCompletionsEnabled != "boolean" || e.responsesEnabled !== void 0 && typeof e.responsesEnabled != "boolean" || e.scopedTools !== void 0 && e.scopedTools !== !0) throw new F("STATE_INVALID", "The saved OpenClaw configuration is invalid; preserve the private connection directory.");
+	if (e.relayToken !== void 0 && (typeof e.relayToken != "string" || !e.relayToken || e.relayToken.length > 16384 || /[\x00-\x20\x7f]/.test(e.relayToken))) throw new F("RUNTIME_CONFIGURATION_INVALID", "Set a valid OPENCLAW_MCP_RELAY_TOKEN privately on this host.");
+	if (e.relayPort !== void 0 && (typeof e.relayPort != "string" || !/^\d+$/.test(e.relayPort) || Number(e.relayPort) < 1 || Number(e.relayPort) > 65535)) throw new F("RUNTIME_CONFIGURATION_INVALID", "OPENCLAW_MCP_RELAY_PORT must be from 1 to 65535.");
+	if (e.mcpWriteEnabled !== void 0 && typeof e.mcpWriteEnabled != "boolean" || (e.relayPort || e.mcpWriteEnabled) && !e.relayToken) throw new F("RUNTIME_CONFIGURATION_INVALID", "OpenClaw MCP relay ports and writes require a private relay token.");
+	if (e.assetManifestPath !== void 0 && (typeof e.assetManifestPath != "string" || !d.isAbsolute(e.assetManifestPath) || /[\x00-\x1f\x7f]/.test(e.assetManifestPath))) throw new F("RUNTIME_CONFIGURATION_INVALID", "The approved asset manifest path must be an absolute local path.");
 }
 function Hr(e, t, n) {
 	let r = t.OPENCLAW_MCP_RELAY_TOKEN ?? n?.relayToken, i = t.OPENCLAW_MCP_RELAY_PORT ?? n?.relayPort, a = t.OPENCLAW_MCP_WRITE_ENABLED;
@@ -8629,7 +8629,7 @@ function Hr(e, t, n) {
 		"",
 		"true",
 		"false"
-	].includes(a)) throw new I("RUNTIME_CONFIGURATION_INVALID", "OPENCLAW_MCP_WRITE_ENABLED must be true or false.");
+	].includes(a)) throw new F("RUNTIME_CONFIGURATION_INVALID", "OPENCLAW_MCP_WRITE_ENABLED must be true or false.");
 	let o = a === void 0 ? n?.mcpWriteEnabled : a === "true", s = t.ENVOI_ASSET_MANIFEST_PATH ?? n?.assetManifestPath, c = {
 		...e,
 		...r ? { relayToken: r } : {},
@@ -8652,14 +8652,14 @@ var Ur = {
 				fallbackConfiguration: t
 			}), n, t);
 		} catch (e) {
-			throw e instanceof B ? new I("RUNTIME_CONFIGURATION_INVALID", e.message) : e;
+			throw e instanceof B ? new F("RUNTIME_CONFIGURATION_INVALID", e.message) : e;
 		}
 	},
 	preflight: async (e, t) => {
 		try {
 			Se(t.env ?? process.env, e), Vr(e), await Fe(e, t);
 		} catch (e) {
-			throw e instanceof B ? new I(e.code, e.message) : e;
+			throw e instanceof B ? new F(e.code, e.message) : e;
 		}
 	},
 	createBridge: (e, t) => {
@@ -8695,18 +8695,18 @@ async function X(e) {
 }
 function Wr(e, t) {
 	let n = e.replace(/^\uFEFF/, "").split(/\r?\n/).map((e) => e.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)).filter((e) => e?.[1] === t);
-	if (n.length > 1) throw new I("CONFIG_AMBIGUOUS", `Hermes has duplicate ${t} assignments. Resolve them locally and retry.`);
+	if (n.length > 1) throw new F("CONFIG_AMBIGUOUS", `Hermes has duplicate ${t} assignments. Resolve them locally and retry.`);
 	if (!n.length) return;
 	let r = n[0][2].trim(), i = r[0];
 	if (i === "\"" || i === "'") {
 		let e = r.indexOf(i, 1);
-		if (e < 0 || !/^\s*(?:#.*)?$/.test(r.slice(e + 1))) throw new I("CONFIG_INVALID", `Hermes ${t} must be a single-line literal.`);
+		if (e < 0 || !/^\s*(?:#.*)?$/.test(r.slice(e + 1))) throw new F("CONFIG_INVALID", `Hermes ${t} must be a single-line literal.`);
 		return r.slice(1, e);
 	}
 	return r.replace(/\s+#.*$/, "").trim();
 }
 function Gr(e, t, n) {
-	if (Wr(e, t), !/^[A-Za-z0-9_]+$/.test(t) || /[\r\n\x00]/.test(n)) throw new I("CONFIG_INVALID", "Invalid local environment assignment.");
+	if (Wr(e, t), !/^[A-Za-z0-9_]+$/.test(t) || /[\r\n\x00]/.test(n)) throw new F("CONFIG_INVALID", "Invalid local environment assignment.");
 	let r = e.replace(/^\uFEFF/, "").split(/\r?\n/), i = r.findIndex((e) => RegExp(`^\\s*(?:export\\s+)?${t}\\s*=`).test(e)), a = `${t}=${n}`;
 	return i >= 0 ? r[i] = a : (r.at(-1) === "" && r.pop(), r.push(a)), `${r.join("\n").replace(/\n*$/, "")}\n`;
 }
@@ -8716,8 +8716,8 @@ async function Kr(e, t, r) {
 		if (e.code === "ENOENT") return null;
 		throw e;
 	});
-	if (i?.isSymbolicLink() || i && !i.isFile()) throw new I("CONFIG_INVALID", "Hermes configuration must be a regular file, without symbolic links.");
-	if (await X(e) !== t) throw new I("CONFIG_CHANGED", "Hermes configuration changed during setup. Retry without concurrent configuration edits.");
+	if (i?.isSymbolicLink() || i && !i.isFile()) throw new F("CONFIG_INVALID", "Hermes configuration must be a regular file, without symbolic links.");
+	if (await X(e) !== t) throw new F("CONFIG_CHANGED", "Hermes configuration changed during setup. Retry without concurrent configuration edits.");
 	if (t !== null) {
 		let n = `${e}.envoi-backup-${x()}`;
 		await u(n, t, {
@@ -8738,9 +8738,9 @@ async function Kr(e, t, r) {
 }
 async function qr(t) {
 	if (process.platform !== "win32") return e(t, 384);
-	let n = _(g), r = await ve(), i = `$ErrorActionPreference='Stop'; $p='${t.replaceAll("'", "''")}'; $s=New-Object System.Security.Principal.SecurityIdentifier('${r}'); $a=New-Object System.Security.AccessControl.FileSecurity; $a.SetAccessRuleProtection($true,$false); $a.SetOwner($s); $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($s,'FullControl','Allow'))); ([System.IO.FileInfo]::new($p)).SetAccessControl($a)`;
+	let n = _(g), r = await ye(), i = `$ErrorActionPreference='Stop'; $p='${t.replaceAll("'", "''")}'; $s=New-Object System.Security.Principal.SecurityIdentifier('${r}'); $a=New-Object System.Security.AccessControl.FileSecurity; $a.SetAccessRuleProtection($true,$false); $a.SetOwner($s); $a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($s,'FullControl','Allow'))); ([System.IO.FileInfo]::new($p)).SetAccessControl($a)`;
 	try {
-		await n(_e("powershell.exe"), [
+		await n(ve("powershell.exe"), [
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
@@ -8750,7 +8750,7 @@ async function qr(t) {
 			timeout: 2e4
 		});
 	} catch {
-		throw new I("STATE_UNAVAILABLE", "Windows could not protect Hermes local credentials for your account. Choose an owned profile directory and retry; preserve its private backups.");
+		throw new F("STATE_UNAVAILABLE", "Windows could not protect Hermes local credentials for your account. Choose an owned profile directory and retry; preserve its private backups.");
 	}
 }
 var Jr = (e) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(e);
@@ -8763,9 +8763,9 @@ function Yr(e, t) {
 		let o = e[1].length;
 		for (; r.length && r.at(-1).indent >= o;) r.pop();
 		let s = [...r.map((e) => e.name), e[2]], c = e[3].replace(/\s+#.*$/, "").trim();
-		if (s.length < n.length && s.every((e, t) => e === n[t]) && c) throw new I("CONFIG_UNSUPPORTED", `Hermes ${s.join(".")} uses a nonstandard YAML mapping. Select ordinary block configuration explicitly.`);
+		if (s.length < n.length && s.every((e, t) => e === n[t]) && c) throw new F("CONFIG_UNSUPPORTED", `Hermes ${s.join(".")} uses a nonstandard YAML mapping. Select ordinary block configuration explicitly.`);
 		if (s.join(".") === n.join(".")) {
-			if (i !== void 0 || !c || /^[!&*{|>]/.test(c)) throw new I("CONFIG_UNSUPPORTED", `Hermes ${t} must be one ordinary scalar value.`);
+			if (i !== void 0 || !c || /^[!&*{|>]/.test(c)) throw new F("CONFIG_UNSUPPORTED", `Hermes ${t} must be one ordinary scalar value.`);
 			i = c.replace(/^(['"])(.*)\1$/, "$2");
 		}
 		c || r.push({
@@ -8780,14 +8780,14 @@ function Xr(e) {
 	try {
 		t = new URL(e);
 	} catch {
-		throw new I("CONFIG_INVALID", "Hermes API URL must be an HTTPS or loopback HTTP origin.");
+		throw new F("CONFIG_INVALID", "Hermes API URL must be an HTTPS or loopback HTTP origin.");
 	}
 	let n = [
 		"127.0.0.1",
 		"localhost",
 		"[::1]"
 	].includes(t.hostname);
-	if (t.protocol !== "https:" && !(n && t.protocol === "http:") || t.username || t.password || t.search || t.hash || t.pathname !== "/") throw new I("CONFIG_INVALID", "Hermes API URL must be an HTTPS or loopback HTTP origin.");
+	if (t.protocol !== "https:" && !(n && t.protocol === "http:") || t.username || t.password || t.search || t.hash || t.pathname !== "/") throw new F("CONFIG_INVALID", "Hermes API URL must be an HTTPS or loopback HTTP origin.");
 	return t.origin;
 }
 async function Zr(e, t) {
@@ -8799,7 +8799,7 @@ async function Zr(e, t) {
 			"apiUrl",
 			"apiKey",
 			"assetManifestPath"
-		].includes(e)) || typeof t.home != "string" || !d.isAbsolute(t.home) || typeof t.configPath != "string" || !d.isAbsolute(t.configPath) || typeof t.profile != "string" || !Jr(t.profile) || typeof t.apiUrl != "string" || typeof t.apiKey != "string" || !t.apiKey || /[\r\n\x00]/.test(t.apiKey) || t.assetManifestPath !== void 0 && (typeof t.assetManifestPath != "string" || !d.isAbsolute(t.assetManifestPath) || /[\r\n\x00]/.test(t.assetManifestPath))) throw new I("STATE_INVALID", "The saved Hermes configuration is invalid; preserve the connection directory.");
+		].includes(e)) || typeof t.home != "string" || !d.isAbsolute(t.home) || typeof t.configPath != "string" || !d.isAbsolute(t.configPath) || typeof t.profile != "string" || !Jr(t.profile) || typeof t.apiUrl != "string" || typeof t.apiKey != "string" || !t.apiKey || /[\r\n\x00]/.test(t.apiKey) || t.assetManifestPath !== void 0 && (typeof t.assetManifestPath != "string" || !d.isAbsolute(t.assetManifestPath) || /[\r\n\x00]/.test(t.assetManifestPath))) throw new F("STATE_INVALID", "The saved Hermes configuration is invalid; preserve the connection directory.");
 		Xr(t.apiUrl);
 	}
 	let n = e.env ?? process.env, r = e.homeDir ?? n.HERMES_REAL_HOME ?? h(), i = (e) => d.resolve(/^~[\\/]/.test(e) ? d.join(r, e.slice(2)) : e), a, o = e.profile, s = !!t && !e.configPath && !e.profile;
@@ -8809,23 +8809,23 @@ async function Zr(e, t) {
 	else if (t && !o && !n.HERMES_HOME) a = t.home;
 	else {
 		let t = n.HERMES_DATA_DIR_SUFFIX ?? "";
-		if (!/^[A-Za-z0-9_-]*$/.test(t)) throw new I("CONFIG_INVALID", "Hermes data directory suffix is invalid.");
+		if (!/^[A-Za-z0-9_-]*$/.test(t)) throw new F("CONFIG_INVALID", "Hermes data directory suffix is invalid.");
 		let s = n.HERMES_HOME ? [d.basename(d.dirname(i(n.HERMES_HOME))) === "profiles" ? d.dirname(d.dirname(i(n.HERMES_HOME))) : i(n.HERMES_HOME)] : [d.join(r, `.hermes${t}`)];
 		!n.HERMES_HOME && (e.platform ?? process.platform) === "win32" && s.push(d.join(n.LOCALAPPDATA ?? d.join(r, "AppData", "Local"), `hermes${t}`));
 		let c = [];
 		for (let e of s) (await X(d.join(e, "config.yaml")) !== null || await X(d.join(e, ".env")) !== null) && c.push(e);
 		let l = [...new Set(c.map((e) => d.resolve(e)))];
-		if (!l.length) throw new I("RUNTIME_NOT_FOUND", "Hermes profile was not found on this host. Run setup on its persistent host or provide --config /path/to/config.yaml.");
-		if (l.length > 1) throw new I("CONFIG_AMBIGUOUS", "Several Hermes installations were found. Select the intended profile with HERMES_HOME or --config.");
+		if (!l.length) throw new F("RUNTIME_NOT_FOUND", "Hermes profile was not found on this host. Run setup on its persistent host or provide --config /path/to/config.yaml.");
+		if (l.length > 1) throw new F("CONFIG_AMBIGUOUS", "Several Hermes installations were found. Select the intended profile with HERMES_HOME or --config.");
 		let u = l[0];
-		if (o ??= (await X(d.join(u, "active_profile")))?.trim() || "default", !Jr(o)) throw new I("CONFIG_INVALID", "Hermes active profile is invalid. Select a valid profile explicitly.");
+		if (o ??= (await X(d.join(u, "active_profile")))?.trim() || "default", !Jr(o)) throw new F("CONFIG_INVALID", "Hermes active profile is invalid. Select a valid profile explicitly.");
 		a = o === "default" ? u : d.join(u, "profiles", o);
 	}
-	if (o ??= d.basename(d.dirname(a)) === "profiles" ? d.basename(a) : "default", !Jr(o)) throw new I("CONFIG_INVALID", "Hermes profile name is invalid.");
+	if (o ??= d.basename(d.dirname(a)) === "profiles" ? d.basename(a) : "default", !Jr(o)) throw new F("CONFIG_INVALID", "Hermes profile name is invalid.");
 	let c = e.configPath ? i(e.configPath) : s ? t.configPath : d.join(a, "config.yaml"), l = await X(c), u = d.join(a, ".env"), f = await X(u);
-	if (l === null && f === null) throw new I("RUNTIME_NOT_FOUND", "The selected Hermes profile has no configuration. Configure it with hermes setup first.");
+	if (l === null && f === null) throw new F("RUNTIME_NOT_FOUND", "The selected Hermes profile has no configuration. Configure it with hermes setup first.");
 	let p = n.TERMINAL_ENV ?? n.TERMINAL_BACKEND ?? Yr(l ?? "", "terminal.backend") ?? "local";
-	if (!e.configPath && !s && n.HERMES_HOME && p !== "local") throw new I("RUNTIME_HOST_MISMATCH", "Hermes terminal tools use a nonlocal backend. Run this installer directly on the persistent Gateway host and explicitly select its config with --config; do not install unattended receiving in an agent sandbox.");
+	if (!e.configPath && !s && n.HERMES_HOME && p !== "local") throw new F("RUNTIME_HOST_MISMATCH", "Hermes terminal tools use a nonlocal backend. Run this installer directly on the persistent Gateway host and explicitly select its config with --config; do not install unattended receiving in an agent sandbox.");
 	let m = e.stateDir, g = m ? Qr(m) : "envoi_preflight";
 	if (m) {
 		let e = await X(d.join(m, "hermes-relay.json"));
@@ -8834,29 +8834,29 @@ async function Zr(e, t) {
 			try {
 				t = JSON.parse(e);
 			} catch {
-				throw new I("STATE_INVALID", "Hermes relay state is unreadable. Restore its private saved configuration.");
+				throw new F("STATE_INVALID", "Hermes relay state is unreadable. Restore its private saved configuration.");
 			}
-			if (!t || typeof t != "object" || Array.isArray(t) || typeof t.serverName != "string" || !/^envoi_[a-f0-9]{16}$/.test(t.serverName)) throw new I("STATE_INVALID", "Hermes relay identity is invalid.");
+			if (!t || typeof t != "object" || Array.isArray(t) || typeof t.serverName != "string" || !/^envoi_[a-f0-9]{16}$/.test(t.serverName)) throw new F("STATE_INVALID", "Hermes relay identity is invalid.");
 			g = t.serverName;
 		}
 	}
 	$r(l ?? "", g, [`  ${g}:`, "    url: \"http://127.0.0.1:1/mcp\""]);
 	let _ = f ?? "", v = n.HERMES_API_KEY || Wr(_, "API_SERVER_KEY") || n.API_SERVER_KEY, y = Yr(l ?? "", "gateway.platforms.api_server.enabled") ?? Yr(l ?? "", "platforms.api_server.enabled"), x = y ?? Wr(_, "API_SERVER_ENABLED") ?? n.API_SERVER_ENABLED;
-	if (y === "false") throw new I("GATEWAY_NOT_ENABLED", "Hermes config.yaml explicitly disables its API Server. Enable the selected profile API Server there; environment settings cannot override that configuration.");
-	if (!e.gatewayUrl && !n.HERMES_API_URL && !t?.apiUrl && x !== "true" && !e.prepareRuntime) throw new I("GATEWAY_NOT_ENABLED", "Hermes API Server is disabled. Retry with --prepare-runtime, then start the selected profile Gateway.");
+	if (y === "false") throw new F("GATEWAY_NOT_ENABLED", "Hermes config.yaml explicitly disables its API Server. Enable the selected profile API Server there; environment settings cannot override that configuration.");
+	if (!e.gatewayUrl && !n.HERMES_API_URL && !t?.apiUrl && x !== "true" && !e.prepareRuntime) throw new F("GATEWAY_NOT_ENABLED", "Hermes API Server is disabled. Retry with --prepare-runtime, then start the selected profile Gateway.");
 	let S = Yr(l ?? "", "gateway.platforms.api_server.port") ?? Yr(l ?? "", "platforms.api_server.port") ?? Wr(_, "API_SERVER_PORT") ?? n.API_SERVER_PORT ?? "8642";
-	if (!/^\d+$/.test(S) || Number(S) < 1 || Number(S) > 65535) throw new I("CONFIG_INVALID", "Hermes API_SERVER_PORT is invalid.");
+	if (!/^\d+$/.test(S) || Number(S) < 1 || Number(S) > 65535) throw new F("CONFIG_INVALID", "Hermes API_SERVER_PORT is invalid.");
 	let C = Xr(e.gatewayUrl ?? n.HERMES_API_URL ?? t?.apiUrl ?? `http://127.0.0.1:${S}`);
 	if ([
 		"127.0.0.1",
 		"localhost",
 		"[::1]"
 	].includes(new URL(C).hostname)) e.prepareRuntime && (v ||= b(32).toString("hex"), _ = Gr(_, "API_SERVER_KEY", v), _ = Gr(_, "API_SERVER_ENABLED", "true"), await Kr(u, f, _));
-	else if (v = n.HERMES_API_KEY || (t?.apiUrl === C ? t.apiKey : void 0), !v) throw new I("GATEWAY_KEY_MISSING", "A remote Hermes API requires explicitly supplied HERMES_API_KEY for that origin. Local profile keys are never forwarded to a new remote host.");
-	if (!v) throw new I("GATEWAY_KEY_MISSING", "Hermes local API_SERVER_KEY is missing. Retry with --prepare-runtime to generate it. This key is separate from model-provider credentials.");
-	if (/[\r\n\x00]/.test(v)) throw new I("CONFIG_INVALID", "Hermes local API Server key must be a single-line literal.");
+	else if (v = n.HERMES_API_KEY || (t?.apiUrl === C ? t.apiKey : void 0), !v) throw new F("GATEWAY_KEY_MISSING", "A remote Hermes API requires explicitly supplied HERMES_API_KEY for that origin. Local profile keys are never forwarded to a new remote host.");
+	if (!v) throw new F("GATEWAY_KEY_MISSING", "Hermes local API_SERVER_KEY is missing. Retry with --prepare-runtime to generate it. This key is separate from model-provider credentials.");
+	if (/[\r\n\x00]/.test(v)) throw new F("CONFIG_INVALID", "Hermes local API Server key must be a single-line literal.");
 	let w = n.ENVOI_ASSET_MANIFEST_PATH ?? t?.assetManifestPath;
-	if (w && /[\r\n\x00]/.test(w)) throw new I("CONFIG_INVALID", "The approved asset manifest must be a local file path.");
+	if (w && /[\r\n\x00]/.test(w)) throw new F("CONFIG_INVALID", "The approved asset manifest must be a local file path.");
 	return {
 		home: a,
 		profile: o,
@@ -8871,7 +8871,7 @@ function Qr(e) {
 }
 function $r(e, t, n) {
 	let r = e.replace(/^\uFEFF/, "").split(/\r?\n/), i = r.map((e, t) => /^mcp_servers\s*:/.test(e) ? t : -1).filter((e) => e >= 0);
-	if (i.length > 1 || i.length === 1 && !/^mcp_servers:\s*(?:#.*)?$/.test(r[i[0]])) throw new I("CONFIG_UNSUPPORTED", "Hermes MCP configuration uses an unsupported or duplicate YAML section. Preserve it and configure the connector entry manually.");
+	if (i.length > 1 || i.length === 1 && !/^mcp_servers:\s*(?:#.*)?$/.test(r[i[0]])) throw new F("CONFIG_UNSUPPORTED", "Hermes MCP configuration uses an unsupported or duplicate YAML section. Preserve it and configure the connector entry manually.");
 	if (!i.length) r.at(-1) === "" && r.pop(), r.push("", "mcp_servers:", ...n);
 	else {
 		let e = i[0] + 1, a = e;
@@ -8883,11 +8883,11 @@ function $r(e, t, n) {
 				name: e[1],
 				start: t
 			});
-			else if (r[t].trim() && !r[t].trimStart().startsWith("#") && !/^ {4,}\S/.test(r[t])) throw new I("CONFIG_UNSUPPORTED", "Hermes MCP section must use ordinary block YAML with two-space server entries.");
+			else if (r[t].trim() && !r[t].trimStart().startsWith("#") && !/^ {4,}\S/.test(r[t])) throw new F("CONFIG_UNSUPPORTED", "Hermes MCP section must use ordinary block YAML with two-space server entries.");
 		}
-		if (o.some((e) => (e.name === "envoi" || e.name.startsWith("envoi_")) && e.name !== t)) throw new I("PROFILE_ALREADY_CONNECTED", "This Hermes profile already has an Envoi MCP entry. Preserve its connection or deliberately migrate that entry; use a separate Hermes profile for another enrolled agent.");
+		if (o.some((e) => (e.name === "envoi" || e.name.startsWith("envoi_")) && e.name !== t)) throw new F("PROFILE_ALREADY_CONNECTED", "This Hermes profile already has an Envoi MCP entry. Preserve its connection or deliberately migrate that entry; use a separate Hermes profile for another enrolled agent.");
 		let s = o.filter((e) => e.name === t);
-		if (s.length > 1) throw new I("CONFIG_AMBIGUOUS", "Hermes has duplicate connector MCP entries.");
+		if (s.length > 1) throw new F("CONFIG_AMBIGUOUS", "Hermes has duplicate connector MCP entries.");
 		if (s.length) {
 			let e = s[0], t = o.find((t) => t.start > e.start)?.start ?? a;
 			r.splice(e.start, t - e.start, ...n);
@@ -8910,11 +8910,11 @@ async function ti(e, t, n, r = {}) {
 			},
 			signal: AbortSignal.any([n.signal ?? new AbortController().signal, AbortSignal.timeout(15e3)])
 		});
-		if (i.status === 401 || i.status === 403) throw new I("GATEWAY_AUTH_FAILED", "Hermes rejected its local API Server key. Check the selected profile and restart its Gateway after key changes.");
-		if (i.status === 429 || i.status >= 500) throw await i.body?.cancel().catch(() => {}), new I("GATEWAY_UNREACHABLE", "Hermes API Server is temporarily unavailable. The saved connection will retry without another enrollment.");
+		if (i.status === 401 || i.status === 403) throw new F("GATEWAY_AUTH_FAILED", "Hermes rejected its local API Server key. Check the selected profile and restart its Gateway after key changes.");
+		if (i.status === 429 || i.status >= 500) throw await i.body?.cancel().catch(() => {}), new F("GATEWAY_UNREACHABLE", "Hermes API Server is temporarily unavailable. The saved connection will retry without another enrollment.");
 		return i;
 	} catch (e) {
-		throw e instanceof I ? e : n.signal?.aborted ? new I("SETUP_CANCELLED", "Hermes setup was cancelled. Saved connection state can be resumed.") : new I("GATEWAY_UNREACHABLE", "Hermes API Server is unreachable. Start the selected profile Gateway in a separate terminal (hermes gateway start), then retry. Existing provider credentials are reused; do not substitute the Envoi token.");
+		throw e instanceof F ? e : n.signal?.aborted ? new F("SETUP_CANCELLED", "Hermes setup was cancelled. Saved connection state can be resumed.") : new F("GATEWAY_UNREACHABLE", "Hermes API Server is unreachable. Start the selected profile Gateway in a separate terminal (hermes gateway start), then retry. Existing provider credentials are reused; do not substitute the Envoi token.");
 	}
 }
 async function ni(e) {
@@ -8923,7 +8923,7 @@ async function ni(e) {
 		if (!t || typeof t != "object" || Array.isArray(t)) throw Error();
 		return t;
 	} catch {
-		throw new I("GATEWAY_TEST_FAILED", "Hermes returned an invalid API response. Check its version and local diagnostics.");
+		throw new F("GATEWAY_TEST_FAILED", "Hermes returned an invalid API response. Check its version and local diagnostics.");
 	}
 }
 async function ri(e, t, n, r = {}) {
@@ -8940,14 +8940,14 @@ async function ri(e, t, n, r = {}) {
 				session_id: `envoi-setup-${x()}`
 			})
 		});
-		if (n.status !== 202) throw new I("MODEL_NOT_READY", "Hermes could not start a test run using its configured provider. Run hermes doctor and configure the selected profile model/provider locally; no enrollment token was needed for this test.");
+		if (n.status !== 202) throw new F("MODEL_NOT_READY", "Hermes could not start a test run using its configured provider. Run hermes doctor and configure the selected profile model/provider locally; no enrollment token was needed for this test.");
 		let c = await ni(n);
-		if (typeof c.run_id != "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(c.run_id)) throw new I("GATEWAY_TEST_FAILED", "Hermes returned no valid test run identity.");
+		if (typeof c.run_id != "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(c.run_id)) throw new F("GATEWAY_TEST_FAILED", "Hermes returned no valid test run identity.");
 		for (o = c.run_id; !i.aborted;) {
 			let t = await ti(e, `/v1/runs/${encodeURIComponent(o)}`, a);
-			if (!t.ok) throw new I("GATEWAY_TEST_FAILED", "Hermes test run status could not be read.");
+			if (!t.ok) throw new F("GATEWAY_TEST_FAILED", "Hermes test run status could not be read.");
 			let n = await ni(t);
-			if (n.run_id !== o) throw new I("GATEWAY_TEST_FAILED", "Hermes returned another test run identity.");
+			if (n.run_id !== o) throw new F("GATEWAY_TEST_FAILED", "Hermes returned another test run identity.");
 			if (n.status === "completed") {
 				s = !0;
 				return;
@@ -8956,14 +8956,14 @@ async function ri(e, t, n, r = {}) {
 				"failed",
 				"cancelled",
 				"interrupted"
-			].includes(String(n.status))) throw s = !0, new I("MODEL_NOT_READY", "Hermes test run failed with its configured provider. Inspect hermes doctor and local Gateway diagnostics; model-provider credentials are separate from the local API Server key.");
+			].includes(String(n.status))) throw s = !0, new F("MODEL_NOT_READY", "Hermes test run failed with its configured provider. Inspect hermes doctor and local Gateway diagnostics; model-provider credentials are separate from the local API Server key.");
 			if (![
 				"started",
 				"queued",
 				"running",
 				"stopping",
 				"waiting_for_approval"
-			].includes(String(n.status))) throw new I("GATEWAY_TEST_FAILED", "Hermes test run reported an unsupported status.");
+			].includes(String(n.status))) throw new F("GATEWAY_TEST_FAILED", "Hermes test run reported an unsupported status.");
 			await new Promise((e) => {
 				let t = () => {
 					clearTimeout(n), i.removeEventListener("abort", t), e();
@@ -8971,9 +8971,9 @@ async function ri(e, t, n, r = {}) {
 				i.addEventListener("abort", t, { once: !0 }), i.aborted && t();
 			});
 		}
-		throw new I("GATEWAY_TEST_FAILED", "Hermes test run timed out. Check model/provider availability and tool approval prompts.");
+		throw new F("GATEWAY_TEST_FAILED", "Hermes test run timed out. Check model/provider availability and tool approval prompts.");
 	} catch (e) {
-		throw n.signal?.aborted ? new I("SETUP_CANCELLED", "Hermes setup was cancelled.") : i.aborted ? new I("GATEWAY_TEST_FAILED", "Hermes test run timed out. Check model/provider availability and tool approval prompts.") : e;
+		throw n.signal?.aborted ? new F("SETUP_CANCELLED", "Hermes setup was cancelled.") : i.aborted ? new F("GATEWAY_TEST_FAILED", "Hermes test run timed out. Check model/provider availability and tool approval prompts.") : e;
 	} finally {
 		if (o && !s) try {
 			await (n.fetch ?? fetch)(`${e.apiUrl}/v1/runs/${encodeURIComponent(o)}/stop`, {
@@ -8987,13 +8987,13 @@ async function ri(e, t, n, r = {}) {
 }
 async function ii(e, t) {
 	let n = await ti(e, "/v1/capabilities", t);
-	if (!n.ok) throw new I("GATEWAY_INCOMPATIBLE", "Hermes does not expose the required Runs API. Update Hermes on its host before enrollment.");
+	if (!n.ok) throw new F("GATEWAY_INCOMPATIBLE", "Hermes does not expose the required Runs API. Update Hermes on its host before enrollment.");
 	let r = (await ni(n)).features;
 	if (!r || [
 		"run_submission",
 		"run_status",
 		"run_stop"
-	].some((e) => r[e] !== !0)) throw new I("GATEWAY_INCOMPATIBLE", "Hermes must support run submission, status and cancellation. Update Hermes before enrollment.");
+	].some((e) => r[e] !== !0)) throw new F("GATEWAY_INCOMPATIBLE", "Hermes must support run submission, status and cancellation. Update Hermes before enrollment.");
 	await ri(e, "Envoi connection preflight. Reply with OK only. Do not use tools or change files.", t);
 }
 function ai(e) {
@@ -9141,50 +9141,65 @@ function ui(e) {
 				d = await e.runs.saveRunId(d, o), l = d.runId;
 			}
 			if (!l) throw Error("Hermes run identity was not saved");
+			let f = Date.parse(d.attemptedAt) + r, p = 0;
 			for (; !c.aborted;) {
 				if (e.allowEnvoiMcpWrites && !H(s) && await e.mcpReplySent?.(s.id)) {
 					if (c.aborted || (await o(l), c.aborted)) throw Error("Hermes turn was interrupted");
 					let t = { stop: !0 };
 					return await e.replies.saveReply(s.id, t), t;
 				}
-				let u = await i(`${t}/v1/runs/${encodeURIComponent(l)}`, {
+				let r = await i(`${t}/v1/runs/${encodeURIComponent(l)}`, {
 					method: "GET",
 					redirect: "error",
 					headers: a,
 					signal: c
 				});
-				if (!u.ok) throw Error(`Hermes run status failed with HTTP ${u.status}; operator recovery may be required`);
-				let f;
+				if ([
+					408,
+					429,
+					502,
+					503,
+					504
+				].includes(r.status)) {
+					await r.body?.cancel();
+					let e = r.headers.get("retry-after")?.trim() ?? "", t = /^\d{1,6}$/.test(e) ? Number(e) : 0, i = Math.max(n, Re(p++, Math.random(), t));
+					if (i >= f - Date.now()) throw Error("Hermes run status is temporarily unavailable; the saved run can be reconciled");
+					await li(i, c);
+					continue;
+				}
+				if (!r.ok) throw Error(`Hermes run status failed with HTTP ${r.status}; operator recovery may be required`);
+				p = 0;
+				let u;
 				try {
-					f = await u.json();
+					u = await r.json();
 				} catch {
 					throw Error("Hermes run status returned invalid JSON");
 				}
-				let p = f && typeof f == "object" && !Array.isArray(f) ? f : null;
-				if (!p || p.run_id !== l || typeof p.status != "string") throw Error("Hermes run status was invalid");
-				if (p.status === "completed") {
+				let d = u && typeof u == "object" && !Array.isArray(u) ? u : null;
+				if (!d || d.run_id !== l || typeof d.status != "string") throw Error("Hermes run status was invalid");
+				if (d.status === "completed") {
 					if (c.aborted) throw Error("Hermes turn was interrupted");
 					if (!H(s) && await e.mcpReplySent?.(s.id)) {
 						let t = { stop: !0 };
 						return await e.replies.saveReply(s.id, t), t;
 					}
-					if (typeof p.output != "string") throw Error("Hermes run had no completed text output");
-					let t = bt(p.output);
+					if (typeof d.output != "string") throw Error("Hermes run had no completed text output");
+					let t = bt(d.output);
 					return await e.replies.saveReply(s.id, t), t;
 				}
 				if ([
 					"failed",
 					"cancelled",
 					"interrupted"
-				].includes(p.status)) throw Error(`Hermes run ended ${p.status}; operator recovery may be required`);
+				].includes(d.status)) throw Error(`Hermes run ended ${d.status}; operator recovery may be required`);
 				if (![
 					"started",
 					"queued",
 					"running",
 					"stopping",
 					"waiting_for_approval"
-				].includes(p.status)) throw Error("Hermes run reported an unknown status");
-				if (Date.now() - Date.parse(d.attemptedAt) >= r) throw await o(l), Error("Hermes run timed out");
+				].includes(d.status)) throw Error("Hermes run reported an unknown status");
+				if (Date.now() >= f) throw await o(l), Error("Hermes run timed out");
 				await li(n, c);
 			}
 			throw Error("Hermes turn was interrupted");
@@ -9305,7 +9320,7 @@ function _i(e, t = {
 					if (!f()) throw gi;
 					return e;
 				} catch (e) {
-					throw e instanceof Or && e.code && hi.has(e.code) || e instanceof L && e.code === "TOOL_ARGUMENTS_INVALID" || d(), e;
+					throw e instanceof Or && e.code && hi.has(e.code) || e instanceof I && e.code === "TOOL_ARGUMENTS_INVALID" || d(), e;
 				}
 			});
 			t.tail = b.catch(() => {}), b.finally(() => {
@@ -9327,7 +9342,7 @@ function _i(e, t = {
 					code: e.code,
 					message: "Case tool refused the operation",
 					retryable: e.code === "TOOL_BUSY"
-				}, !0) : e instanceof L && e.code === "TOOL_ARGUMENTS_INVALID" ? p(g, -32602, "Invalid case tool arguments") : (d(), p(g, -32e3, "Case turn is unavailable"));
+				}, !0) : e instanceof I && e.code === "TOOL_ARGUMENTS_INVALID" ? p(g, -32602, "Invalid case tool arguments") : (d(), p(g, -32e3, "Case turn is unavailable"));
 			}
 		}
 	});
@@ -9478,10 +9493,10 @@ async function yi(e) {
 		})
 	});
 }
-var bi = (e) => typeof e == "object" && !!e && !Array.isArray(e), Z = (e = "HERMES_SCOPED_UNAVAILABLE") => new L("Hermes scoped execution unavailable; preserve the turn journal for recovery", void 0, e), xi = "hermes-gateway-v1", Si = ["acp-editor-policy-v1", "acp-session-mcp-v1"];
+var bi = (e) => typeof e == "object" && !!e && !Array.isArray(e), Z = (e = "HERMES_SCOPED_UNAVAILABLE") => new I("Hermes scoped execution unavailable; preserve the turn journal for recovery", void 0, e), xi = "hermes-gateway-v1", Si = ["acp-editor-policy-v1", "acp-session-mcp-v1"];
 function Ci(e) {
 	let t = new URL(e.origin);
-	if (!d.isAbsolute(e.home) || !d.isAbsolute(e.cwd) || /[\x00\r\n]/.test(e.home + e.cwd) || !["127.0.0.1", "[::1]"].includes(t.hostname) || !["http:", "https:"].includes(t.protocol) || !t.port || t.origin !== e.origin || t.username || t.password) throw new I("CONFIG_INVALID", "Scoped Hermes requires an explicit loopback daemon origin and absolute local profile/workspace paths");
+	if (!d.isAbsolute(e.home) || !d.isAbsolute(e.cwd) || /[\x00\r\n]/.test(e.home + e.cwd) || !["127.0.0.1", "[::1]"].includes(t.hostname) || !["http:", "https:"].includes(t.protocol) || !t.port || t.origin !== e.origin || t.username || t.password) throw new F("CONFIG_INVALID", "Scoped Hermes requires an explicit loopback daemon origin and absolute local profile/workspace paths");
 }
 async function wi(e) {
 	if (process.platform === "win32") return `\\\\.\\pipe\\hermes-gateway-${v("sha256").update(d.resolve(e).toLowerCase()).digest("hex").slice(0, 16)}`;
@@ -9621,7 +9636,7 @@ async function ki(e, t, n) {
 			admission_id: n
 		}, r);
 	} catch (e) {
-		if (!(e instanceof L) || e.code !== "HERMES_STALE_GENERATION") throw e;
+		if (!(e instanceof I) || e.code !== "HERMES_STALE_GENERATION") throw e;
 	}
 	let i = Oi(await e.rpc("prompt.receipt", {
 		session_id: t,
@@ -9633,7 +9648,7 @@ async function ki(e, t, n) {
 			execution_generation: i.execution_generation
 		}, r);
 	} catch (e) {
-		if (!(e instanceof L) || e.code !== "HERMES_STALE_GENERATION") throw e;
+		if (!(e instanceof I) || e.code !== "HERMES_STALE_GENERATION") throw e;
 	}
 	for (; i.status !== "terminal" && i.status !== "unknown";) await w(50, void 0, { signal: r }), i = Oi(await e.rpc("prompt.receipt", {
 		session_id: t,
@@ -9762,7 +9777,7 @@ function Ai(e, t, n = {}) {
 		});
 	};
 }
-var Q = () => new I("SCOPED_CONFIG_INVALID", "Scoped Hermes requires its saved daemon selection and a profile without a separate privileged Envoi integration"), ji = [
+var Q = () => new F("SCOPED_CONFIG_INVALID", "Scoped Hermes requires its saved daemon selection and a profile without a separate privileged Envoi integration"), ji = [
 	"HERMES_MCP_RELAY_TOKEN",
 	"HERMES_MCP_RELAY_PORT",
 	"HERMES_MCP_WRITE_ENABLED",
@@ -9826,7 +9841,7 @@ async function Fi(e, t) {
 async function Ii(e, t) {
 	let n = await Ni(e);
 	if (n && JSON.stringify(n) !== JSON.stringify(t)) throw Q();
-	n || await z(d.join(e, "hermes-scoped.json"), {
+	n || await R(d.join(e, "hermes-scoped.json"), {
 		version: 1,
 		configuration: t
 	});
@@ -9955,7 +9970,7 @@ async function zi() {
 		e.once("error", n), e.listen(0, "127.0.0.1", t);
 	});
 	let t = e.address();
-	if (await new Promise((t, n) => e.close((e) => e ? n(e) : t())), !t || typeof t == "string") throw new I("RELAY_UNAVAILABLE", "Could not allocate a private Hermes MCP relay port.");
+	if (await new Promise((t, n) => e.close((e) => e ? n(e) : t())), !t || typeof t == "string") throw new F("RELAY_UNAVAILABLE", "Could not allocate a private Hermes MCP relay port.");
 	return t.port;
 }
 async function Bi(e) {
@@ -9965,9 +9980,9 @@ async function Bi(e) {
 		try {
 			e = JSON.parse(n);
 		} catch {
-			throw new I("STATE_INVALID", "Hermes relay state is unreadable. Restore its private saved configuration.");
+			throw new F("STATE_INVALID", "Hermes relay state is unreadable. Restore its private saved configuration.");
 		}
-		if (!e || typeof e != "object" || Array.isArray(e) || e.version !== 1 || !Number.isSafeInteger(e.port) || e.port < 1 || e.port > 65535 || !/^[a-f0-9]{64}$/.test(e.token) || !/^envoi_[a-f0-9]{16}$/.test(e.serverName)) throw new I("STATE_INVALID", "Hermes relay state is invalid. Restore its private saved configuration.");
+		if (!e || typeof e != "object" || Array.isArray(e) || e.version !== 1 || !Number.isSafeInteger(e.port) || e.port < 1 || e.port > 65535 || !/^[a-f0-9]{64}$/.test(e.token) || !/^envoi_[a-f0-9]{16}$/.test(e.serverName)) throw new F("STATE_INVALID", "Hermes relay state is invalid. Restore its private saved configuration.");
 		return e;
 	}
 	let r = Qr(e.stateDir), i = {
@@ -9976,7 +9991,7 @@ async function Bi(e) {
 		token: b(32).toString("hex"),
 		serverName: r
 	};
-	return await z(t, i), i;
+	return await R(t, i), i;
 }
 async function Vi(e, t) {
 	let n = await Fi(t, e);
@@ -10045,7 +10060,7 @@ var Hi = {
 				}
 			});
 		} catch (e) {
-			throw e.code === "EADDRINUSE" ? new I("RELAY_UNAVAILABLE", "This Hermes connection relay port is occupied. Stop its prior connector or the conflicting process, then retry with the same state directory.") : e;
+			throw e.code === "EADDRINUSE" ? new F("RELAY_UNAVAILABLE", "This Hermes connection relay port is occupied. Stop its prior connector or the conflicting process, then retry with the same state directory.") : e;
 		}
 		try {
 			await Vi(e, t);
@@ -10060,7 +10075,7 @@ var Hi = {
 				if (await ri(e, `Envoi setup verification. Call the envoi_agent_info MCP tool from server ${r.serverName} exactly once, then finish. Use its discovered tool name. Do not send messages, invoke terminal commands, or change files.`, {
 					...t,
 					...n ? { signal: n } : {}
-				}), i <= a) throw new I("TOOLS_NOT_READY", "Hermes has not invoked the Envoi identity tool through its live relay yet. Waiting for the selected Gateway to reconcile or reconnect its MCP server. Keep this connector running; saved enrollment is unchanged.");
+				}), i <= a) throw new F("TOOLS_NOT_READY", "Hermes has not invoked the Envoi identity tool through its live relay yet. Waiting for the selected Gateway to reconcile or reconnect its MCP server. Keep this connector running; saved enrollment is unchanged.");
 			}
 		};
 	},
@@ -10232,20 +10247,20 @@ function Yi(e) {
 		"model",
 		"mcpUrl",
 		"assetManifestPath"
-	].includes(e))) throw new I("STATE_INVALID", "The saved Grok configuration is invalid; preserve the private connection directory.");
-	if (!e.apiKey) throw new I("MODEL_CREDENTIAL_MISSING", "Grok needs an xAI model-provider credential. Set XAI_API_KEY privately on this host and retry. An Envoi enrollment token cannot replace it.");
-	if (typeof e.apiKey != "string" || e.apiKey.length > 16384 || /[\x00-\x20\x7f]/.test(e.apiKey)) throw new I("MODEL_CREDENTIAL_INVALID", "The local xAI credential is invalid. Set XAI_API_KEY privately on this host and retry.");
-	if (typeof e.model != "string" || !e.model.trim() || e.model !== e.model.trim() || e.model.length > 256 || /[\x00-\x1f\x7f]/.test(e.model)) throw new I("MODEL_CONFIGURATION_INVALID", "Set XAI_MODEL to a valid model name supported by your xAI account.");
+	].includes(e))) throw new F("STATE_INVALID", "The saved Grok configuration is invalid; preserve the private connection directory.");
+	if (!e.apiKey) throw new F("MODEL_CREDENTIAL_MISSING", "Grok needs an xAI model-provider credential. Set XAI_API_KEY privately on this host and retry. An Envoi enrollment token cannot replace it.");
+	if (typeof e.apiKey != "string" || e.apiKey.length > 16384 || /[\x00-\x20\x7f]/.test(e.apiKey)) throw new F("MODEL_CREDENTIAL_INVALID", "The local xAI credential is invalid. Set XAI_API_KEY privately on this host and retry.");
+	if (typeof e.model != "string" || !e.model.trim() || e.model !== e.model.trim() || e.model.length > 256 || /[\x00-\x1f\x7f]/.test(e.model)) throw new F("MODEL_CONFIGURATION_INVALID", "Set XAI_MODEL to a valid model name supported by your xAI account.");
 	if (e.mcpUrl !== void 0) {
 		let t;
 		try {
 			t = new URL(e.mcpUrl);
 		} catch {
-			throw new I("RUNTIME_CONFIGURATION_INVALID", "ENVOI_MCP_URL must be an HTTPS /mcp endpoint or loopback HTTP /mcp endpoint.");
+			throw new F("RUNTIME_CONFIGURATION_INVALID", "ENVOI_MCP_URL must be an HTTPS /mcp endpoint or loopback HTTP /mcp endpoint.");
 		}
-		if (typeof e.mcpUrl != "string" || /[\r\n\x00]/.test(e.mcpUrl) || t.pathname !== "/mcp" || t.username || t.password || t.search || t.hash || !(t.protocol === "https:" || t.protocol === "http:" && ["127.0.0.1", "localhost"].includes(t.hostname))) throw new I("RUNTIME_CONFIGURATION_INVALID", "ENVOI_MCP_URL must be an HTTPS /mcp endpoint or loopback HTTP /mcp endpoint without embedded credentials.");
+		if (typeof e.mcpUrl != "string" || /[\r\n\x00]/.test(e.mcpUrl) || t.pathname !== "/mcp" || t.username || t.password || t.search || t.hash || !(t.protocol === "https:" || t.protocol === "http:" && ["127.0.0.1", "localhost"].includes(t.hostname))) throw new F("RUNTIME_CONFIGURATION_INVALID", "ENVOI_MCP_URL must be an HTTPS /mcp endpoint or loopback HTTP /mcp endpoint without embedded credentials.");
 	}
-	if (e.assetManifestPath !== void 0 && (typeof e.assetManifestPath != "string" || !d.isAbsolute(e.assetManifestPath) || /[\x00-\x1f\x7f]/.test(e.assetManifestPath))) throw new I("RUNTIME_CONFIGURATION_INVALID", "The saved approved asset manifest path must be an absolute local path.");
+	if (e.assetManifestPath !== void 0 && (typeof e.assetManifestPath != "string" || !d.isAbsolute(e.assetManifestPath) || /[\x00-\x1f\x7f]/.test(e.assetManifestPath))) throw new F("RUNTIME_CONFIGURATION_INVALID", "The saved approved asset manifest path must be an absolute local path.");
 }
 async function Xi(e = {}, t) {
 	let n = e.env ?? process.env;
@@ -10262,12 +10277,12 @@ async function Zi(e, t = {}) {
 	if (Yi(e), e.mcpUrl && t.apiUrl) try {
 		Gi(t.apiUrl, e.mcpUrl);
 	} catch {
-		throw new I("RUNTIME_CONFIGURATION_INVALID", "ENVOI_MCP_URL must use the selected Envoi origin /mcp. Correct it before enrollment.");
+		throw new F("RUNTIME_CONFIGURATION_INVALID", "ENVOI_MCP_URL must use the selected Envoi origin /mcp. Correct it before enrollment.");
 	}
-	if (t.signal?.aborted) throw new I("MODEL_TEST_FAILED", "Grok connection test was canceled before enrollment.");
+	if (t.signal?.aborted) throw new F("MODEL_TEST_FAILED", "Grok connection test was canceled before enrollment.");
 	let n = new AbortController(), r = n.signal, i = () => n.abort();
 	t.signal?.addEventListener("abort", i, { once: !0 });
-	let a = setTimeout(i, 6e4), o = () => new I("MODEL_TEST_FAILED", "Grok connection test was canceled or timed out before enrollment. Check model-provider availability and retry."), s = () => {}, c = new Promise((e, t) => {
+	let a = setTimeout(i, 6e4), o = () => new F("MODEL_TEST_FAILED", "Grok connection test was canceled or timed out before enrollment. Check model-provider availability and retry."), s = () => {}, c = new Promise((e, t) => {
 		s = () => t(o()), r.addEventListener("abort", s, { once: !0 });
 	});
 	try {
@@ -10290,12 +10305,12 @@ async function Zi(e, t = {}) {
 					})
 				});
 			} catch {
-				throw new I("PROVIDER_UNREACHABLE", "The xAI model provider could not be reached. Check host networking and retry before enrollment.");
+				throw new F("PROVIDER_UNREACHABLE", "The xAI model provider could not be reached. Check host networking and retry before enrollment.");
 			}
-			if (n.status === 401 || n.status === 403) throw await n.body?.cancel().catch(() => {}), new I("PROVIDER_AUTH_FAILED", "xAI authentication failed. Check the local XAI_API_KEY and account access before enrollment.");
-			if (!n.ok) throw await n.body?.cancel().catch(() => {}), new I(n.status === 429 || n.status >= 500 ? "PROVIDER_UNREACHABLE" : "MODEL_TEST_FAILED", `The xAI model test failed with HTTP ${n.status}. Check XAI_MODEL, account quota and provider health before enrollment.`);
+			if (n.status === 401 || n.status === 403) throw await n.body?.cancel().catch(() => {}), new F("PROVIDER_AUTH_FAILED", "xAI authentication failed. Check the local XAI_API_KEY and account access before enrollment.");
+			if (!n.ok) throw await n.body?.cancel().catch(() => {}), new F(n.status === 429 || n.status >= 500 ? "PROVIDER_UNREACHABLE" : "MODEL_TEST_FAILED", `The xAI model test failed with HTTP ${n.status}. Check XAI_MODEL, account quota and provider health before enrollment.`);
 			let i = n.body?.getReader();
-			if (!i) throw new I("MODEL_TEST_FAILED", "The xAI model test returned an empty response before enrollment.");
+			if (!i) throw new F("MODEL_TEST_FAILED", "The xAI model test returned an empty response before enrollment.");
 			let a = [], o = 0, s = () => {
 				i.cancel().catch(() => {});
 			};
@@ -10313,7 +10328,7 @@ async function Zi(e, t = {}) {
 				});
 				if (e.status !== "completed" || !t) throw Error("incomplete response");
 			} catch {
-				throw new I("MODEL_TEST_FAILED", "The xAI model test did not return a completed text reply. Check the selected model and retry before enrollment.");
+				throw new F("MODEL_TEST_FAILED", "The xAI model test did not return a completed text reply. Check the selected model and retry before enrollment.");
 			} finally {
 				r.removeEventListener("abort", s), i.releaseLock();
 			}
@@ -10340,7 +10355,7 @@ function $i(e) {
 	if (e === "openclaw") return Ur;
 	if (e === "hermes") return Hi;
 	if (e === "grok") return Qi;
-	throw new I("RUNTIME_UNSUPPORTED", "Choose OpenClaw, Hermes or Grok");
+	throw new F("RUNTIME_UNSUPPORTED", "Choose OpenClaw, Hermes or Grok");
 }
 var ea = 3e3, ta = /^[A-Za-z0-9._-]{1,64}$/;
 function na(e) {
@@ -10633,7 +10648,7 @@ var ba = class e {
 		this.directory = e, this.release = t;
 	}
 	static async open(t) {
-		let n = await be(t), r = await xe(n), i = new e(n, r);
+		let n = await xe(t), r = await z(n), i = new e(n, r);
 		try {
 			return await i.read(), i;
 		} catch {
@@ -10684,7 +10699,7 @@ var ba = class e {
 		let t = this.writes.then(async () => {
 			let t = await this.read();
 			if (e(t), ya(t), Buffer.byteLength(JSON.stringify(t)) > _a) throw Error("Private wake state is full");
-			await z(await this.filename(), t);
+			await R(await this.filename(), t);
 		});
 		return this.writes = t.catch(() => {}), t;
 	}
@@ -10707,7 +10722,7 @@ var ba = class e {
 	"delivery_failed",
 	"expired",
 	"feature_disabled"
-]), Ta = (e) => e instanceof L && (e.status !== void 0 && e.status >= 500 || [
+]), Ta = (e) => e instanceof I && (e.status !== void 0 && e.status >= 500 || [
 	"NETWORK_ERROR",
 	"TIMEOUT",
 	"RATE_LIMITED"
@@ -10723,7 +10738,7 @@ function Da(e) {
 		"pending",
 		"active",
 		"ended"
-	].includes(e.status) || !(e.expiresAt === null || typeof e.expiresAt == "string" && Number.isFinite(Date.parse(e.expiresAt))) || !(e.endedReason === null || typeof e.endedReason == "string" && Ca.has(e.endedReason)) || e.status === "ended" != (e.endedReason !== null) || e.status === "active" && e.expiresAt === null) throw new L("Invalid wake subscription response");
+	].includes(e.status) || !(e.expiresAt === null || typeof e.expiresAt == "string" && Number.isFinite(Date.parse(e.expiresAt))) || !(e.endedReason === null || typeof e.endedReason == "string" && Ca.has(e.endedReason)) || e.status === "ended" != (e.endedReason !== null) || e.status === "active" && e.expiresAt === null) throw new I("Invalid wake subscription response");
 	return e;
 }
 var Oa = class {
@@ -10742,28 +10757,28 @@ var Oa = class {
 		try {
 			return await this.connector.wakeRequest(e, t, n);
 		} catch (e) {
-			throw e instanceof L ? new L("Wake host request was refused", e.status, e.code, {
+			throw e instanceof I ? new I("Wake host request was refused", e.status, e.code, {
 				reason: e.reason,
 				retryAfterSeconds: e.retryAfterSeconds,
 				requestId: e.requestId
-			}) : new L("Wake host request failed");
+			}) : new I("Wake host request failed");
 		}
 	}
 	subscription(e) {
-		if (!xa(e) || !xa(e.subscription)) throw new L("Invalid wake subscription response");
+		if (!xa(e) || !xa(e.subscription)) throw new I("Invalid wake subscription response");
 		let t = e.subscription;
-		if (Da(t), t.installationId !== this.identity.installationId || t.agentId !== this.identity.agentId || typeof t.url != "string" || Ea(t.url) !== t.url || !(t.replacesSubscriptionId === null || typeof t.replacesSubscriptionId == "string" && Sa.test(t.replacesSubscriptionId))) throw new L("Wake subscription identity changed");
+		if (Da(t), t.installationId !== this.identity.installationId || t.agentId !== this.identity.agentId || typeof t.url != "string" || Ea(t.url) !== t.url || !(t.replacesSubscriptionId === null || typeof t.replacesSubscriptionId == "string" && Sa.test(t.replacesSubscriptionId))) throw new I("Wake subscription identity changed");
 		return t;
 	}
 	async status(e) {
 		let t = await this.request("/api/agent/status", void 0, e);
-		if (!xa(t) || typeof t.state != "string" || !["active", "paused"].includes(t.state) || t.inboxId !== this.identity.inboxId || !xa(t.agent) || t.agent.id !== this.identity.agentId || !xa(t.installation) || t.installation.id !== this.identity.installationId) throw new L("Wake host identity changed");
+		if (!xa(t) || typeof t.state != "string" || !["active", "paused"].includes(t.state) || t.inboxId !== this.identity.inboxId || !xa(t.agent) || t.agent.id !== this.identity.agentId || !xa(t.installation) || t.installation.id !== this.identity.installationId) throw new I("Wake host identity changed");
 		if (t.httpWake === void 0) return {
 			paused: t.state === "paused",
 			wake: null
 		};
 		let n = t.httpWake;
-		if (!xa(n) || typeof n.available != "boolean" || n.version !== 1 || !xa(t.installation) || t.installation.id !== this.identity.installationId) throw new L("Invalid wake availability response");
+		if (!xa(n) || typeof n.available != "boolean" || n.version !== 1 || !xa(t.installation) || t.installation.id !== this.identity.installationId) throw new I("Invalid wake availability response");
 		return {
 			paused: t.state === "paused",
 			wake: {
@@ -10782,9 +10797,9 @@ var Oa = class {
 	}
 	async list(e) {
 		let t = await this.request("/api/agent/wake-subscriptions", void 0, e);
-		if (!xa(t) || t.installationId !== this.identity.installationId || !Array.isArray(t.subscriptions)) throw new L("Invalid wake subscription list");
+		if (!xa(t) || t.installationId !== this.identity.installationId || !Array.isArray(t.subscriptions)) throw new I("Invalid wake subscription list");
 		let n = t.subscriptions.map((e) => this.subscription({ subscription: e }));
-		if (new Set(n.map((e) => e.id)).size !== n.length || n.filter((e) => e.status === "active").length > 1 || n.filter((e) => e.status === "pending").length > 1) throw new L("Inconsistent wake subscription list");
+		if (new Set(n.map((e) => e.id)).size !== n.length || n.filter((e) => e.status === "active").length > 1 || n.filter((e) => e.status === "pending").length > 1) throw new I("Inconsistent wake subscription list");
 		return n;
 	}
 	async end(e, t) {
@@ -10818,7 +10833,7 @@ var Oa = class {
 		});
 	}
 	async remember(e) {
-		if (e.installationId !== this.transport.identity.installationId || e.agentId !== this.transport.identity.agentId || e.url !== this.url) throw new L("Wake subscription identity changed");
+		if (e.installationId !== this.transport.identity.installationId || e.agentId !== this.transport.identity.agentId || e.url !== this.url) throw new I("Wake subscription identity changed");
 		await this.store.update((t) => {
 			if (e.status === "ended") delete t.subscriptions[e.id], e.endedReason && t.endedReasons[e.installationId] !== "revoked_by_owner" && (t.endedReasons[e.installationId] = e.endedReason);
 			else {
@@ -10827,7 +10842,7 @@ var Oa = class {
 					"ended_by_host",
 					"receiver_gone",
 					"credential_ended"
-				].includes(t.endedReasons[e.installationId])) throw new L("Wake subscription was ended");
+				].includes(t.endedReasons[e.installationId])) throw new I("Wake subscription was ended");
 				t.subscriptions[e.id] = {
 					url: e.url,
 					status: e.status,
@@ -10872,7 +10887,7 @@ var Oa = class {
 			});
 			if (!a || t !== this.generation) return;
 			for (let e of a) {
-				if (e.installationId !== this.transport.identity.installationId || e.agentId !== this.transport.identity.agentId) throw new L("Wake subscription identity changed");
+				if (e.installationId !== this.transport.identity.installationId || e.agentId !== this.transport.identity.agentId) throw new I("Wake subscription identity changed");
 				e.endedReason === "revoked_by_owner" && await this.store.update((t) => {
 					t.endedReasons[e.installationId] = "revoked_by_owner";
 					for (let [n, r] of Object.entries(t.subscriptions)) r.installationId === e.installationId && delete t.subscriptions[n];
@@ -10887,11 +10902,11 @@ var Oa = class {
 				this.subscriptionRetryAt = e;
 			});
 			if (l && t === this.generation) {
-				if (l.status !== "pending") throw new L("Invalid new wake subscription");
+				if (l.status !== "pending") throw new I("Invalid new wake subscription");
 				await this.remember(l);
 			}
 		})().catch(async (e) => {
-			if (e instanceof L && e.code === "FEATURE_DISABLED") {
+			if (e instanceof I && e.code === "FEATURE_DISABLED") {
 				await this.disableWake();
 				return;
 			}
@@ -10952,11 +10967,11 @@ var Oa = class {
 			try {
 				n = await this.transport.activate(e.subscriptionId, e.challenge, t);
 			} catch (t) {
-				if (t instanceof L && t.code === "FEATURE_DISABLED") {
+				if (t instanceof I && t.code === "FEATURE_DISABLED") {
 					await this.disableWake();
 					return;
 				}
-				if (t instanceof L && t.code === "WAKE_SUBSCRIPTION_ENDED" && t.reason && Ca.has(t.reason)) {
+				if (t instanceof I && t.code === "WAKE_SUBSCRIPTION_ENDED" && t.reason && Ca.has(t.reason)) {
 					await this.store.update((n) => {
 						delete n.subscriptions[e.subscriptionId], n.endedReasons[this.transport.identity.installationId] !== "revoked_by_owner" && (n.endedReasons[this.transport.identity.installationId] = t.reason);
 					});
@@ -10964,7 +10979,7 @@ var Oa = class {
 				}
 				throw t;
 			}
-			if (n.status !== "active" || n.id !== e.subscriptionId) throw new L("Invalid activated wake subscription");
+			if (n.status !== "active" || n.id !== e.subscriptionId) throw new I("Invalid activated wake subscription");
 			await this.remember(n);
 		} else if (e.type === "wake.control_changed") {
 			await this.driver.revalidateLiveLeases(t);
@@ -10980,12 +10995,12 @@ var Oa = class {
 	}
 	async endSubscription(e, t) {
 		let n = (await this.store.read()).subscriptions[e];
-		if (!n || n.installationId !== this.transport.identity.installationId || n.url !== this.url || !this.transport.end) throw new L("No locally owned wake subscription");
+		if (!n || n.installationId !== this.transport.identity.installationId || n.url !== this.url || !this.transport.end) throw new I("No locally owned wake subscription");
 		this.generation++, await this.store.update((t) => {
 			delete t.subscriptions[e], t.endedReasons[this.transport.identity.installationId] = "ended_by_host";
 		});
 		let r = await this.transport.end(e, t);
-		if (r.id !== e || r.status !== "ended") throw new L("Invalid ended wake subscription");
+		if (r.id !== e || r.status !== "ended") throw new I("Invalid ended wake subscription");
 		await this.remember(r);
 	}
 	async acknowledge(e) {
@@ -11003,14 +11018,14 @@ var Oa = class {
 				await this.maintain(e), await this.dispatchControls(e), !i && this.now() >= o && (i = (async () => {
 					await this.dispatchWork(e), await this.claim(e);
 				})().catch((t) => {
-					!e.aborted && !Ta(t) ? (r = t, n.abort()) : t instanceof L && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (o = this.now() + t.retryAfterSeconds * 1e3);
+					!e.aborted && !Ta(t) ? (r = t, n.abort()) : t instanceof I && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (o = this.now() + t.retryAfterSeconds * 1e3);
 				}).finally(() => {
 					i = void 0, a?.();
 				}));
 			} catch (t) {
 				if (e.aborted) return;
 				if (!Ta(t)) throw t;
-				t instanceof L && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (c = t.retryAfterSeconds * 1e3);
+				t instanceof I && Number.isSafeInteger(t.retryAfterSeconds) && t.retryAfterSeconds >= 0 && (c = t.retryAfterSeconds * 1e3);
 			}
 			if (r) throw r;
 			if (e.aborted) return;
@@ -11199,12 +11214,12 @@ async function La(e, t) {
 	if (n && r && (n.registeredUrl !== r.registeredUrl || n.port !== r.port || n.installationId !== r.installationId)) throw Error("Hosted wake environment differs from saved configuration; stop the connector and configure wake again");
 	return n ?? r;
 }
-async function Ra(e, t = process.env, n = be) {
-	let r = Ma(t), i = await n(e), a = await xe(i);
+async function Ra(e, t = process.env, n = xe) {
+	let r = Ma(t), i = await n(e), a = await z(i);
 	try {
 		let e = await Ia(i);
 		if (r && e && (r.registeredUrl !== e.registeredUrl || r.port !== e.port || r.installationId !== e.installationId)) throw Error("Hosted wake environment differs from saved configuration; use configure-wake to rotate it");
-		r && !e && await z(Pa(i), {
+		r && !e && await R(Pa(i), {
 			version: 1,
 			...r
 		});
@@ -11212,12 +11227,12 @@ async function Ra(e, t = process.env, n = be) {
 		await a();
 	}
 }
-async function za(e, t = process.env, n = be) {
+async function za(e, t = process.env, n = xe) {
 	let r = Ma(t);
 	if (!r) throw Error("Set ENVOI_WAKE_URL, ENVOI_WAKE_PORT and ENVOI_WAKE_INSTALLATION_ID together");
-	let i = await n(e), a = await xe(i);
+	let i = await n(e), a = await z(i);
 	try {
-		await z(Pa(i), {
+		await R(Pa(i), {
 			version: 1,
 			...r
 		});
@@ -11225,8 +11240,8 @@ async function za(e, t = process.env, n = be) {
 		await a();
 	}
 }
-async function Ba(e, t = be) {
-	let n = await t(e), r = await xe(n);
+async function Ba(e, t = xe) {
+	let n = await t(e), r = await z(n);
 	try {
 		await l(Pa(n), { force: !0 });
 	} finally {
@@ -11235,14 +11250,14 @@ async function Ba(e, t = be) {
 }
 var Va = _(g), Ha = (e) => e.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\"", "&quot;").replaceAll("'", "&apos;"), Ua = (e) => `"${e.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("%", "%%").replaceAll("$", () => "$$")}"`, Wa = (e) => `"${e.replace(/(\\*)"/g, "$1$1\\\"").replace(/(\\+)$/, "$1$1")}"`;
 function Ga(e, t = {}) {
-	if (t.runtime && !oe.includes(t.runtime)) throw new R("Unsupported startup runtime");
+	if (t.runtime && !se.includes(t.runtime)) throw new L("Unsupported startup runtime");
 	let n = t.platform ?? process.platform, r = t.home ?? h(), i = t.node ?? process.execPath;
 	if ([
 		e,
 		r,
 		i,
 		t.user || ""
-	].some((e) => /[\r\n\0]/.test(e))) throw new R("Service paths cannot contain control characters");
+	].some((e) => /[\r\n\0]/.test(e))) throw new L("Service paths cannot contain control characters");
 	let a = v("sha256").update(e).digest("hex").slice(0, 16), o = `envoi-${t.runtime || "openclaw"}-${a}`, s = [
 		d.join(e, "connector.mjs"),
 		"start",
@@ -11283,14 +11298,14 @@ function Ga(e, t = {}) {
 		};
 	}
 	if (n === "win32") {
-		if (!t.user) throw new R("Windows startup requires the current account SID");
+		if (!t.user) throw new L("Windows startup requires the current account SID");
 		let n = d.join(e, "startup-task.xml");
 		return {
 			name: o,
 			filename: n,
 			contents: `<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${Ha(t.user)}</UserId></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>${Ha(t.user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>5</Count></RestartOnFailure></Settings><Actions Context="Author"><Exec><Command>${Ha(i)}</Command><Arguments>${Ha(s.map(Wa).join(" "))}</Arguments><WorkingDirectory>${Ha(e)}</WorkingDirectory></Exec></Actions></Task>`,
 			commands: [{
-				executable: _e("schtasks.exe", t.env),
+				executable: ve("schtasks.exe", t.env),
 				args: [
 					"/Create",
 					"/TN",
@@ -11300,7 +11315,7 @@ function Ga(e, t = {}) {
 					"/F"
 				]
 			}, {
-				executable: _e("schtasks.exe", t.env),
+				executable: ve("schtasks.exe", t.env),
 				args: [
 					"/Run",
 					"/TN",
@@ -11309,13 +11324,13 @@ function Ga(e, t = {}) {
 			}]
 		};
 	}
-	throw new R("Automatic startup supports Linux systemd, macOS launchd and Windows Task Scheduler. Use your host process supervisor");
+	throw new L("Automatic startup supports Linux systemd, macOS launchd and Windows Task Scheduler. Use your host process supervisor");
 }
 async function Ka() {
 	try {
 		if (process.platform === "linux") await Va("systemctl", ["--user", "show-environment"], { timeout: 1e4 });
 		else if (process.platform === "darwin") await Va("launchctl", ["list"], { timeout: 1e4 });
-		else if (process.platform === "win32") await Va(_e("schtasks.exe"), [
+		else if (process.platform === "win32") await Va(ve("schtasks.exe"), [
 			"/Query",
 			"/FO",
 			"CSV",
@@ -11324,15 +11339,15 @@ async function Ka() {
 			timeout: 1e4,
 			windowsHide: !0
 		});
-		else throw new R("unsupported");
+		else throw new L("unsupported");
 	} catch {
-		throw new R("A user startup service is unavailable. Run setup without --install-service and use your host process supervisor to run the printed start command");
+		throw new L("A user startup service is unavailable. Run setup without --install-service and use your host process supervisor to run the printed start command");
 	}
 }
 async function qa(e, t = "openclaw") {
 	await Ka(), await Ra(e);
 	let n;
-	process.platform === "win32" && (n = await ve());
+	process.platform === "win32" && (n = await ye());
 	let i = Ga(e, {
 		user: n,
 		runtime: t
@@ -11347,13 +11362,13 @@ async function qa(e, t = "openclaw") {
 			windowsHide: !0
 		});
 	} catch {
-		throw new R("Startup registration failed. Your connection is saved; use the printed start command or retry install-service after checking the host service manager");
+		throw new L("Startup registration failed. Your connection is saved; use the printed start command or retry install-service after checking the host service manager");
 	}
 	return i.name;
 }
 async function Ja(e, t) {
 	let r;
-	process.platform === "win32" && (r = await ve());
+	process.platform === "win32" && (r = await ye());
 	let i = Ga(d.resolve(e), {
 		user: r,
 		runtime: t
@@ -11370,7 +11385,7 @@ async function Ja(e, t) {
 		"unload",
 		"-w",
 		i.filename
-	], { timeout: 2e4 }), await l(i.filename, { force: !0 })) : process.platform === "win32" && (await Va(_e("schtasks.exe"), [
+	], { timeout: 2e4 }), await l(i.filename, { force: !0 })) : process.platform === "win32" && (await Va(ve("schtasks.exe"), [
 		"/Change",
 		"/TN",
 		i.name,
@@ -11378,7 +11393,7 @@ async function Ja(e, t) {
 	], {
 		timeout: 2e4,
 		windowsHide: !0
-	}), await Va(_e("schtasks.exe"), [
+	}), await Va(ve("schtasks.exe"), [
 		"/Delete",
 		"/TN",
 		i.name,
@@ -11429,7 +11444,7 @@ async function eo(e, t, r) {
 		throw new $("TASK_STATE_INVALID");
 	}
 }
-function to(e, t, n, r = z) {
+function to(e, t, n, r = R) {
 	t = {
 		apiUrl: t.apiUrl,
 		runtime: t.runtime,
@@ -11545,7 +11560,7 @@ async function no(e, t, n, r = () => ({ status: "running" }), i) {
 	let f = u.address();
 	if (!f || typeof f == "string") throw Error("Control listener unavailable");
 	try {
-		await z(c, {
+		await R(c, {
 			version: 1,
 			port: f.port,
 			secret: o
@@ -11559,14 +11574,14 @@ async function no(e, t, n, r = () => ({ status: "running" }), i) {
 }
 async function ro(e) {
 	let t = d.join(e, "control.json"), r = await n(t);
-	if (!r.isFile() || r.isSymbolicLink() || r.size > 2048) throw new I("CONTROL_INVALID", "Invalid connector control file");
+	if (!r.isFile() || r.isSymbolicLink() || r.size > 2048) throw new F("CONTROL_INVALID", "Invalid connector control file");
 	let i;
 	try {
 		i = JSON.parse(await a(t, "utf8"));
 	} catch {
-		throw new I("CONTROL_INVALID", "Invalid connector control file");
+		throw new F("CONTROL_INVALID", "Invalid connector control file");
 	}
-	if (!i || typeof i != "object" || Array.isArray(i) || i.version !== 1 || !Number.isInteger(i.port) || i.port < 1 || i.port > 65535 || typeof i.secret != "string" || !/^[A-Za-z0-9_-]{43}$/.test(i.secret)) throw new I("CONTROL_INVALID", "Invalid connector control file");
+	if (!i || typeof i != "object" || Array.isArray(i) || i.version !== 1 || !Number.isInteger(i.port) || i.port < 1 || i.port > 65535 || typeof i.secret != "string" || !/^[A-Za-z0-9_-]{43}$/.test(i.secret)) throw new F("CONTROL_INVALID", "Invalid connector control file");
 	return i;
 }
 async function io(e, t) {
@@ -11576,7 +11591,7 @@ async function io(e, t) {
 		headers: { authorization: `Bearer ${n.secret}` },
 		signal: AbortSignal.timeout(5e3)
 	});
-	if (!r.ok) throw new I("CONNECTOR_UNREACHABLE", "The connector is not responding to local management");
+	if (!r.ok) throw new F("CONNECTOR_UNREACHABLE", "The connector is not responding to local management");
 	return await r.json();
 }
 var ao = [
@@ -11611,7 +11626,7 @@ async function so(e, t) {
 		...n && e.status !== void 0 ? { httpStatus: e.status } : {},
 		...n && e.requestId ? { requestId: e.requestId } : {}
 	};
-	return await z(d.join(t, "enrollment-error.json"), i).catch(() => {}), new I(r, `${oo[r] ?? "Enrollment did not finish."}${i.httpStatus ? ` HTTP ${i.httpStatus}.` : ""}${i.requestId ? ` Request ID: ${i.requestId}.` : ""} State directory: ${t}. Preserve it and check Agent connections before creating another token; it may have been consumed. Use Reconnect runtime for an existing identity if credentials were lost.`);
+	return await R(d.join(t, "enrollment-error.json"), i).catch(() => {}), new F(r, `${oo[r] ?? "Enrollment did not finish."}${i.httpStatus ? ` HTTP ${i.httpStatus}.` : ""}${i.requestId ? ` Request ID: ${i.requestId}.` : ""} State directory: ${t}. Preserve it and check Agent connections before creating another token; it may have been consumed. Use Reconnect runtime for an existing identity if credentials were lost.`);
 }
 async function co(e) {
 	try {
@@ -11634,7 +11649,7 @@ var lo = (e) => n(e).catch((e) => {
 });
 async function uo(e) {
 	let t = d.resolve(await s(e));
-	if ((process.platform === "win32" ? t.toLowerCase() !== e.toLowerCase() : t !== e) || !(await n(e)).isDirectory()) throw new I("STATE_INVALID", "State migration requires an owned directory without symbolic links");
+	if ((process.platform === "win32" ? t.toLowerCase() !== e.toLowerCase() : t !== e) || !(await n(e)).isDirectory()) throw new F("STATE_INVALID", "State migration requires an owned directory without symbolic links");
 }
 async function fo(e) {
 	try {
@@ -11642,24 +11657,24 @@ async function fo(e) {
 		if (!t || typeof t != "object" || Array.isArray(t)) throw Error();
 		return t;
 	} catch {
-		throw new I("STATE_INVALID", "Saved migration state is unreadable; preserve the private directory for recovery");
+		throw new F("STATE_INVALID", "Saved migration state is unreadable; preserve the private directory for recovery");
 	}
 }
 async function po(e) {
 	let t = d.join(e, "hermes-relay.json"), n = await lo(t);
 	if (!n) return;
-	if (!n.isFile() || n.isSymbolicLink() || n.size > 128e3) throw new I("STATE_INVALID", "Hermes relay state must be a regular private file");
+	if (!n.isFile() || n.isSymbolicLink() || n.size > 128e3) throw new F("STATE_INVALID", "Hermes relay state must be a regular private file");
 	let r = await fo(t);
 	if (typeof r.serverName != "string" || !/^sinaloa_[a-f0-9]{16}$/.test(r.serverName)) return;
-	if (r.version !== 1 || !Number.isSafeInteger(r.port) || r.port < 1 || r.port > 65535 || !/^[a-f0-9]{64}$/.test(r.token)) throw new I("STATE_INVALID", "The prior Hermes relay state is invalid");
+	if (r.version !== 1 || !Number.isSafeInteger(r.port) || r.port < 1 || r.port > 65535 || !/^[a-f0-9]{64}$/.test(r.token)) throw new F("STATE_INVALID", "The prior Hermes relay state is invalid");
 	let i = d.join(e, "connection.json"), a = await lo(i);
-	if (!a?.isFile() || a.isSymbolicLink() || a.size > 128e3) throw new I("STATE_INVALID", "The migrated connection needs its saved Hermes profile");
+	if (!a?.isFile() || a.isSymbolicLink() || a.size > 128e3) throw new F("STATE_INVALID", "The migrated connection needs its saved Hermes profile");
 	let o = await fo(i), s = o.configuration;
-	if (o.runtime !== "hermes" || typeof s?.home != "string" || !d.isAbsolute(s.home) || typeof s.configPath != "string" || !d.isAbsolute(s.configPath)) throw new I("STATE_INVALID", "The migrated Hermes profile paths are invalid");
+	if (o.runtime !== "hermes" || typeof s?.home != "string" || !d.isAbsolute(s.home) || typeof s.configPath != "string" || !d.isAbsolute(s.configPath)) throw new F("STATE_INVALID", "The migrated Hermes profile paths are invalid");
 	let c = r.serverName.slice(8), l = `envoi_${c}`, u = `SINALOA_MCP_${c.toUpperCase()}`, f = `ENVOI_MCP_${c.toUpperCase()}`, p = await X(s.configPath);
 	if (p !== null) {
 		let e = RegExp(`^  ${r.serverName}:`, "gm"), t = RegExp(`^  ${l}:`, "m");
-		if (e.test(p) && t.test(p)) throw new I("STATE_MIGRATION_CONFLICT", "Both prior and current Hermes MCP entries exist. Preserve the profile and resolve the duplicate");
+		if (e.test(p) && t.test(p)) throw new F("STATE_MIGRATION_CONFLICT", "Both prior and current Hermes MCP entries exist. Preserve the profile and resolve the duplicate");
 		let n = p.split(/\r?\n/), i = n.findIndex((e) => RegExp(`^  ${r.serverName}:`).test(e));
 		if (i >= 0) {
 			let e = i + 1;
@@ -11669,19 +11684,19 @@ async function po(e) {
 		}
 	}
 	let m = d.join(s.home, ".env"), h = await X(m), g = (h ?? "").split(/\r?\n/).filter((e) => !RegExp(`^\\s*${u}=`).test(e)).join("\n");
-	g = Gr(g, f, r.token), await Kr(m, h, g), await z(t, {
+	g = Gr(g, f, r.token), await Kr(m, h, g), await R(t, {
 		...r,
 		serverName: l
 	});
 }
-async function mo(e, t = be) {
+async function mo(e, t = xe) {
 	let n = d.resolve(e), r = d.dirname(n), i = d.dirname(r), a = d.basename(i), o = d.basename(r), s = d.basename(n);
-	if (!["envoi", "sinaloa"].includes(a) || !oe.includes(o) || !/^[a-f0-9]{24}$/.test(s)) return n;
+	if (!["envoi", "sinaloa"].includes(a) || !se.includes(o) || !/^[a-f0-9]{24}$/.test(s)) return n;
 	let l = d.dirname(i), u = d.join(l, "envoi", o, s), f = d.join(l, "sinaloa", o, s);
 	if (!await lo(f)) {
 		if (o === "hermes" && await lo(u)) {
 			await uo(u);
-			let e = await xe(u);
+			let e = await z(u);
 			try {
 				await po(u);
 			} finally {
@@ -11691,11 +11706,11 @@ async function mo(e, t = be) {
 		return u;
 	}
 	await uo(f), await t(d.dirname(u));
-	let p = await xe(d.dirname(u)), m = !1, h;
+	let p = await z(d.dirname(u)), m = !1, h;
 	try {
 		if (!await lo(f)) return u;
-		if (await lo(u)) throw new I("STATE_MIGRATION_CONFLICT", "Both prior and current state directories exist. Preserve both and resolve their identity before starting");
-		return h = await xe(f, () => m ? u : f), await c(f, u), m = !0, o === "hermes" && await po(u), u;
+		if (await lo(u)) throw new F("STATE_MIGRATION_CONFLICT", "Both prior and current state directories exist. Preserve both and resolve their identity before starting");
+		return h = await z(f, () => m ? u : f), await c(f, u), m = !0, o === "hermes" && await po(u), u;
 	} finally {
 		try {
 			await h?.();
@@ -11724,15 +11739,15 @@ async function go(e, t, n = {}) {
 		await e.verify(i), i.throwIfAborted();
 		return;
 	} catch (e) {
-		if (t.aborted) throw new I("SETUP_CANCELLED", "Runtime recovery was cancelled. Saved enrollment is unchanged.");
+		if (t.aborted) throw new F("SETUP_CANCELLED", "Runtime recovery was cancelled. Saved enrollment is unchanged.");
 		if (r.aborted) break;
-		if (!(e instanceof I) || e.code !== "TOOLS_NOT_READY") throw e;
+		if (!(e instanceof F) || e.code !== "TOOLS_NOT_READY") throw e;
 		n.onWaiting?.(e.code), await ho(n.retryMs ?? 15e3, i);
 	}
-	throw t.aborted ? new I("SETUP_CANCELLED", "Runtime recovery was cancelled. Saved enrollment is unchanged.") : new I("TOOLS_NOT_READY", "Runtime tools did not recover within six minutes. Check the selected Gateway MCP connection; saved enrollment is unchanged.");
+	throw t.aborted ? new F("SETUP_CANCELLED", "Runtime recovery was cancelled. Saved enrollment is unchanged.") : new F("TOOLS_NOT_READY", "Runtime tools did not recover within six minutes. Check the selected Gateway MCP connection; saved enrollment is unchanged.");
 }
 function _o(e, t, n, r = {}) {
-	let i = r.env ?? process.env, a = r.homeDir ?? h(), o = r.platform ?? process.platform, s = v("sha256").update(`${se(e)}\n${t.toLowerCase()}`).digest("hex").slice(0, 24), c = o === "win32" ? i.LOCALAPPDATA || d.join(a, "AppData", "Local") : o === "darwin" ? d.join(a, "Library", "Application Support") : i.XDG_STATE_HOME && d.isAbsolute(i.XDG_STATE_HOME) ? i.XDG_STATE_HOME : d.join(a, ".local", "state");
+	let i = r.env ?? process.env, a = r.homeDir ?? h(), o = r.platform ?? process.platform, s = v("sha256").update(`${ce(e)}\n${t.toLowerCase()}`).digest("hex").slice(0, 24), c = o === "win32" ? i.LOCALAPPDATA || d.join(a, "AppData", "Local") : o === "darwin" ? d.join(a, "Library", "Application Support") : i.XDG_STATE_HOME && d.isAbsolute(i.XDG_STATE_HOME) ? i.XDG_STATE_HOME : d.join(a, ".local", "state");
 	return d.join(c, "envoi", n, s);
 }
 function vo(e, t = process.platform) {
@@ -11764,12 +11779,12 @@ async function xo(e) {
 		throw e;
 	});
 	if (!r) return null;
-	if (!r.isFile() || r.isSymbolicLink() || r.size > 128e3) throw new I("STATE_INVALID", "Saved credentials must be a regular private file");
+	if (!r.isFile() || r.isSymbolicLink() || r.size > 128e3) throw new F("STATE_INVALID", "Saved credentials must be a regular private file");
 	let i;
 	try {
 		i = await new Dt(e).load();
 	} catch {
-		throw new I("STATE_INVALID", "Saved credentials are invalid; preserve the connection directory for recovery");
+		throw new F("STATE_INVALID", "Saved credentials are invalid; preserve the connection directory for recovery");
 	}
 	if (!i || typeof i != "object" || Array.isArray(i) || [
 		"agentId",
@@ -11777,32 +11792,32 @@ async function xo(e) {
 		"address",
 		"agentApiToken",
 		"agentRefreshToken"
-	].some((e) => typeof i[e] != "string" || !i[e]) || !Number.isFinite(Date.parse(i.agentTokenExpiresAt)) || !Number.isFinite(Date.parse(i.agentRefreshTokenExpiresAt))) throw new I("STATE_INVALID", "Saved credentials are invalid; preserve the connection directory for recovery");
+	].some((e) => typeof i[e] != "string" || !i[e]) || !Number.isFinite(Date.parse(i.agentTokenExpiresAt)) || !Number.isFinite(Date.parse(i.agentRefreshTokenExpiresAt))) throw new F("STATE_INVALID", "Saved credentials are invalid; preserve the connection directory for recovery");
 	return i;
 }
 async function So(e) {
 	let t = d.join(e, "connection.json"), r = await n(t);
-	if (!r.isFile() || r.isSymbolicLink() || r.size > 128e3) throw new I("STATE_INVALID", "Choose a regular private saved connection");
+	if (!r.isFile() || r.isSymbolicLink() || r.size > 128e3) throw new F("STATE_INVALID", "Choose a regular private saved connection");
 	let i;
 	try {
 		i = JSON.parse(await a(t, "utf8"));
 	} catch {
-		throw new I("STATE_INVALID", "The saved connection is invalid; preserve it and inspect the private state directory");
+		throw new F("STATE_INVALID", "The saved connection is invalid; preserve it and inspect the private state directory");
 	}
-	if (!i || typeof i != "object" || Array.isArray(i) || (i.runtime === "openclaw" && !i.configuration && i.openclaw && (i.configuration = i.openclaw), i.version !== 1 || !oe.includes(i.runtime) || !i.configuration || typeof i.configuration != "object" || Array.isArray(i.configuration) || typeof i.address != "string" || typeof i.agentName != "string")) throw new I("STATE_INVALID", "The saved connection is invalid");
-	return i.apiUrl = se(i.apiUrl), i;
+	if (!i || typeof i != "object" || Array.isArray(i) || (i.runtime === "openclaw" && !i.configuration && i.openclaw && (i.configuration = i.openclaw), i.version !== 1 || !se.includes(i.runtime) || !i.configuration || typeof i.configuration != "object" || Array.isArray(i.configuration) || typeof i.address != "string" || typeof i.agentName != "string")) throw new F("STATE_INVALID", "The saved connection is invalid");
+	return i.apiUrl = ce(i.apiUrl), i;
 }
 async function Co(e, t) {
 	let n;
 	try {
-		n = await t(`${se(e)}/health`, { signal: AbortSignal.timeout(1e4) });
+		n = await t(`${ce(e)}/health`, { signal: AbortSignal.timeout(1e4) });
 	} catch {
-		throw new I("ENVOI_UNREACHABLE", "Envoi is unreachable from this host. A remote agent cannot reach another computer’s localhost URL; use the correct public HTTPS deployment");
+		throw new F("ENVOI_UNREACHABLE", "Envoi is unreachable from this host. A remote agent cannot reach another computer’s localhost URL; use the correct public HTTPS deployment");
 	}
 	try {
 		if (!n.ok || (await n.json()).service !== "envoi") throw Error();
 	} catch {
-		throw new I("ENVOI_UNREACHABLE", "The selected URL did not return Envoi health. Check the deployment origin before enrolling");
+		throw new F("ENVOI_UNREACHABLE", "The selected URL did not return Envoi health. Check the deployment origin before enrolling");
 	}
 }
 async function wo(e, t, n, r, i) {
@@ -11833,17 +11848,17 @@ async function To(e, t, n, r = {}) {
 	};
 }
 async function Eo(e, t, n = {}) {
-	let r = ce(e, { allowExpired: !0 }), i = await (n.secureDirectory ?? be)(await mo(n.stateDir ?? _o(r.apiUrl, r.address, r.runtime, n), n.secureDirectory)), a = await xe(i), o = yo(n.fetch), s, c, u;
+	let r = le(e, { allowExpired: !0 }), i = await (n.secureDirectory ?? xe)(await mo(n.stateDir ?? _o(r.apiUrl, r.address, r.runtime, n), n.secureDirectory)), a = await z(i), o = yo(n.fetch), s, c, u;
 	try {
 		let a = new Dt(i);
 		await a.init();
 		let f = await xo(i), p = await So(i).catch((e) => {
 			if (e.code !== "ENOENT") throw e;
 		});
-		if (p && (p.apiUrl !== r.apiUrl || p.address !== r.address || p.runtime !== r.runtime) || f && f.address !== r.address) throw new I("STATE_MISMATCH", "This directory belongs to another connection. Use a separate agent-specific directory");
-		if (f && !p) throw new I("STATE_INVALID", "Saved credentials have no connection configuration; preserve this directory and inspect it");
+		if (p && (p.apiUrl !== r.apiUrl || p.address !== r.address || p.runtime !== r.runtime) || f && f.address !== r.address) throw new F("STATE_MISMATCH", "This directory belongs to another connection. Use a separate agent-specific directory");
+		if (f && !p) throw new F("STATE_INVALID", "Saved credentials have no connection configuration; preserve this directory and inspect it");
 		let m = r.operation === "reconnect" ? v("sha256").update(r.enrollmentToken).digest("hex") : void 0, h = f?.setupRedemptionId, g = !f || !!m && h !== m && p?.lastReconnectId !== m;
-		g && ce(e), n.installService && await Ka(), n.onProgress?.("Checking Envoi reachability"), await Co(r.apiUrl, o);
+		g && le(e), n.installService && await Ka(), n.onProgress?.("Checking Envoi reachability"), await Co(r.apiUrl, o);
 		let _ = t(r.runtime), y = {
 			...n,
 			apiUrl: r.apiUrl,
@@ -11860,7 +11875,7 @@ async function Eo(e, t, n = {}) {
 			agentName: r.agentName,
 			configuration: b,
 			...p?.lastReconnectId ? { lastReconnectId: p.lastReconnectId } : {}
-		}, await z(d.join(i, "connection.json"), c), await bo(i, n.executableFile), g) {
+		}, await R(d.join(i, "connection.json"), c), await bo(i, n.executableFile), g) {
 			n.onProgress?.(r.operation === "reconnect" ? "Reconnecting the existing agent" : "Enrolling the agent");
 			let e = {
 				load: () => a.load(),
@@ -11878,14 +11893,14 @@ async function Eo(e, t, n = {}) {
 			} catch (e) {
 				throw await so(e, i);
 			}
-			m && (c.lastReconnectId = m, await z(d.join(i, "connection.json"), c));
+			m && (c.lastReconnectId = m, await R(d.join(i, "connection.json"), c));
 		}
-		if (!f || f.address !== r.address) throw new I("STATE_MISMATCH", "The enrolled address differs from this handoff. Inspect Agent connections before starting");
-		await l(d.join(i, "enrollment-error.json"), { force: !0 }), u = new W(c.apiUrl, a, { fetch: o }), await _.configure?.(b, y), await z(d.join(i, "connection.json"), c), n.onProgress?.("Verifying runtime tools and Envoi access"), s = await _.createBridge(b, y), await s.connector.start(), await s.connector.checkStatus();
+		if (!f || f.address !== r.address) throw new F("STATE_MISMATCH", "The enrolled address differs from this handoff. Inspect Agent connections before starting");
+		await l(d.join(i, "enrollment-error.json"), { force: !0 }), u = new W(c.apiUrl, a, { fetch: o }), await _.configure?.(b, y), await R(d.join(i, "connection.json"), c), n.onProgress?.("Verifying runtime tools and Envoi access"), s = await _.createBridge(b, y), await s.connector.start(), await s.connector.checkStatus();
 		let x = (await s.connector.lifecycle()).paused;
 		x || (await s.verify?.(), await wo(c, s.connector, "ready", o));
 		let S = x ? "deferred_while_paused" : "passed";
-		return await z(d.join(i, "setup-check.json"), {
+		return await R(d.join(i, "setup-check.json"), {
 			runtime: c.runtime,
 			checkedAt: (/* @__PURE__ */ new Date()).toISOString(),
 			checks: S
@@ -11897,7 +11912,7 @@ async function Eo(e, t, n = {}) {
 			checks: S
 		};
 	} catch (e) {
-		throw c && (s || u) && await wo(c, s?.connector ?? u, "error", o, e instanceof I ? e.code : "CONNECTION_TEST_FAILED").catch(() => {}), e;
+		throw c && (s || u) && await wo(c, s?.connector ?? u, "error", o, e instanceof F ? e.code : "CONNECTION_TEST_FAILED").catch(() => {}), e;
 	} finally {
 		try {
 			await s?.close();
@@ -11908,7 +11923,7 @@ async function Eo(e, t, n = {}) {
 }
 async function Do(e, t, n, r = {}) {
 	Ma(r.env ?? process.env);
-	let i = await (r.secureDirectory ?? be)(await mo(e, r.secureDirectory)), a = await xe(i), o = yo(r.fetch), s = new AbortController(), c = () => s.abort();
+	let i = await (r.secureDirectory ?? xe)(await mo(e, r.secureDirectory)), a = await z(i), o = yo(r.fetch), s = new AbortController(), c = () => s.abort();
 	t.addEventListener("abort", c, { once: !0 }), t.aborted && s.abort();
 	let l, u, f, p = {
 		status: "starting",
@@ -11916,7 +11931,7 @@ async function Do(e, t, n, r = {}) {
 	};
 	try {
 		let e = await La(i, r.env ?? process.env);
-		if (f = await So(i), !await xo(i)) throw new I("STATE_INVALID", "Saved credentials are missing; reconnect through Envoi before starting");
+		if (f = await So(i), !await xo(i)) throw new F("STATE_INVALID", "Saved credentials are missing; reconnect through Envoi before starting");
 		let t = new W(f.apiUrl, new Dt(i), { fetch: o });
 		await t.start();
 		let a = n(f.runtime), m = {
@@ -11946,7 +11961,7 @@ async function Do(e, t, n, r = {}) {
 		}); !s.signal.aborted;) try {
 			await Co(f.apiUrl, o);
 			let t = await a.discover(m, f.configuration);
-			await a.preflight(t, m), await a.configure?.(t, m), f.configuration = t, await z(d.join(i, "connection.json"), f), l = await a.createBridge(t, m), e && l.connector.scopedWakeWorkDriver(), l.connector.onState((e) => {
+			await a.preflight(t, m), await a.configure?.(t, m), f.configuration = t, await R(d.join(i, "connection.json"), f), l = await a.createBridge(t, m), e && l.connector.scopedWakeWorkDriver(), l.connector.onState((e) => {
 				p = {
 					...p,
 					status: e.state === "DEGRADED" ? "waiting" : e.state.toLowerCase(),
@@ -11977,13 +11992,13 @@ async function Do(e, t, n, r = {}) {
 			break;
 		} catch (e) {
 			if (await l?.close(), l = void 0, s.signal.aborted) return;
-			if (!(e instanceof I && [
+			if (!(e instanceof F && [
 				"ENVOI_UNREACHABLE",
 				"GATEWAY_UNREACHABLE",
 				"PROVIDER_UNREACHABLE"
-			].includes(e.code) || e instanceof L && Le(e).lifecycle === "DEGRADED" || e instanceof TypeError && /fetch|network/i.test(e.message))) throw e;
-			let n = e instanceof I ? e.code : "CONNECTION_TEMPORARILY_UNAVAILABLE";
-			e instanceof L || await t.observeError(new L("Runtime connection unavailable", void 0, "NETWORK_ERROR"));
+			].includes(e.code) || e instanceof I && Le(e).lifecycle === "DEGRADED" || e instanceof TypeError && /fetch|network/i.test(e.message))) throw e;
+			let n = e instanceof F ? e.code : "CONNECTION_TEMPORARILY_UNAVAILABLE";
+			e instanceof I || await t.observeError(new I("Runtime connection unavailable", void 0, "NETWORK_ERROR"));
 			let i = await t.lifecycle();
 			p = {
 				status: "waiting",
@@ -11991,14 +12006,14 @@ async function Do(e, t, n, r = {}) {
 				guidance: i.guidance,
 				runtimeChecks: "pending",
 				errorCode: n
-			}, r.onWaiting?.(n), await w(Math.max(e instanceof L ? (e.retryAfterSeconds ?? 0) * 1e3 : 0, r.retryDelayMs ?? Math.max(0, Date.parse(i.retryAt ?? "") - Date.now())), void 0, { signal: s.signal }).catch((e) => {
+			}, r.onWaiting?.(n), await w(Math.max(e instanceof I ? (e.retryAfterSeconds ?? 0) * 1e3 : 0, r.retryDelayMs ?? Math.max(0, Date.parse(i.retryAt ?? "") - Date.now())), void 0, { signal: s.signal }).catch((e) => {
 				if (!s.signal.aborted) throw e;
 			});
 		}
 		if (s.signal.aborted || !l) return;
 		if (e) {
 			let t = await new Dt(i).load();
-			if (!t) throw new I("STATE_INVALID", "Hosted wake needs saved connector identity");
+			if (!t) throw new F("STATE_INVALID", "Hosted wake needs saved connector identity");
 			await Na({
 				connector: l.connector,
 				session: t,
@@ -12046,7 +12061,7 @@ async function ko(e, t, n = {}) {
 		...i,
 		note: "Checks are from the running connector; verify a real message exchange"
 	};
-	let a = await xe(r);
+	let a = await z(r);
 	try {
 		let e = await So(r), i = t(e.runtime), a = yo(n.fetch);
 		await Co(e.apiUrl, a);
@@ -12070,7 +12085,7 @@ async function ko(e, t, n = {}) {
 async function Ao(e) {
 	let t = d.resolve(e), n, r = Date.now() + 15e3;
 	for (; !n;) try {
-		n = await xe(t);
+		n = await z(t);
 	} catch (e) {
 		if (!(e instanceof Error) || !e.message.includes("already running") || Date.now() >= r) throw e;
 		await w(100);
@@ -12100,16 +12115,16 @@ async function Po(e = process.argv.slice(2)) {
 		process.stdout.write(jo);
 		return;
 	}
-	if (Number(process.versions.node.split(".")[0]) < 22) throw new I("NODE_UNSUPPORTED", "Install Node.js 22 or newer before connecting");
+	if (Number(process.versions.node.split(".")[0]) < 22) throw new F("NODE_UNSUPPORTED", "Install Node.js 22 or newer before connecting");
 	let [t, ...r] = e, i = /* @__PURE__ */ new Map(), o = /* @__PURE__ */ new Set();
 	for (let e = 0; e < r.length; e++) {
 		let t = r[e];
 		if (No.includes(t)) {
-			if (o.has(t)) throw new I("ARGUMENT_INVALID", "Duplicate option");
+			if (o.has(t)) throw new F("ARGUMENT_INVALID", "Duplicate option");
 			o.add(t);
 			continue;
 		}
-		if (!Mo.includes(t) || !r[e + 1] || r[e + 1].startsWith("--") || i.has(t)) throw new I("ARGUMENT_INVALID", "Unknown, duplicate or incomplete option. Run --help");
+		if (!Mo.includes(t) || !r[e + 1] || r[e + 1].startsWith("--") || i.has(t)) throw new F("ARGUMENT_INVALID", "Unknown, duplicate or incomplete option. Run --help");
 		i.set(t, r[++e]);
 	}
 	let s = {
@@ -12120,32 +12135,32 @@ async function Po(e = process.argv.slice(2)) {
 		prepareRuntime: o.has("--prepare-runtime")
 	};
 	if (t === "prepare") {
-		if (!oe.includes(i.get("--runtime")) || !i.get("--api-url") || o.has("--install-service") || o.has("--handoff-stdin") || i.has("--handoff") || i.has("--state-dir")) throw new I("ARGUMENT_INVALID", "Supply --runtime and --api-url for prepare. Run --help");
+		if (!se.includes(i.get("--runtime")) || !i.get("--api-url") || o.has("--install-service") || o.has("--handoff-stdin") || i.has("--handoff") || i.has("--state-dir")) throw new F("ARGUMENT_INVALID", "Supply --runtime and --api-url for prepare. Run --help");
 		let e = await To(i.get("--runtime"), i.get("--api-url"), $i, s);
 		process.stdout.write(`${JSON.stringify(e)}\n`);
 		return;
 	}
 	if (t === "setup") {
-		if (i.has("--handoff") === o.has("--handoff-stdin") || i.has("--runtime") || i.has("--api-url")) throw new I("ARGUMENT_INVALID", "Supply either --handoff <file> or --handoff-stdin. The runtime and origin come from the handoff");
+		if (i.has("--handoff") === o.has("--handoff-stdin") || i.has("--runtime") || i.has("--api-url")) throw new F("ARGUMENT_INVALID", "Supply either --handoff <file> or --handoff-stdin. The runtime and origin come from the handoff");
 		let e;
 		if (o.has("--handoff-stdin")) {
 			let t = [], n = 0;
 			for await (let e of process.stdin) {
-				if (n += e.length, n > 16384) throw new I("HANDOFF_INVALID", "Setup input is too large");
+				if (n += e.length, n > 16384) throw new F("HANDOFF_INVALID", "Setup input is too large");
 				t.push(Buffer.from(e));
 			}
 			e = Buffer.concat(t).toString("utf8");
 		} else {
 			let t = d.resolve(i.get("--handoff")), r = await n(t);
-			if (!r.isFile() || r.isSymbolicLink() || r.size > 16384) throw new I("HANDOFF_INVALID", "Choose a regular private setup file of at most 16 KB");
-			if (process.platform !== "win32" && r.mode & 63) throw new I("HANDOFF_INVALID", "Restrict the setup file to your account (chmod 600)");
+			if (!r.isFile() || r.isSymbolicLink() || r.size > 16384) throw new F("HANDOFF_INVALID", "Choose a regular private setup file of at most 16 KB");
+			if (process.platform !== "win32" && r.mode & 63) throw new F("HANDOFF_INVALID", "Restrict the setup file to your account (chmod 600)");
 			e = await a(t, "utf8");
 		}
 		let t;
 		try {
 			t = JSON.parse(e);
 		} catch {
-			throw new I("HANDOFF_INVALID", "Download a valid Envoi setup file");
+			throw new F("HANDOFF_INVALID", "Download a valid Envoi setup file");
 		}
 		let r = await Eo(t, $i, {
 			...s,
@@ -12173,7 +12188,7 @@ async function Po(e = process.argv.slice(2)) {
 		"clear-wake",
 		"stop",
 		"uninstall"
-	].includes(t) || !i.get("--state-dir") || i.size !== 1 || o.size) throw new I("ARGUMENT_INVALID", "Supply a supported command and --state-dir. Run --help");
+	].includes(t) || !i.get("--state-dir") || i.size !== 1 || o.size) throw new F("ARGUMENT_INVALID", "Supply a supported command and --state-dir. Run --help");
 	let c = d.resolve(i.get("--state-dir"));
 	if (t === "configure-wake" || t === "clear-wake") {
 		await So(c), t === "configure-wake" ? await za(c) : await Ba(c), process.stdout.write(`${JSON.stringify({
@@ -12200,7 +12215,7 @@ async function Po(e = process.argv.slice(2)) {
 	}
 	if (t === "stop") {
 		await io(c, "stop").catch(() => {
-			throw new I("CONNECTOR_UNREACHABLE", "No responding connector. Use status or stop the installed service through its supervisor");
+			throw new F("CONNECTOR_UNREACHABLE", "No responding connector. Use status or stop the installed service through its supervisor");
 		}), process.stdout.write(`${JSON.stringify({
 			status: "stop requested",
 			note: "An external supervisor may restart this service. Disable it to keep the connection stopped"
@@ -12226,9 +12241,9 @@ async function Po(e = process.argv.slice(2)) {
 	}
 }
 function Fo(e) {
-	if (e instanceof I) return `${e.code}: ${e.message}`;
-	if (e instanceof R || e instanceof F) return e.message;
-	if (e instanceof L) {
+	if (e instanceof F) return `${e.code}: ${e.message}`;
+	if (e instanceof L || e instanceof P) return e.message;
+	if (e instanceof I) {
 		let t = Le(e);
 		if (t.guidance !== "none") return `${e.code ?? "SERVICE_UNAVAILABLE"}: ${ze(t.guidance)}`;
 	}
@@ -12246,4 +12261,4 @@ function Io() {
 Io() && Po().catch((e) => {
 	process.stderr.write(`${Fo(e)}\n`), process.exitCode = 1;
 });
-export { W as EnvoiConnector, L as EnvoiError, ba as FileWakeStore, ga as HttpWakeReceiver, Aa as createScopedWakeHost, ja as createWakeHttpHandler };
+export { W as EnvoiConnector, I as EnvoiError, ba as FileWakeStore, ga as HttpWakeReceiver, Aa as createScopedWakeHost, ja as createWakeHttpHandler };
