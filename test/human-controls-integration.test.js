@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -138,6 +138,17 @@ test('case sensitivity is an owner-only, idempotent case update', async t => {
     assert.ok(await verifyPath(step.digest, step.seal));
   }
   assert.equal((await trace(ordinary.payload.id)).payload.steps[0].seal, null);
+  const proofPath = path.join(dataDir, 'exported-trace.json');
+  async function verifyExport(step) {
+    await writeFile(proofPath, JSON.stringify(step));
+    return spawnSync(process.execPath, ['scripts/verify-case-trace.mjs', proofPath], {
+      encoding: 'utf8', env: { ...process.env,
+        ENVOI_CASE_TRACE_PUBLIC_KEY: publicKey.export({ type: 'spki', format: 'der' }).toString('base64') }
+    });
+  }
+  assert.equal((await verifyExport(localOnly[0])).status, 0);
+  assert.equal((await verifyExport(after[0])).status, 2);
+  assert.equal((await verifyExport({ ...after[0], record: { ...after[0].record, type: 'changed' } })).status, 1);
 });
 
 test('workspace owner can revise approved agent permissions and changes gate existing credentials', async t => {
