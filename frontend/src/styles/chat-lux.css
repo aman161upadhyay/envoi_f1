@@ -158,3 +158,20 @@
 .app-shell .composer-foot button { margin-left: auto; order: 1; }
 .app-shell .composer-box { align-items: stretch; }
 .app-shell .composer-foot { width: 100%; }
+
+/* Sidebar and inbox list */
+.app-shell .primary-nav { background: var(--lx-paper); border-right: 1px solid var(--lx-line); }
+.app-shell .nav-item { color: var(--lx-ink-2); border-radius: 10px; transition: background-color var(--lx-fast) var(--lx-ease); }
+.app-shell .nav-item:hover { background: var(--lx-paper-2); }
+.app-shell .nav-item[aria-current="page"], .app-shell .nav-item.active { background: var(--lx-accent-soft); color: var(--lx-ink); }
+.app-shell .nav-section-heading { font-size: 11px; letter-spacing: .08em; color: var(--lx-ink-3); }
+.app-shell .case-queue { background: var(--lx-canvas); }
+.app-shell .queue-header h1 { font-family: var(--lx-serif); font-weight: 400; letter-spacing: -.01em; }
+.app-shell .inbox-list-view .case-list { border: 1px solid var(--lx-line); border-radius: var(--lx-radius-card); box-shadow: var(--lx-shadow-1); overflow: hidden; }
+.app-shell .case-row.inbox-message-row, .app-shell .case-row.inbox-message-row.is-unread { background: var(--lx-paper); border-bottom: 1px solid var(--lx-line); transition: background-color var(--lx-fast) var(--lx-ease); }
+.app-shell .case-row.inbox-message-row:last-child { border-bottom: 0; }
+.app-shell .case-row.inbox-message-row:hover { background: var(--lx-paper-2); }
+.app-shell .case-row.inbox-message-row.selected { background: var(--lx-accent-soft); }
+.app-shell .case-row.inbox-message-row.is-unread { box-shadow: inset 3px 0 0 var(--lx-accent); }
+.app-shell .case-chip { background: var(--lx-gold-soft); color: var(--lx-gold-ink); border: 1px solid var(--lx-gold-line); border-radius: var(--lx-radius-pill); }
+.app-shell .inbox-list-view .queue-search, .app-shell .queue-search { border-color: var(--lx-line-2); border-radius: 12px; }
