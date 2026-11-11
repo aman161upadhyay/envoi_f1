@@ -82,7 +82,7 @@ async function eventually(check) {
   throw new Error('Expected recipient case did not become visible');
 }
 
-test('owner-signed asset grants narrow upload, listing, download, and recipient sharing', async t => {
+test('owner-signed case grants narrow messages, file access, and recipient sharing', async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'envoi-signed-case-assets-'));
   const scan = await scanner();
   let server = await launch(dataDir, scan.url);
@@ -161,11 +161,25 @@ test('owner-signed asset grants narrow upload, listing, download, and recipient 
     const saved = await api(baseUrl, signedPolicy, { ...admin, body: { document, signature, publicKey, keyType: 'demo_device' } });
     assert.equal(saved.status, 200, JSON.stringify(saved.payload));
   }
+  const messageText = 'The requested evidence is ready.';
+  const send = (text, key) => api(baseUrl, `${aliceInbox}/messages`, {
+    ...agent, key, body: { senderAgentId: alice.agent.id, recipientEmail: bob.agent.address, caseId, text }
+  });
   await setPolicy([
     { id: 'read-one-version', action: 'asset.read', decision: 'allow', target },
     { id: 'share-one-recipient', action: 'asset.share', decision: 'allow', target: { ...target, recipientAgentId: bob.agent.id } },
-    { id: 'upload-one-checksum', action: 'asset.upload', decision: 'allow', target: approvedUpload }
+    { id: 'upload-one-checksum', action: 'asset.upload', decision: 'allow', target: approvedUpload },
+    { id: 'send-evidence-reply', action: 'message.send', decision: 'allow', target: {
+      recipientAgentId: bob.agent.id, recipientHumanId: null, type: 'message', intent: 'message',
+      text: messageText, content: [{ type: 'text', text: messageText }], payload: null, proposal: null,
+      artifactRefs: [], inReplyTo: null, taskId: null, correlationId: null, requiresAck: true
+    } }
   ]);
+  assert.equal((await send('The changed message is outside the grant.', 'signed-message-denied')).status, 403);
+  const allowed = await send(messageText, 'signed-message-allowed');
+  assert.equal(allowed.status, 202, JSON.stringify(allowed.payload));
+  await eventually(async () => (await api(baseUrl, `${bobInbox}/messages`, { token: bob.agentApiToken }))
+    .payload.some(message => message.id === allowed.payload.id && message.text === messageText));
   const listPath = `${aliceInbox}/assets?caseId=${caseId}`;
   assert.deepEqual((await api(baseUrl, listPath, agent)).payload.map(asset => asset.id), [visible.id]);
   assert.ok((await api(baseUrl, listPath, admin)).payload.some(asset => asset.id === hidden.id));
@@ -184,6 +198,7 @@ test('owner-signed asset grants narrow upload, listing, download, and recipient 
   assert.deepEqual(Buffer.from(await (await fetchVisible()).arrayBuffer()), bytes);
   assert.equal((await api(baseUrl, `${aliceInbox}/assets`, { token: `envoi_case_session_${'A'.repeat(43)}` })).status, 401);
   await setPolicy([]);
+  assert.equal((await send(messageText, 'signed-message-revoked')).status, 403);
   assert.equal((await fetchVisible()).status, 404);
   assert.equal((await grantAsset(visible.id)).status, 403);
   assert.deepEqual((await api(baseUrl, listPath, agent)).payload, []);
