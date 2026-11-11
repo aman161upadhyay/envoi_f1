@@ -64,6 +64,13 @@ test('case sensitivity is an owner-only, idempotent case update', async t => {
   assert.equal(view.caseQueue.find(item => item.id === caseId).sensitive, true);
   assert.equal(view.caseQueue.find(item => item.id === caseId).canMarkSensitive, undefined);
   assert.equal(view.recentEvents.filter(event => event.type === 'case.marked_sensitive' && event.caseId === caseId).length, 1);
+  for (const actionKey of ['pause', 'resume']) {
+    const changed = await api(server.baseUrl, `${inbox}/cases/${caseId}/actions`, {
+      session: alice.session, key: `sensitive-${actionKey}`, body: { actionKey }
+    });
+    assert.equal(changed.status, 201, JSON.stringify(changed.payload));
+  }
+  assert.equal((await readView()).payload.caseQueue.find(item => item.id === caseId).sensitive, true);
 });
 
 test('workspace owner can revise approved agent permissions and changes gate existing credentials', async t => {

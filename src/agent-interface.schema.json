@@ -9,6 +9,8 @@
     "id": { "$ref": "#/definitions/ref" },
     "schemaVersion": { "const": "1.0" },
     "objective": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "sensitive": { "const": true },
+    "sensitiveSince": { "$ref": "#/definitions/timestamp" },
     "collaborationMode": { "$ref": "#/definitions/collaborationMode" },
     "state": { "$ref": "#/definitions/caseState" },
     "principal": { "$ref": "#/definitions/ref" },
