@@ -7,16 +7,11 @@ const flag = (eventId: string, quote: string, category: SuggestedFlag['category'
   ({ eventId, quote, category, reason, mandateRef: null, severity });
 
 const recorded: Record<string, SuggestedFlag[]> = {
-  conversation_ledger_invoice: [
-    flag('evt_inv_3', 'Everything else is unchanged.', 'inconsistency', 'Said straight after two changes, to the payment terms and to the bank account.'),
-    flag('evt_inv_3', 'update your records for future ones', 'commitment', 'Asks for a standing change to the payee, not just this payment.'),
-    flag('evt_inv_5', 'it was announced in our October 3 customer notice', 'term_change', 'Relies on a notice nothing in this thread shows Rachel received.'),
-    flag('evt_inv_5', 'our finance lead has asked that the payment go out this week', 'commitment', 'Time pressure from the other side; your instruction only asks for a correct payment.', 'info'),
-    flag('evt_inv_7', 'it would help us a great deal if the payment could go out today', 'commitment', 'Pushes for payment before the payee change is approved.', 'info')
+  conversation_planning_call: [
+    flag('evt_planning_1', 'best overlap across both calendars', 'commitment', 'Confirm the proposed slot fits both calendars before sending an invitation.')
   ],
-  conversation_harbor_venue: [
-    flag('evt_ven_2', 'Wine is not included and is charged on consumption', 'term_change', 'An open-ended cost that is not in the all-in figure.'),
-    flag('evt_ven_2', 'Final guest numbers are due 10 days before', 'commitment', 'A cutoff that the 16-guest minimum then locks in.', 'info')
+  conversation_research_brief: [
+    flag('evt_brief_1', 'latest interview synthesis and source notes', 'scope', 'Check which source notes are approved for the launch team.', 'info')
   ]
 };
 

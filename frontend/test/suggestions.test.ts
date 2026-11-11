@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { longPreviewCases } from '../src/preview-long-cases';
+import { previewView } from '../src/App';
 import { recordedProvider } from '../src/preview-suggestions';
 import { findHighlights } from '../src/highlights';
 import { buildSuggestionPrompt, parseSuggestionResponse, providerFromCompletion, resolveFlags, type SuggestedFlag } from '../src/suggestions';
 
-const messagesOf = (caseId: string) => longPreviewCases.find(item => item.id === caseId)!.events
+const messagesOf = (caseId: string) => (previewView.cases.find(item => item.id === caseId)?.events ?? [])
   .filter(event => event.type === 'message' && event.payload.messageType !== 'instruction')
   .map(event => ({ id: event.id, sender: String(event.payload.senderAgentId), text: String(event.payload.text) }));
 
@@ -12,10 +12,11 @@ const flag = (over: Partial<SuggestedFlag>): SuggestedFlag => ({ eventId: 'm1', 
 
 describe('suggested highlights', () => {
   it('keeps every recorded flag: quotes are exact and do not overlap rule marks', async () => {
-    for (const item of longPreviewCases) {
-      const recorded = await recordedProvider({ caseId: item.id, objective: item.objective, messages: messagesOf(item.id) });
+    for (const caseId of ['conversation_planning_call', 'conversation_research_brief']) {
+      const item = previewView.cases.find(value => value.id === caseId);
+      const recorded = await recordedProvider({ caseId, objective: item?.objective ?? '', messages: messagesOf(caseId) });
       expect(recorded.flags.length).toBeGreaterThan(0);
-      expect(resolveFlags(messagesOf(item.id), recorded.flags)).toHaveLength(recorded.flags.length);
+      expect(resolveFlags(messagesOf(caseId), recorded.flags)).toHaveLength(recorded.flags.length);
     }
   });
 
