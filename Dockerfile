@@ -1,6 +1,7 @@
 FROM node:22-alpine
 
 WORKDIR /app
+RUN apk add --no-cache python3
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
@@ -8,6 +9,7 @@ COPY --chown=node:node src ./src
 COPY --chown=node:node frontend/guard-demo/packages/core/crypto.mjs frontend/guard-demo/packages/core/webauthn.mjs ./frontend/guard-demo/packages/core/
 COPY --chown=node:node frontend/guard-demo/adapters/near/read.mjs frontend/guard-demo/adapters/near/rpc.mjs ./frontend/guard-demo/adapters/near/
 COPY --chown=node:node frontend/guard-demo/adapters/nearai ./frontend/guard-demo/adapters/nearai/
+COPY --chown=node:node scripts/verify-office-edit.py ./scripts/verify-office-edit.py
 COPY --chown=node:node web ./web
 COPY --chown=node:node db ./db
 COPY --chown=node:node docs ./docs
