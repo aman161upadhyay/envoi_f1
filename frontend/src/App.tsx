@@ -31,7 +31,7 @@ import { captureAnalyticsEvent } from './analytics';
 import { AgentRemovalDialogContent } from './AgentRemovalDialog';
 import { canonicalDecisionPolicy, canSubmitCaseDecision, caseActionPayload } from './case-decisions';
 import { SignedCasePolicyForm } from './SignedCasePolicyForm';
-import { signOwnerDocument, type SignedApprovalDraft } from './signed-case-policy';
+import { preferredOwnerSigningMethod, readOwnerPasskey, signOwnerDocument, type OwnerSigningMethod, type SignedApprovalDraft } from './signed-case-policy';
 import { CreateInboxFolderContent, MoveInboxCaseContent } from './InboxFolderDialogs';
 import { applyInboxPreference, filterInboxCases, readAcknowledgementForCase } from './inbox-preferences';
 import { AGENT_PERMISSION_OPTIONS, DEFAULT_AGENT_PERMISSIONS, selectedAgentPermissions } from './agent-permissions';
@@ -1232,6 +1232,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const [permissionsBusy, setPermissionsBusy] = useState(false);
   const [approvalDraft, setApprovalDraft] = useState<SignedApprovalDraft | null>(null);
+  const [approvalMethod, setApprovalMethod] = useState<OwnerSigningMethod>('demo_device');
   const [approvalError, setApprovalError] = useState('');
   const [moveOpen, setMoveOpen] = useState(false);
   const [preferenceBusy, setPreferenceBusy] = useState(false);
@@ -1261,14 +1262,16 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
       if (actionKey === 'approveOnce' && signedApprovalRequired && payload.policyEvaluationId) {
         if (!confirmedApproval) {
           setApprovalError('');
-          setApprovalDraft(await api.signedCaseApproval(view.inbox.id, workCase.id, payload.policyEvaluationId));
+          const draft = await api.signedCaseApproval(view.inbox.id, workCase.id, payload.policyEvaluationId);
+          setApprovalMethod(preferredOwnerSigningMethod(draft.document.ownerId, draft.signing));
+          setApprovalDraft(draft);
           return;
         }
         if (confirmedApproval.document.evaluationId !== payload.policyEvaluationId || confirmedApproval.document.caseId !== workCase.id) {
           throw new Error('This decision has changed. Reopen it to review the current action.');
         }
       }
-      const signature = confirmedApproval ? await signOwnerDocument(confirmedApproval.document) : undefined;
+      const signature = confirmedApproval ? await signOwnerDocument(confirmedApproval.document, approvalMethod, confirmedApproval.signing) : undefined;
       await api.action(view.inbox.id, workCase.id, actionKey, payload, signature);
       setApprovalDraft(null);
       notify(actionPastTense(actionKey)); await onRefresh(); setConfirm(null);
@@ -1397,6 +1400,15 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
       </Modal>}
       {approvalDraft && <Modal title="Review and sign approval" dismissible={!busy} onClose={() => setApprovalDraft(null)}>
         <ul className="signed-policy-display">{approvalDraft.display?.map((line, index) => <li key={index}>{line}</li>)}</ul>
+        {readOwnerPasskey(approvalDraft.document.ownerId, approvalDraft.signing) && <label>Signing method
+          <select value={approvalMethod} disabled={Boolean(busy)} onChange={event => {
+            setApprovalMethod(event.target.value === 'passkey' ? 'passkey' : 'demo_device');
+            setApprovalError('');
+          }}>
+            <option value="passkey">Passkey</option>
+            <option value="demo_device">Demo device</option>
+          </select>
+        </label>}
         <FormError message={approvalError} />
         <div className="dialog-actions">
           <button className="button secondary" disabled={Boolean(busy)} onClick={() => setApprovalDraft(null)}>Cancel</button>

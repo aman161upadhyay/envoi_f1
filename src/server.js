@@ -6714,6 +6714,8 @@ async function route(req, res) {
     );
     if (!value?.schemaVersion || !await isGroupPolicyMember(value, inbox)) return fail(res, 404, 'Supported structured case not found.');
     const context = signedCasePolicyContext(inbox, caseId);
+    const signing = { ownerAccount, recordContract: signedPolicyRecordContract, network: signedPolicyNetwork, rpId: signedPolicyRpId,
+      passkey: signedPolicyRpId && signedPolicyOrigins.length ? { rpId: signedPolicyRpId, origins: signedPolicyOrigins } : null };
     if (req.method === 'GET' && rawEvaluationId) {
       const evaluationId = assertSafeIdentifier(rawEvaluationId, 'policyEvaluationId');
       if (!value.policyEvaluations.some(item => item.id === evaluationId && item.decision === 'needsHuman')) {
@@ -6721,7 +6723,7 @@ async function route(req, res) {
       }
       const binding = await store.getJson(policyBindingPath(inboxId, evaluationId));
       const document = await currentSignedApprovalDocument(inbox, value, binding);
-      return json(res, 200, { document, display: [
+      return json(res, 200, { document, signing, display: [
         `Approve ${document.action} once for agent ${document.agentId}.`,
         `Case ${document.caseId}. Signed policy version ${document.policyVersion}.`,
         `Action details ${JSON.stringify(document.target)}`
@@ -6731,7 +6733,7 @@ async function route(req, res) {
       const envelope = await store.getJson(signedCasePolicyPath(inboxId, caseId));
       return json(res, 200, { ...context, version: (envelope?.document?.version ?? 0) + 1,
         previousHash: envelope?.document ? valueDigest(envelope.document) : null, active: envelope?.document ?? null,
-        signing: { ownerAccount, recordContract: signedPolicyRecordContract, network: signedPolicyNetwork, rpId: signedPolicyRpId }
+        signing
       });
     }
     if (req.method === 'POST' && operation === 'signed-policy/preview') {

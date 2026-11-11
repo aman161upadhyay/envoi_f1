@@ -1,3 +1,15 @@
+import { createPasskey, signWithPasskey, type OwnerPasskey, type PasskeyAssertion } from '../guard-demo/packages/core/passkey.mjs';
+import { verifyPasskeySignature } from '../guard-demo/packages/core/webauthn.mjs';
+
+export type OwnerSigningMethod = 'demo_device' | 'passkey';
+
+export interface OwnerSigningContext {
+  ownerAccount: string;
+  recordContract: string;
+  network: string;
+  passkey?: { rpId: string; origins: string[] } | null;
+}
+
 export interface SignedCaseGrant {
   id: string;
   action: string;
@@ -27,7 +39,7 @@ export interface SignedPolicyDraft {
   version: number;
   previousHash: string | null;
   active: SignedPolicyDocument | null;
-  signing: { ownerAccount: string; recordContract: string; network: string };
+  signing: OwnerSigningContext;
 }
 
 export interface SignedApprovalDraft {
@@ -42,14 +54,13 @@ export interface SignedApprovalDraft {
     expiresAtMs: number;
   };
   display?: string[];
+  signing?: OwnerSigningContext;
 }
 
-export interface OwnerDeviceSignature<Document> {
-  document: Document;
-  keyType: 'demo_device';
-  publicKey: string;
-  signature: string;
-}
+export type OwnerDeviceSignature<Document> = { document: Document; publicKey: string } & (
+  { keyType: 'demo_device'; signature: string } |
+  { keyType: 'passkey'; signature: PasskeyAssertion }
+);
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -97,11 +108,57 @@ export async function setupOwnerDevice(ownerId: string): Promise<string> {
   return hex(await crypto.subtle.exportKey('raw', keys.publicKey));
 }
 
+export function supportsOwnerPasskey(context?: OwnerSigningContext): boolean {
+  const config = context?.passkey;
+  if (!config || !globalThis.isSecureContext || !globalThis.PublicKeyCredential ||
+    !globalThis.navigator?.credentials || !config.origins.includes(location.origin)) return false;
+  return location.hostname === config.rpId || location.hostname.endsWith(`.${config.rpId}`);
+}
+
+function passkeyStorageKey(ownerId: string, context: OwnerSigningContext, rpId: string): string {
+  return 'envoi-case-passkey:' + JSON.stringify([location.origin, context.network, context.recordContract, context.ownerAccount, ownerId, rpId]);
+}
+
+export function readOwnerPasskey(ownerId: string, context?: OwnerSigningContext): OwnerPasskey | null {
+  if (!context?.passkey || !supportsOwnerPasskey(context)) return null;
+  try {
+    const passkey = JSON.parse(localStorage.getItem(passkeyStorageKey(ownerId, context, context.passkey.rpId)) || 'null');
+    return passkey?.rpId === context.passkey.rpId && /^[A-Za-z0-9_-]+$/.test(passkey.credentialId ?? '') &&
+      /^04[0-9a-f]{128}$/.test(passkey.publicKey ?? '') ? passkey : null;
+  } catch { return null; }
+}
+
+export function preferredOwnerSigningMethod(ownerId: string, context?: OwnerSigningContext): OwnerSigningMethod {
+  return readOwnerPasskey(ownerId, context) ? 'passkey' : 'demo_device';
+}
+
+export async function setupOwnerPasskey(ownerId: string, context: OwnerSigningContext): Promise<string> {
+  if (!context.passkey || !supportsOwnerPasskey(context)) throw new Error('Passkey setup requires a secure Envoi site configured for this passkey.');
+  const stored = readOwnerPasskey(ownerId, context);
+  if (stored) return stored.publicKey;
+  const passkey = await createPasskey({ ownerAccount: context.ownerAccount, rpId: context.passkey.rpId, rpName: 'Envoi' });
+  try { localStorage.setItem(passkeyStorageKey(ownerId, context, passkey.rpId), JSON.stringify(passkey)); }
+  catch { throw new Error('This browser could not save the passkey reference. Enable site storage and try again.'); }
+  return passkey.publicKey;
+}
+
 export async function signOwnerDocument<Document extends { ownerId: string }>(
-  document: Document
+  document: Document,
+  method: OwnerSigningMethod = 'demo_device',
+  context?: OwnerSigningContext
 ): Promise<OwnerDeviceSignature<Document>> {
-  const keys = await ownerDevice(document.ownerId);
+  if (!globalThis.crypto?.subtle) throw new Error('Device signing requires a secure browser session.');
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical(document))));
+  if (method === 'passkey') {
+    const passkey = readOwnerPasskey(document.ownerId, context);
+    if (!passkey || !context?.passkey) throw new Error('Create and register a passkey in Case permissions first.');
+    const hash = hex(digest);
+    const signature = await signWithPasskey({ credentialId: passkey.credentialId, rpId: passkey.rpId, hash });
+    if (!await verifyPasskeySignature({ publicKey: passkey.publicKey, rpId: passkey.rpId, signature, hash,
+      allowedOrigins: [location.origin] })) throw new Error('The passkey signature could not be verified.');
+    return { document, keyType: 'passkey', publicKey: passkey.publicKey, signature };
+  }
+  const keys = await ownerDevice(document.ownerId);
   return {
     document,
     keyType: 'demo_device',

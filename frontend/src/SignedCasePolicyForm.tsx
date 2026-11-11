@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api } from './api';
-import { setupOwnerDevice, signOwnerDocument, type SignedCaseGrant, type SignedPolicyDocument, type SignedPolicyDraft } from './signed-case-policy';
+import { preferredOwnerSigningMethod, readOwnerPasskey, setupOwnerDevice, setupOwnerPasskey, signOwnerDocument, supportsOwnerPasskey,
+  type OwnerSigningMethod, type SignedCaseGrant, type SignedPolicyDocument, type SignedPolicyDraft } from './signed-case-policy';
 import type { Asset, WorkCase } from './types';
 
 type DraftGrant = Omit<SignedCaseGrant, 'target'> & { targetText: string };
@@ -22,7 +23,9 @@ export function SignedCasePolicyForm({ inboxId, caseId, assets, groupMembers, on
   const [draft, setDraft] = useState<SignedPolicyDraft | null>(null);
   const [grants, setGrants] = useState<DraftGrant[]>([]);
   const [days, setDays] = useState('7');
-  const [publicKey, setPublicKey] = useState('');
+  const [method, setMethod] = useState<OwnerSigningMethod>('demo_device');
+  const [demoPublicKey, setDemoPublicKey] = useState('');
+  const [passkeyPublicKey, setPasskeyPublicKey] = useState('');
   const [review, setReview] = useState<SignedPolicyDocument | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -34,6 +37,9 @@ export function SignedCasePolicyForm({ inboxId, caseId, assets, groupMembers, on
     void api.signedCasePolicy(inboxId, caseId).then(next => {
       if (cancelled) return;
       setDraft(next);
+      setMethod(preferredOwnerSigningMethod(next.ownerId, next.signing));
+      setDemoPublicKey('');
+      setPasskeyPublicKey(readOwnerPasskey(next.ownerId, next.signing)?.publicKey ?? '');
       setGrants(next.active?.grants.map(({ target, ...grant }) => ({ ...grant, targetText: JSON.stringify(target, null, 2) })) ?? []);
     }).catch(caught => {
       if (!cancelled) setError(caught instanceof Error ? caught.message : 'Could not load case permissions.');
@@ -72,22 +78,36 @@ export function SignedCasePolicyForm({ inboxId, caseId, assets, groupMembers, on
   }
 
   async function save() {
-    if (!review || busy) return;
+    if (!draft || !review || busy) return;
     await run(async () => {
-      await api.saveSignedCasePolicy(inboxId, caseId, await signOwnerDocument(review));
+      await api.saveSignedCasePolicy(inboxId, caseId, await signOwnerDocument(review, method, draft.signing));
       onSaved();
     });
   }
 
+  const passkeyAvailable = supportsOwnerPasskey(draft?.signing);
+  const publicKey = method === 'passkey' ? passkeyPublicKey : demoPublicKey;
   return <div className="signed-policy-form">
     {loading && <p role="status">Loading case permissions…</p>}
     {error && <p role="alert" className="form-error">{error}</p>}
     {draft && <>
       <div className="signed-policy-device">
-        <button type="button" className="button secondary" disabled={busy} onClick={() => void run(async () => setPublicKey(await setupOwnerDevice(draft.ownerId)))}>Show demo device key</button>
-        {publicKey && <label>Public device key
+        {passkeyAvailable && <label>Signing method
+          <select value={method} disabled={busy} onChange={event => { setMethod(event.target.value === 'passkey' ? 'passkey' : 'demo_device'); setError(''); }}>
+            <option value="demo_device">Demo device</option>
+            <option value="passkey">Passkey</option>
+          </select>
+        </label>}
+        {method === 'passkey' ? !passkeyPublicKey &&
+          <button type="button" className="button secondary" disabled={busy} onClick={() => void run(async () =>
+            setPasskeyPublicKey(await setupOwnerPasskey(draft.ownerId, draft.signing))
+          )}>Create a passkey</button> :
+          <button type="button" className="button secondary" disabled={busy} onClick={() => void run(async () =>
+            setDemoPublicKey(await setupOwnerDevice(draft.ownerId))
+          )}>Show demo device key</button>}
+        {publicKey && <label>{method === 'passkey' ? 'Passkey public key' : 'Public device key'}
           <input readOnly value={publicKey} onFocus={event => event.currentTarget.select()} />
-          <small>Register this key from {draft.signing.ownerAccount} on {draft.signing.network} in {draft.signing.recordContract} before signing.</small>
+          <small>Register this key as <code>{method}</code> from {draft.signing.ownerAccount} on {draft.signing.network} in {draft.signing.recordContract} before requesting a new review.</small>
         </label>}
       </div>
       {review ? <>
@@ -95,7 +115,7 @@ export function SignedCasePolicyForm({ inboxId, caseId, assets, groupMembers, on
         <ul className="signed-policy-display">{review.display.map((line, index) => <li key={index}>{line}</li>)}</ul>
         <div className="dialog-actions">
           <button type="button" className="button secondary" disabled={busy} onClick={() => { setReview(null); setError(''); }}>Edit</button>
-          <button type="button" className="button primary" disabled={busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Sign and save'}</button>
+          <button type="button" className="button primary" disabled={busy || (method === 'passkey' && !passkeyPublicKey)} onClick={() => void save()}>{busy ? 'Saving…' : 'Sign and save'}</button>
         </div>
       </> : <form onSubmit={preview}>
         {grants.map((grant, index) => <fieldset key={grant.id} disabled={busy}>
