@@ -18,6 +18,7 @@ export interface McpEventsWorkDriver {
 export class McpEventsHost {
   #nextPoll = 0;
   #retryAt = 0;
+  #renewRetryAt = 0;
   #ready = false;
   #flight: Promise<void> | null = null;
   #stopped = false;
@@ -37,6 +38,8 @@ export class McpEventsHost {
         this.#retryAt = this.#now() + (error.retryAfterSeconds !== undefined ? error.retryAfterSeconds * 1000 : this.#pollMs);
       }
       throw error;
+    }).then(renewalError => {
+      if (renewalError) throw renewalError;
     }); this.#flight = operation;
     void operation.finally(() => { this.#flight = null; }).catch(() => {});
     return operation;
@@ -49,20 +52,29 @@ export class McpEventsHost {
     }
     let state = await this.store.read();
     let claimed = false;
+    let renewalError: HostRequestError | undefined;
     // Renewal is early enough for a tick at the maximum allowed safety interval.
-    if (!state.subscription || Date.parse(state.subscription.refreshBefore) - this.#now() <= this.#pollMs) {
+    if (!state.subscription || (this.#now() >= this.#renewRetryAt
+      && Date.parse(state.subscription.refreshBefore) - this.#now() <= this.#pollMs)) {
       const input = await this.privateInput();
-      const subscription = await this.client.subscribe({ ...input, cursor: state.cursor });
-      state = { subscription, cursor: subscription.cursor };
-      await this.store.save(state); // persist the cursor before any uncertain work effect
-      await this.driver.catchUp(subscription.cursor, subscription.truncated);
-      await this.driver.processWorkOnce(); // every subscribe/reconnect claims even without a hint
-      claimed = true;
+      if (this.#stopped || this.client.lifecycle !== 'RUNNING') return;
+      const subscription = await this.client.subscribe({ ...input, cursor: state.cursor }).catch(error => {
+        if (!state.subscription || !(error instanceof HostRequestError)
+          || !(error.status === 429 || (error.status ?? 0) >= 500 || ['NETWORK_ERROR', 'TIMEOUT'].includes(error.code))) throw error;
+        this.#renewRetryAt = this.#now() + (error.retryAfterSeconds === undefined ? this.#pollMs : error.retryAfterSeconds * 1000);
+        renewalError = error;
+        return null;
+      });
+      if (this.#stopped || this.client.lifecycle !== 'RUNNING') return;
+      if (subscription) {
+        state = { subscription, cursor: subscription.cursor };
+        await this.store.save(state); // persist the cursor before any uncertain work effect
+        claimed = await this.#process(subscription.cursor, subscription.truncated);
+      }
     }
     for (const hint of await this.store.pending()) {
       if (this.#stopped || this.client.lifecycle !== 'RUNNING') return;
-      await this.driver.catchUp(hint.cursor, false);
-      await this.driver.processWorkOnce();
+      if (!await this.#process(hint.cursor, false)) return;
       // Mark only after authoritative processing; a restart replays safely under work fences.
       await this.store.processed(hint.eventId);
       // Out-of-order deliveries must not move a durable cursor backwards.
@@ -72,11 +84,17 @@ export class McpEventsHost {
       claimed = true;
     }
     if (!claimed && this.#now() >= this.#nextPoll) {
-      await this.driver.catchUp(state.cursor, false);
-      await this.driver.processWorkOnce();
-      claimed = true;
+      claimed = await this.#process(state.cursor, false);
     }
     if (claimed) this.#nextPoll = this.#now() + this.#pollMs;
+    return renewalError;
+  }
+  async #process(cursor: string | null, truncated: boolean): Promise<boolean> {
+    if (this.#stopped || this.client.lifecycle !== 'RUNNING') return false;
+    await this.driver.catchUp(cursor, truncated);
+    if (this.#stopped || this.client.lifecycle !== 'RUNNING') return false;
+    await this.driver.processWorkOnce();
+    return true;
   }
   /** Stop scheduling immediately on owner unsubscribe/revoke; private receiver custody is destroyed separately. */
   stop() { this.#stopped = true; }

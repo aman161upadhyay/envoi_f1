@@ -61,4 +61,30 @@ describe('private MCP events host catch-up and recovery', () => {
     await test.host.tick(); expect(test.client.subscribe).toHaveBeenCalledOnce();
     test.advance(60000); await test.host.tick(); expect(test.client.subscribe).toHaveBeenCalledTimes(2);
   });
+  it('continues claiming during an established subscription renewal outage', async () => {
+    const test = setup(); await test.host.tick();
+    test.advance(7 * 86400000 - 60000);
+    test.client.subscribe.mockRejectedValueOnce(new HostRequestError('RATE_LIMITED', 429, 120));
+    await expect(test.host.tick()).rejects.toMatchObject({ retryAfterSeconds: 120 });
+    expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+    test.advance(60000);
+    await Promise.all([test.host.tick(), test.host.tick()]);
+    expect(test.client.subscribe).toHaveBeenCalledTimes(2);
+    expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(3);
+    test.advance(60000);
+    test.client.lifecycle = 'PAUSED';
+    await test.host.tick();
+    expect(test.client.subscribe).toHaveBeenCalledTimes(2);
+    expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(3);
+    test.client.lifecycle = 'RUNNING';
+    await test.host.tick();
+    expect(test.client.subscribe).toHaveBeenCalledTimes(3);
+    expect(test.driver.processWorkOnce).toHaveBeenCalledTimes(4);
+  });
+  it('rechecks the lifecycle after catch-up before claiming', async () => {
+    const test = setup();
+    test.driver.catchUp.mockImplementationOnce(async () => { test.host.stop(); });
+    await test.host.tick();
+    expect(test.driver.processWorkOnce).not.toHaveBeenCalled();
+  });
 });
