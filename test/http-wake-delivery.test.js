@@ -5,7 +5,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { readdir } from 'node:fs/promises';
-import { dataFile, eventually, launch, owner, readData, send, waitForMessageStatus, writeData } from './a3-harness.js';
+import path from 'node:path';
+import { FileStore } from '../src/storage.js';
+import { PostgresStore } from '../src/postgres-storage.js';
+import { wakeQueueDir, wakeSubscriptionIndexPath, wakeSubscriptionPath } from '../src/http-wake-paths.js';
+import { claim, dataFile, eventually, launch, owner, pauseAgent, readData, resumeAgent, send, sleep, waitForMessageStatus, writeData } from './a3-harness.js';
 
 const key = crypto.generateKeyPairSync('ed25519').privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64');
 const enabled = { ENVOI_INSTALLATIONS_V2: 'true', ENVOI_HTTP_WAKE_V1: 'true', ENVOI_WAKE_SIGNING_KEYS: JSON.stringify([{ kid: 'delivery-tests', privateKey: key, activeFrom: '2026-01-01T00:00:00.000Z' }]) };
@@ -46,3 +50,85 @@ test('[FileStore] a delivered native message queues the recipient wake after the
   assert.equal(wakes[0].type, 'wake.work_available');
   assert.ok(wakes[0].createdAt >= delivered.deliveredAt, 'the wake is queued after the delivery committed');
 });
+
+
+for (const backend of ['FileStore', 'PostgreSQL']) {
+  const databaseUrl = backend === 'PostgreSQL' ? process.env.DATABASE_URL : null;
+  const skip = backend === 'PostgreSQL' && !databaseUrl;
+
+  test(`[${backend}] wake recovery finds never-claimed work beyond a full page after pause`, { timeout: 60000, skip }, async t => {
+    const server = await launch({ ...enabled, ...(databaseUrl ? { DATABASE_URL: databaseUrl } : {}) });
+    t.after(() => server.stop());
+    const store = databaseUrl ? new PostgresStore(databaseUrl) : new FileStore(server.dataDir);
+    if (databaseUrl) t.after(() => store.close());
+    const [alice, bob] = await Promise.all([owner(server.baseUrl, '9610'), owner(server.baseUrl, '9611')]);
+    const sent = await send(server.baseUrl, alice, bob, { text: 'Recover an unread delivery' });
+    assert.equal(sent.status, 202, sent.text);
+    const messageId = sent.payload.id;
+    await waitForMessageStatus(server.baseUrl, alice, messageId, 'delivered');
+    const inboxDir = path.join('inboxes', bob.inbox.id);
+    const messagesDir = path.join(inboxDir, 'messages');
+    const message = await store.getJson(path.join(messagesDir, `${messageId}.json`));
+    const claimPath = path.join(inboxDir, 'work-claims', `${messageId}.json`);
+    assert.equal(await store.getJson(claimPath), null);
+    // A compound cursor must reach the real row even when all timestamps tie.
+    for (let index = 0; index < 50; index += 1) {
+      const id = `earlier_${index}`;
+      await store.putJson(path.join(messagesDir, `${id}.json`), {
+        id, createdAt: message.createdAt, status: 'delivered', recipientAgentId: bob.agent.id,
+        recipientInboxId: bob.inbox.id
+      });
+    }
+    await pauseAgent(server.baseUrl, bob);
+    const wakes = await seedRecoverySubscription(store, bob);
+    await sleep(1300);
+    assert.deepEqual(await wakes(), [], 'no catch-up wake while paused');
+    await resumeAgent(server.baseUrl, bob);
+    await eventually(async () => (await wakes()).some(record => record.reason === 'work_due'),
+      { timeoutMs: 15000, message: 'a catch-up wake for the unread delivery' });
+    assert.equal(await store.getJson(claimPath), null, 'a wake does not claim work on behalf of the host');
+    assert.equal((await claim(server.baseUrl, bob.agentApiToken)).payload.work?.workId, messageId);
+  });
+
+  test(`[${backend}] wake recovery honors a live lease and reoffers it after expiry`, { timeout: 60000, skip }, async t => {
+    const server = await launch({ ...enabled, ...(databaseUrl ? { DATABASE_URL: databaseUrl } : {}) });
+    t.after(() => server.stop());
+    const store = databaseUrl ? new PostgresStore(databaseUrl) : new FileStore(server.dataDir);
+    if (databaseUrl) t.after(() => store.close());
+    const [alice, bob] = await Promise.all([owner(server.baseUrl, '9612'), owner(server.baseUrl, '9613')]);
+    const sent = await send(server.baseUrl, alice, bob, { text: 'Recover an expired lease' });
+    assert.equal(sent.status, 202, sent.text);
+    const messageId = sent.payload.id;
+    await waitForMessageStatus(server.baseUrl, alice, messageId, 'delivered');
+    const claimed = (await claim(server.baseUrl, bob.agentApiToken)).payload.work;
+    assert.equal(claimed?.workId, messageId);
+    const wakes = await seedRecoverySubscription(store, bob);
+    await sleep(1300);
+    assert.deepEqual(await wakes(), [], 'a live lease is not due');
+    const claimPath = path.join('inboxes', bob.inbox.id, 'work-claims', `${messageId}.json`);
+    const record = await store.getJson(claimPath);
+    await store.putJson(claimPath, { ...record, leaseExpiresAt: new Date(Date.now() - 1000).toISOString() });
+    await eventually(async () => (await wakes()).some(wake => wake.reason === 'work_due'),
+      { timeoutMs: 15000, message: 'a catch-up wake for the expired lease' });
+    const recovered = (await claim(server.baseUrl, bob.agentApiToken)).payload.work;
+    assert.equal(recovered?.workId, messageId);
+    assert.notEqual(recovered.leaseToken, claimed.leaseToken);
+  });
+}
+
+// Seed an active callback after delivery, without an activation wake or an external receiver.
+async function seedRecoverySubscription(store, recipient) {
+  const [family] = await store.listJson(path.join('auth', 'agent-credential-families', recipient.inbox.id, recipient.agent.id));
+  const at = new Date().toISOString();
+  const subscription = {
+    id: `wake_sub_recovery_${crypto.randomUUID()}`, inboxId: recipient.inbox.id, agentId: recipient.agent.id,
+    familyId: family.id, installationId: 'installation_delivery_test', url: 'https://wake.invalid/hook',
+    status: 'active', createdAt: at, activatedAt: at, expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    delivery: { state: 'healthy', lastAttemptAt: null, lastSuccessAt: null, consecutiveFailures: 0, lastFailureClass: null },
+    sequence: 0, dirty: {}
+  };
+  await store.putJson(wakeSubscriptionPath(subscription.agentId, subscription.id), subscription);
+  const { id, inboxId, agentId, status } = subscription;
+  await store.putJson(wakeSubscriptionIndexPath(id), { id, inboxId, agentId, status, endedAt: null });
+  return async () => (await store.listJson(wakeQueueDir)).filter(record => record.subscriptionId === id);
+}

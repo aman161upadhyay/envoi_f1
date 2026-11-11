@@ -164,13 +164,14 @@ export function createHttpWake({ store, enabled = false, installationsEnabled = 
     const ended = records.filter(sub => sub.status === 'ended').sort((a,b)=>b.endedAt.localeCompare(a.endedAt)).slice(0,5);
     return [...active,...ended];
   }
-  async function trigger({ inboxId, agentId, type='wake.work_available', reason, cursor=null }) {
+  async function trigger({ inboxId, agentId, type='wake.work_available', reason, cursor=null, requiresInstructionClaims=false }) {
     if (!enabled) return;
     for (const sub of await agentSubs(agentId)) if (sub.inboxId === inboxId && sub.agentId === agentId) {
       await derive(sub); if (sub.status !== 'active' || (sub.targetState && sub.targetState !== 'active')) continue;
+      if (requiresInstructionClaims && sub.profile) continue;
       const { family,agent } = await facts(sub);
       if (Date.parse(family.refreshExpiresAt) <= time() || (type === 'wake.work_available' && agent.status === 'paused')) continue;
-      if (reason === 'work_due') { if (sub.lastWorkDueAt && time()-Date.parse(sub.lastWorkDueAt)<60000) continue; sub.lastWorkDueAt=now(); }
+      if (reason === 'work_due') { if (sub.lastWorkDueAt && time()-Date.parse(sub.lastWorkDueAt)<workDueMinIntervalMs) continue; sub.lastWorkDueAt=now(); }
       await queue(sub,type,reason,undefined,cursor);
     }
   }
@@ -328,7 +329,10 @@ export function createHttpWake({ store, enabled = false, installationsEnabled = 
       const targets=[];
       for(const entry of await store.listJson(wakeSubscriptionIndexDir))if(entry.status==='active'){
         const sub=await store.getJson(subPath(entry.agentId,entry.id));
-        if(sub?.status==='active'&&!(sub.lastWorkDueAt&&time()-Date.parse(sub.lastWorkDueAt)<workDueMinIntervalMs))targets.push({id:sub.id,inboxId:sub.inboxId,agentId:sub.agentId});
+        if (sub?.status !== 'active' || sub.targetState && sub.targetState !== 'active') continue;
+        if (sub.profile === 'mcp_events' && sub.eventName !== 'envoi.work_available') continue;
+        if (sub.lastWorkDueAt && time() - Date.parse(sub.lastWorkDueAt) < workDueMinIntervalMs) continue;
+        targets.push({ id:sub.id, inboxId:sub.inboxId, agentId:sub.agentId, acceptsInstructions:!sub.profile });
       }
       return targets;
     }

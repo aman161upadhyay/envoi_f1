@@ -3870,9 +3870,22 @@ async function reattachGatewayRegistration(rawToken, registrationId, activationI
   }, [], [registrationLockKey(registrationId), `gateway-installation:${binding.installationId}`]);
 }
 
+const isCanonicalWork = message => isHumanInstruction(message) || isHumanDecision(message) || Boolean(message.senderInboxId && message.senderAgentId);
+
+async function canOfferWork(message, identity) {
+  const caseRecord = await getCase(identity.inboxId, message.caseId);
+  return !['paused', 'revoked'].includes(caseRecord?.state) && !await workIneligibility(message, identity);
+}
+
+async function isWorkHeldForOwner(inboxId, claim) {
+  if (!claim?.heldForOwnerRequest) return false;
+  const request = await store.getJson(humanRequestPath(inboxId, claim.heldForOwnerRequest));
+  return !['approved', 'declined', 'expired'].includes(request?.status);
+}
+
 async function claimCanonicalAgentWork(identity, currentIdentity, input, claimCandidates, writeAudit, { leaseMs = agentWorkLeaseMs } = {}) {
   const messages = claimCandidates
-    .filter(message => (isHumanInstruction(message) || isHumanDecision(message) || message.senderInboxId && message.senderAgentId) && message.recipientInboxId === identity.inboxId && message.recipientAgentId === identity.agent.id && ['delivered', 'acknowledged'].includes(message.status))
+    .filter(message => isCanonicalWork(message) && message.recipientInboxId === identity.inboxId && message.recipientAgentId === identity.agent.id && ['delivered', 'acknowledged'].includes(message.status))
     .sort((left, right) => String(left.deliveredAt || left.createdAt).localeCompare(String(right.deliveredAt || right.createdAt)) || String(left.id).localeCompare(String(right.id)));
   let nextAvailable = null;
   const noteAvailable = (claim, at) => {
@@ -3883,26 +3896,10 @@ async function claimCanonicalAgentWork(identity, currentIdentity, input, claimCa
     if (!message || !['delivered', 'acknowledged'].includes(message.status) || message.senderInboxId !== candidate.senderInboxId
       || message.recipientInboxId !== identity.inboxId || message.recipientAgentId !== identity.agent.id
       || isHumanInstruction(message) && input.acceptHumanInstructions !== true) continue;
-    const caseRecord = await getCase(identity.inboxId, message.caseId);
-    if (caseRecord?.state === 'paused' || caseRecord?.state === 'revoked') continue;
-    if (isHumanInstruction(message)) {
-      try { await assertHumanInstructionAuthority(message, currentIdentity); }
-      catch (error) { if ([400, 403, 404, 409, 422].includes(error.statusCode)) continue; throw error; }
-    } else if (isHumanDecision(message) || message.groupCase) {
-      if (await workIneligibility(message, currentIdentity)) continue;
-    } else {
-      const senderAgent = await store.getJson(path.join('inboxes', message.senderInboxId, 'agents', `${message.senderAgentId}.json`));
-      if (!senderAgent || !canAct(senderAgent, 'send_agent_messages')) continue;
-      const senderContact = await store.getJson(path.join('inboxes', message.senderInboxId, 'contacts', `${identity.agent.id}.json`));
-      const recipientContact = await store.getJson(path.join('inboxes', identity.inboxId, 'contacts', `${message.senderAgentId}.json`));
-      if (senderContact?.blocked || recipientContact?.blocked) continue;
-    }
+    if (!await canOfferWork(message, currentIdentity)) continue;
     const claimPath = workClaimPath(identity.inboxId, message.id);
     const currentClaim = await store.getJson(claimPath);
-    if (currentClaim?.heldForOwnerRequest) {
-      const ownerRequest = await store.getJson(humanRequestPath(identity.inboxId, currentClaim.heldForOwnerRequest));
-      if (!ownerRequest || !['approved', 'declined', 'expired'].includes(ownerRequest.status)) continue;
-    }
+    if (await isWorkHeldForOwner(identity.inboxId, currentClaim)) continue;
     if (currentClaim && ['completed', 'failed'].includes(currentClaim.status)) continue;
     if (currentClaim && ['claimed', 'acknowledged'].includes(currentClaim.status) && new Date(currentClaim.leaseExpiresAt) > new Date()) {
       noteAvailable(currentClaim, currentClaim.leaseExpiresAt);
@@ -6902,28 +6899,68 @@ await httpWake.startup();
 await browserGatewayHttp.reconcileFlags();
 let wakeDrainRun = null;
 let wakeMaintenanceRun = null;
+const wakeRecoveryPages = new Map();
+const wakeRecoveryPageSize = 50;
+const wakeRecoveryIdleMs = 10_000;
 async function wakeMaintenance() {
   if (!httpWakeEnabled) return;
-  // Heartbeat and cleanup throttle themselves; the work-due scan visits only active subscriptions
-  // that a work_due trigger could still wake.
   await httpWake.heartbeat();
   await httpWake.cleanup();
-  for (const sub of await httpWake.workDueTargets()) {
-    await withInboxMutation(sub.inboxId, async () => {
-      const agent = await store.getJson(path.join('inboxes', sub.inboxId, 'agents', `${sub.agentId}.json`));
-      if (!agent || agent.status !== 'active') return;
-      const at = store.now();
-      for (const claim of await store.listJson(path.join('inboxes', sub.inboxId, 'work-claims'))) {
-        const due = claim.status === 'retryable' && claim.retryAt <= at || ['claimed', 'acknowledged'].includes(claim.status) && claim.leaseExpiresAt <= at;
-        if (!due || agentWorkAttempts(claim) >= agentWorkMaxAttempts && !claim.reofferWithoutAttempt) continue;
-        const message = await store.getJson(messagePath(sub.inboxId, claim.workId));
-        if (!message || !['delivered', 'acknowledged'].includes(message.status)) continue;
-        const value = await getCase(sub.inboxId, message.caseId);
-        if (['paused', 'revoked'].includes(value?.state) || await workIneligibility(message, { agent, inboxId: sub.inboxId })) continue;
-        await httpWake.trigger({ inboxId: sub.inboxId, agentId: sub.agentId, reason: 'work_due', cursor: await newestEventCursor(sub.inboxId) });
-        break;
+  const now = Date.now();
+  for (const [key, page] of wakeRecoveryPages) {
+    if (now - page.lastScan > 120_000) wakeRecoveryPages.delete(key);
+  }
+  const targets = new Map();
+  for (const target of await httpWake.workDueTargets()) {
+    const key = `${target.inboxId}/${target.agentId}`;
+    if (target.acceptsInstructions || !targets.has(key)) targets.set(key, target);
+  }
+  for (const [key, { inboxId, agentId, acceptsInstructions }] of targets) {
+    const previous = wakeRecoveryPages.get(key);
+    if (previous?.nextScan > now) continue;
+    await withInboxMutation(inboxId, async () => {
+      const agent = await store.getJson(path.join('inboxes', inboxId, 'agents', `${agentId}.json`));
+      if (!agent || !canAct(agent, 'receive_agent_messages')) return;
+      const identity = { agent, inboxId };
+      const messageDir = path.join('inboxes', inboxId, 'messages');
+      const cursors = {};
+      let found = false;
+      let foundInstruction = false;
+      const at = Date.now();
+      for (const status of ['delivered', 'acknowledged']) {
+        const messages = await store.queryJson(messageDir, {
+          limit: wakeRecoveryPageSize, sortField: 'createdAt', order: 'asc',
+          filters: { recipientAgentId: agentId, status }, after: previous?.cursors[status]
+        });
+        const last = messages.at(-1);
+        if (messages.length === wakeRecoveryPageSize) cursors[status] = { value: String(last.createdAt ?? ''), id: last.id };
+        for (const message of messages) {
+          if (message.recipientInboxId !== inboxId || !isCanonicalWork(message)) continue;
+          const instruction = isHumanInstruction(message);
+          // Provider MCP tools claim peer work. REST hosts can opt in to owner instructions.
+          if (instruction && (!acceptsInstructions || foundInstruction)) continue;
+          const claim = await store.getJson(workClaimPath(inboxId, message.id));
+          const due = !claim || (claim.status === 'retryable' && new Date(claim.retryAt) <= at)
+            || (['claimed', 'acknowledged'].includes(claim.status) && new Date(claim.leaseExpiresAt) <= at);
+          if (!due || (claim && !claim.reofferWithoutAttempt && agentWorkAttempts(claim) >= agentWorkMaxAttempts)) continue;
+          if (await isWorkHeldForOwner(inboxId, claim) || !await canOfferWork(message, identity)) continue;
+          if (instruction) {
+            foundInstruction = true;
+            continue;
+          }
+          found = true;
+          break;
+        }
+        if (found) break;
       }
-    });
+      // Advance even if this page contains only held work, so it cannot hide newer work.
+      wakeRecoveryPages.set(key, {
+        cursors, lastScan: now, nextScan: Object.keys(cursors).length ? now : now + wakeRecoveryIdleMs
+      });
+      if (found || foundInstruction) await httpWake.trigger({
+        inboxId, agentId, reason: 'work_due', cursor: await newestEventCursor(inboxId), requiresInstructionClaims: !found
+      });
+    }, [], [], true);
   }
 }
 const wakeDispatch = httpWakeEnabled ? setInterval(() => {
