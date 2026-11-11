@@ -928,7 +928,9 @@ const sendStreamEvent = (subscription, event) => {
     }
     if (subscription.res.writableEnded || subscription.res.destroyed) return;
     const normalized = normalizeStreamEvent(event);
-    if (!visibleInboxEvent(normalized, subscription.agentId, Boolean(subscription.humanId))) {
+    if (!visibleInboxEvent(normalized, subscription.agentId, Boolean(subscription.humanId))
+      || !subscription.humanId && normalized.groupCase && normalized.caseId
+        && !await groupSnapshotAllowed({ inboxId: subscription.inboxId, agent: { id: subscription.agentId } }, normalized.caseId)) {
       if (normalized.cursor > (subscription.cursor || '')) subscription.cursor = normalized.cursor;
       return;
     }
@@ -3712,8 +3714,14 @@ async function sendCaseToolMessage(ctx, { id, type, intent, text, payload = null
   if (ctx.workMessage.groupCase) {
     if (type !== 'message') throw caseToolError('NOT_SUPPORTED_FOR_WORK');
     const binding = await store.getJson(caseBindingPath(session.caseId));
-    const result = await writeGroupMessage(binding, { inboxId: session.inboxId, agent: ctx.agent }, { text, inReplyTo, assigneeAgentIds }, id, ctx.writeAudit);
-    return { ...result.message, status: 'delivered' };
+    try {
+      const result = await writeGroupMessage(binding, { inboxId: session.inboxId, agent: ctx.agent }, { text, inReplyTo, assigneeAgentIds }, id, ctx.writeAudit);
+      return { ...result.message, status: 'delivered' };
+    } catch (error) {
+      if (error.code === 'SIGNED_GROUP_MESSAGE_DENIED') throw caseToolError('AUTHORITY_DENIED');
+      if (error.code === 'SIGNED_GROUP_APPROVAL_REQUIRED') throw caseToolError('AUTHORITY_PENDING');
+      throw error;
+    }
   }
   if (session.workKind === 'human_instruction') {
     const reply = { id, kind: 'humanInstructionReply', inboxId: session.inboxId, caseId: session.caseId,
@@ -5905,7 +5913,14 @@ async function route(req, res) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw codedError(400, 'EVENT_LIMIT_INVALID', 'The event page limit must be an integer from 1 to 200.');
     const { cursor } = await resumeEventCursor(inboxId, url.searchParams.get('cursor') || '');
     const page = await eventPage(inboxId, { cursor, limit });
-    return json(res, 200, { ...page, events: page.events.filter(event => visibleInboxEvent(event, agent?.id, Boolean(human))) });
+    const groupScope = new Map();
+    const visible = await Promise.all(page.events.map(async event => {
+      if (!visibleInboxEvent(event, agent?.id, Boolean(human))) return false;
+      if (human || !event.groupCase || !event.caseId) return true;
+      if (!groupScope.has(event.caseId)) groupScope.set(event.caseId, groupSnapshotAllowed({ inboxId, agent }, event.caseId));
+      return groupScope.get(event.caseId);
+    }));
+    return json(res, 200, { ...page, events: page.events.filter((_event, index) => visible[index]) });
   }
 
   if (req.method === 'GET' && suffix === 'events') {
@@ -5938,7 +5953,7 @@ async function route(req, res) {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'private, no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
     // a5-presence §3: only the connect counts; holding the stream open never refreshes presence.
     flushAgentPresence(req, res);
-    const subscription = { res, cursor: startCursor, sentIds: new Set(), heartbeat: null, expiryTimer: null, sessionKey, agentId: agent?.id || null, humanId: human?.id || null, replaying: true, buffer: new Map(), overflow: false };
+    const subscription = { res, inboxId, cursor: startCursor, sentIds: new Set(), heartbeat: null, expiryTimer: null, sessionKey, agentId: agent?.id || null, humanId: human?.id || null, replaying: true, buffer: new Map(), overflow: false };
     if (agent && !human) {
       subscription.familyId = streamFamilyId;
       // Re-check the credential on every heartbeat: pause keeps the stream, revocation or expiry ends it.
@@ -6585,7 +6600,8 @@ async function route(req, res) {
           { path: signedCasePolicyVersionPath(inboxId, caseId, digest), value: envelope },
           { path: location, value: envelope }
         ]);
-        await writeAudit('case.signed_policy_updated', { caseId, version: envelope.document.version, digest, agentId: envelope.document.agentId });
+        await writeAudit('case.signed_policy_updated', { caseId, version: envelope.document.version, digest, agentId: envelope.document.agentId,
+          ...(current.caseMode === 'group' ? { groupCase: true } : {}) });
         return { document: envelope.document, digest };
       }, { allowGroup: true });
       return json(res, 200, active);

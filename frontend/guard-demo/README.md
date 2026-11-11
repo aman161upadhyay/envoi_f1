@@ -17,7 +17,9 @@ Open http://127.0.0.1:4173/permissions for Settings and Evidence, or /check for 
 
 ## Envoi case-policy integration
 
-Signed policies are opt-in per supported pair case. To expose Case permissions, configure the Envoi server with `ENVOI_SIGNED_POLICY_NETWORK`, `ENVOI_SIGNED_POLICY_RECORD_CONTRACT`, `ENVOI_SIGNED_POLICY_RPC_URL`, and `ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS`. The last setting maps Envoi human IDs to their verified NEAR owner accounts as a JSON object. Register the browser device's public key from the matching owner account before submitting a signed policy. Passkey verification additionally requires `ENVOI_SIGNED_POLICY_RP_ID` and `ENVOI_SIGNED_POLICY_ORIGINS`.
+Signed policies are opt-in per agent and case, including native group cases. To expose Case permissions, configure the Envoi server with `ENVOI_SIGNED_POLICY_NETWORK`, `ENVOI_SIGNED_POLICY_RECORD_CONTRACT`, `ENVOI_SIGNED_POLICY_RPC_URL`, and `ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS`. The last setting maps Envoi human IDs to their verified NEAR owner accounts as a JSON object. Register the browser device's public key from the matching owner account before submitting a signed policy. Passkey verification additionally requires `ENVOI_SIGNED_POLICY_RP_ID` and `ENVOI_SIGNED_POLICY_ORIGINS`.
+
+In group cases, each member's owner signs independently. Use `case.snapshot` with an empty target to allow that agent's group timeline, events, and assignments. A `group.message.send` grant binds the text, reply reference, sorted assignee IDs, and sorted IDs of all other group members. Group sends marked Ask first stay blocked until a matching Allowed grant is signed.
 
 Use an isolated test environment for this setup. Enrolling a case makes uncovered actions unavailable, and expiring or revoking the signing key invalidates its grants. For agent case reads, use the scoped case session with a `case.snapshot` grant. Signed file grants use the immutable file checksum and exact recipient for sharing. The `payment.near` action evaluates and binds exact amounts, while the standalone testnet runner exercises transfers.
 

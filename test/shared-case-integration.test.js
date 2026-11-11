@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { generateSync } from 'otplib';
 import { BrowserSession } from './browser-session.js';
+import { valueDigest } from '../src/policy-engine.js';
 
 async function launch(dataDir, flags = {}) {
   const child = spawn(process.execPath, ['src/server.js'], {
@@ -179,7 +182,7 @@ test('two independent owners share ordered typed cases without cross-case or aut
   assert.equal((await api(server.baseUrl, `/api/inboxes/${alice.inbox.id}/cases/case_beta_A`, { token: alice.agentApiToken })).payload.receipt.id, a.receipt.id);
 });
 
-test('three agents chat and settle independent assignments in one native case', async t => {
+test('three agents chat and settle independent assignments under legacy and owner-signed group policies', async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'envoi-group-case-'));
   const flags = { ENVOI_INSTALLATIONS_V2: 'true', ENVOI_CASE_SESSIONS_V1: 'true' };
   let server = await launch(dataDir, flags);
@@ -201,7 +204,7 @@ test('three agents chat and settle independent assignments in one native case', 
       }));
     }
   }
-  const tool = async (token, name, args) => {
+  const tool = async (token, name, args, { allowError = false } = {}) => {
     const response = await fetch(`${server.baseUrl}/mcp`, {
       method: 'POST',
       headers: {
@@ -215,7 +218,7 @@ test('three agents chat and settle independent assignments in one native case', 
     const envelope = await response.json();
     assert.equal(response.status, 200, JSON.stringify(envelope));
     assert.equal(envelope.error, undefined, JSON.stringify(envelope));
-    assert.ok(!envelope.result.isError, JSON.stringify(envelope.result));
+    if (!allowError) assert.ok(!envelope.result.isError, JSON.stringify(envelope.result));
     return JSON.parse(envelope.result.content[0].text);
   };
   const create = await call(alice, '/api/agent/group-cases', createInput);
@@ -338,4 +341,97 @@ test('three agents chat and settle independent assignments in one native case', 
   }
   const mcpTimeline = await tool(carol.agentApiToken, 'envoi_read_group_case', { caseId });
   assert.equal(mcpTimeline.payload.messages.length, 5);
+
+  const registry = new Map();
+  const ownerAccounts = {};
+  const signers = new Map();
+  for (const [index, member] of [alice, bob, outsider].entries()) {
+    const account = `group-owner-${index}.testnet`;
+    const keys = generateKeyPairSync('ed25519');
+    const publicKey = Buffer.from(keys.publicKey.export({ format: 'jwk' }).x, 'base64url').toString('hex');
+    ownerAccounts[member.human.id] = account;
+    registry.set(account, [{ public_key: publicKey, key_type: 'demo_device', registered_at_ms: Date.now() - 60_000, revoked_at_ms: null }]);
+    signers.set(member, document => ({ document, publicKey, keyType: 'demo_device',
+      signature: sign(null, Buffer.from(valueDigest(document), 'hex'), keys.privateKey).toString('hex') }));
+  }
+  const rpc = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const input = JSON.parse(Buffer.concat(chunks).toString());
+    const { owner } = JSON.parse(Buffer.from(input.params.args_base64, 'base64').toString());
+    const keys = input.params.method_name === 'owner_keys' ? registry.get(owner) ?? [] : [];
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: input.id, jsonrpc: '2.0', result: { result: [...Buffer.from(JSON.stringify(keys))] } }));
+  });
+  t.after(async () => { if (rpc.listening) await new Promise(resolve => rpc.close(resolve)); });
+  await new Promise(resolve => rpc.listen(0, '127.0.0.1', resolve));
+  await server.stop();
+  server = await launch(dataDir, { ...flags, ENVOI_SIGNED_POLICY_NETWORK: 'near-testnet',
+    ENVOI_SIGNED_POLICY_RECORD_CONTRACT: 'record.testnet', ENVOI_SIGNED_POLICY_RPC_URL: `http://127.0.0.1:${rpc.address().port}`,
+    ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS: JSON.stringify(ownerAccounts) });
+  const ownerPolicyRoute = member => `/api/inboxes/${member.inbox.id}/cases/${caseId}/signed-policy`;
+  const policy = (member, body) => api(server.baseUrl, ownerPolicyRoute(member), { session: member.session, body });
+  const preview = async (member, grants) => {
+    const current = await policy(member);
+    assert.equal(current.status, 200, JSON.stringify(current.payload));
+    const { workspaceId, ownerId, agentId, version, previousHash } = current.payload;
+    assert.equal(agentId, member.agent.id);
+    const issuedAtMs = Date.now();
+    const result = await api(server.baseUrl, `${ownerPolicyRoute(member)}/preview`, { session: member.session,
+      body: { schema: 'envoi.case-policy/v1', workspaceId, caseId, ownerId, agentId, version, previousHash,
+        issuedAtMs, expiresAtMs: issuedAtMs + 60_000, grants } });
+    assert.equal(result.status, 200, JSON.stringify(result.payload));
+    return result.payload.document;
+  };
+  const save = async (member, grants) => {
+    const result = await policy(member, signers.get(member)(await preview(member, grants)));
+    assert.equal(result.status, 200, JSON.stringify(result.payload));
+    return result.payload;
+  };
+  const messageGrant = (member, id, text, assigneeAgentIds = [], inReplyTo = null, decision = 'allow') => ({
+    id, action: 'group.message.send', decision,
+    target: { text, inReplyTo, assigneeAgentIds, recipientAgentIds: members.filter(other => other !== member).map(other => other.agent.id).sort() }
+  });
+  const snapshotGrant = { id: 'snapshot', action: 'case.snapshot', decision: 'allow', target: {} };
+  const assignText = 'Bob, verify the agreed scope.';
+  const assignInput = { text: assignText, assigneeAgentIds: [bob.agent.id], idempotencyKey: 'signed-group-assignment' };
+  assert.equal((await policy(outsider)).status, 404);
+  assert.ok([401, 403].includes((await api(server.baseUrl, ownerPolicyRoute(alice), { session: bob.session })).status));
+  const aliceDocument = await preview(alice, [snapshotGrant, messageGrant(alice, 'assignment', assignText, [bob.agent.id]),
+    messageGrant(alice, 'needs-review', 'Owner review required.', [], null, 'needsHuman')]);
+  const bobDocument = await preview(bob, []);
+  const crossOwner = await policy(bob, signers.get(alice)(bobDocument));
+  assert.equal(crossOwner.status, 403, JSON.stringify(crossOwner.payload));
+  assert.equal(crossOwner.payload.code, 'OWNER_KEY_UNAVAILABLE');
+  assert.equal((await policy(alice, signers.get(alice)(aliceDocument))).status, 200);
+  assert.equal((await policy(bob)).payload.active, null);
+  const groupHuman = await api(server.baseUrl, `/api/inboxes/${bob.inbox.id}/human-view`, { session: bob.session });
+  assert.equal(groupHuman.payload.caseQueue.find(item => item.id === caseId).canManageSignedPolicy, true);
+  await save(bob, []);
+  assert.equal((await call(bob, route)).payload.code, 'SIGNED_GROUP_SNAPSHOT_DENIED');
+  assert.equal((await call(carol, route)).status, 200);
+  assert.equal((await post(alice, { ...assignInput, assigneeAgentIds: [carol.agent.id] })).payload.code, 'SIGNED_GROUP_MESSAGE_DENIED');
+  assert.equal((await post(alice, { ...assignInput, text: 'Changed after signing' })).payload.code, 'SIGNED_GROUP_MESSAGE_DENIED');
+  assert.equal((await post(alice, { text: 'Owner review required.', idempotencyKey: 'signed-group-review' })).payload.code, 'SIGNED_GROUP_APPROVAL_REQUIRED');
+  const authorized = await post(alice, assignInput);
+  assert.equal(authorized.status, 201, JSON.stringify(authorized.payload));
+  assert.equal((await claim(bob)).payload.work, null);
+  assert.equal((await claim(carol)).payload.work, null);
+  const bobEvents = await call(bob, `/api/inboxes/${bob.inbox.id}/events/delta`);
+  assert.equal(bobEvents.status, 200, JSON.stringify(bobEvents.payload));
+  assert.ok(!bobEvents.payload.events.some(event => event.groupCase && event.caseId === caseId));
+  const replyText = 'The scope matches.';
+  await save(bob, [snapshotGrant, messageGrant(bob, 'reply', replyText, [], authorized.payload.id)]);
+  const bobSignedWork = await claimAssignment(bob);
+  const bobSignedSession = await mint(bob, bobSignedWork);
+  const wrongReply = await tool(bobSignedSession.token, 'envoi_case_reply', {
+    text: 'Different result', idempotencyKey: 'signed-group-reply'
+  }, { allowError: true });
+  assert.equal(wrongReply.code, 'AUTHORITY_DENIED', JSON.stringify(wrongReply));
+  const correctReply = await tool(bobSignedSession.token, 'envoi_case_reply', { text: replyText, idempotencyKey: 'signed-group-reply' });
+  assert.equal(correctReply.ok, true, JSON.stringify(correctReply));
+  const finalTimeline = await call(carol, route);
+  assert.deepEqual(finalTimeline.payload.messages.slice(5).map(message => message.text), [assignText, replyText]);
+  assert.deepEqual(finalTimeline.payload.messages[5].assigneeAgentIds, [bob.agent.id]);
+  assert.ok([200, 201].includes((await settle(bob, bobSignedWork)).status));
 });

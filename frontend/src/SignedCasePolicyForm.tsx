@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api } from './api';
 import { setupOwnerDevice, signOwnerDocument, type SignedCaseGrant, type SignedPolicyDocument, type SignedPolicyDraft } from './signed-case-policy';
-import type { Asset } from './types';
+import type { Asset, WorkCase } from './types';
 
 type DraftGrant = Omit<SignedCaseGrant, 'target'> & { targetText: string };
 
@@ -16,8 +16,8 @@ function parseTarget(text: string): Record<string, unknown> {
   throw new Error('Enter the exact action target as a JSON object.');
 }
 
-export function SignedCasePolicyForm({ inboxId, caseId, assets, onClose, onSaved, onBusy }: {
-  inboxId: string; caseId: string; assets: Asset[]; onClose: () => void; onSaved: () => void; onBusy: (busy: boolean) => void;
+export function SignedCasePolicyForm({ inboxId, caseId, assets, groupMembers, onClose, onSaved, onBusy }: {
+  inboxId: string; caseId: string; assets: Asset[]; groupMembers?: WorkCase['members']; onClose: () => void; onSaved: () => void; onBusy: (busy: boolean) => void;
 }) {
   const [draft, setDraft] = useState<SignedPolicyDraft | null>(null);
   const [grants, setGrants] = useState<DraftGrant[]>([]);
@@ -114,6 +114,21 @@ export function SignedCasePolicyForm({ inboxId, caseId, assets, onClose, onSaved
           <button type="button" className="button quiet" disabled={busy} onClick={() => setGrants(current => current.filter(item => item.id !== grant.id))}>Remove grant</button>
         </fieldset>)}
         <p className="dialog-copy">Actions without a matching grant are off when the policy is active.</p>
+        {groupMembers && <div className="dialog-actions">
+          <button type="button" className="button secondary"
+            disabled={busy || grants.length >= 100 || grants.some(grant => grant.action === 'case.snapshot')}
+            onClick={() => setGrants(current => [...current, { ...emptyGrant(), action: 'case.snapshot', decision: 'allow' }])}>
+            Allow group timeline and assignments
+          </button>
+          <button type="button" className="button secondary" disabled={busy || grants.length >= 100}
+            onClick={() => setGrants(current => [...current, {
+              ...emptyGrant(), action: 'group.message.send', decision: 'allow',
+              targetText: JSON.stringify({ text: '', inReplyTo: null, assigneeAgentIds: [],
+                recipientAgentIds: groupMembers.map(member => member.agentId).filter(id => id !== draft.agentId).sort() }, null, 2)
+            }])}>
+            Add exact group message grant
+          </button>
+        </div>}
         {caseFiles.length > 0 && <label>Add a file read grant
           <select value="" disabled={busy || grants.length >= 100} onChange={event => {
             const asset = caseFiles.find(item => item.id === event.target.value);

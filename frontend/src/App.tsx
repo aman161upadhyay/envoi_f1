@@ -1388,7 +1388,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
         <div className="dialog-actions"><button className="button secondary" disabled={sensitiveBusy} onClick={() => setSensitiveOpen(false)}>Cancel</button><button className="button primary" disabled={sensitiveBusy} onClick={() => void markSensitive()}>{sensitiveBusy ? 'Saving…' : 'Mark sensitive'}</button></div>
       </Modal>}
       {permissionsOpen && <Modal title="Case permissions" dismissible={!permissionsBusy} onClose={() => setPermissionsOpen(false)}>
-        <SignedCasePolicyForm inboxId={view.inbox.id} caseId={workCase.id} assets={view.assets} onBusy={setPermissionsBusy}
+        <SignedCasePolicyForm inboxId={view.inbox.id} caseId={workCase.id} assets={view.assets} groupMembers={workCase.members} onBusy={setPermissionsBusy}
           onClose={() => setPermissionsOpen(false)} onSaved={() => {
             setPermissionsOpen(false);
             notify('Signed case policy saved');
