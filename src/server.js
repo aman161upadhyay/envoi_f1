@@ -1335,6 +1335,7 @@ function setCaseMessageDeliveryState(value, message, state, at) {
     type: 'message',
     actor: message.senderAgentId,
     createdAt: message.createdAt,
+    ...(message.privateScreening ? { privateScreening: message.privateScreening } : {}),
     payload: {
       messageId: message.id,
       messageType: message.type,
@@ -2533,6 +2534,9 @@ async function deliverExternalEmail(outbox) {
   emailTransport.assertReady();
   const queued = await store.getJson(messagePath(outbox.senderInboxId, outbox.messageId));
   if (!queued) throw permanentDeliveryError('Queued external email no longer exists');
+  if (screenNativeMessage && !queued.privateScreening) {
+    throw permanentDeliveryError('Queued email has no private screening receipt. Submit a new email for verification.', 'PRIVATE_SCREENING_REQUIRED');
+  }
   if (await resolveSignedCasePolicy({ inboxId: outbox.senderInboxId, caseId: queued.caseId, agentId: queued.senderAgentId })) {
     throw permanentDeliveryError('External email is unavailable in signed cases.', 'SIGNED_EXTERNAL_EMAIL_UNAVAILABLE');
   }
@@ -2647,12 +2651,28 @@ async function processInboundEmail(event, prepared) {
     status: 'received',
     externalDeliveryState: 'received'
   };
+  let screened = null;
+  if (screenNativeMessage) {
+    if (!inbound.text && inbound.html) throw permanentDeliveryError('Private screening requires a plain-text email body.', 'PRIVATE_SCREENING_PLAIN_TEXT_REQUIRED');
+    try {
+      screened = await screenNativeMessage({ type: 'email', text: message.text,
+        payload: { subject: message.subject, senderDisplayName: message.senderDisplayName } });
+    } catch (error) {
+      if ([413, 422].includes(error.statusCode)) throw permanentDeliveryError(error.message, error.code);
+      throw error;
+    }
+    message.privateScreening = screened.message.privateScreening;
+  }
   const currentCase = await ensureStructuredCase(inbox, { ...message, objective: message.subject }, recipient.id, createdAt);
   if (!currentCase.participants.includes(externalParticipantId)) currentCase.participants.push(externalParticipantId);
-  appendEvent(currentCase, { id: `evt_${message.id}`, type: 'message', actor: externalParticipantId, createdAt, payload: { messageId: message.id, messageType: 'email', text: message.text, subject: message.subject, senderEmail, recipientAgentId: recipient.id, deliveryState: 'received' }, linkedPolicyEvaluation: null, precedingEventRef: currentCase.events.at(-1)?.id || null });
+  appendEvent(currentCase, { id: `evt_${message.id}`, type: 'message', actor: externalParticipantId, createdAt,
+    ...(message.privateScreening ? { privateScreening: message.privateScreening } : {}),
+    payload: { messageId: message.id, messageType: 'email', text: message.text, subject: message.subject, senderEmail, recipientAgentId: recipient.id, deliveryState: 'received' }, linkedPolicyEvaluation: null, precedingEventRef: currentCase.events.at(-1)?.id || null });
   const receipt = { id: `delivery_receipt_${message.id}_received`, type: 'email', transport: 'email', messageId: message.id, senderEmail, recipientAgentId: recipient.id, state: 'received', provider: 'resend', providerMessageId: inbound.id, createdAt: message.receivedAt };
   const auditEntry = await auditRecord(route.inboxId, 'email.received', { messageId: message.id, caseId: message.caseId, senderEmail, recipientAgentId: recipient.id, providerMessageId: inbound.id }, message.receivedAt);
-  return { documents: [document(messagePath(route.inboxId, message.id), message), document(caseRecordPath(route.inboxId, currentCase.id), currentCase), document(deliveryReceiptPath(route.inboxId, receipt.id), receipt), auditEntry.document], result: { inboxId: route.inboxId, messageId: message.id, receiptId: receipt.id }, events: [{ inboxId: route.inboxId, event: auditEntry.event }] };
+  return { documents: [document(messagePath(route.inboxId, message.id), message), document(caseRecordPath(route.inboxId, currentCase.id), currentCase), document(deliveryReceiptPath(route.inboxId, receipt.id), receipt), auditEntry.document,
+    ...(screened ? [screeningReceiptDocument({ ...message, senderInboxId: route.inboxId }, screened.evidence, message.receivedAt)] : [])],
+    result: { inboxId: route.inboxId, messageId: message.id, receiptId: receipt.id }, events: [{ inboxId: route.inboxId, event: auditEntry.event }] };
 }
 
 async function processOutboundEmailEvent(event, prepared) {
@@ -2806,7 +2826,7 @@ async function recordDeliveryFailure(outbox, error, { attempt, deadLettered }) {
   if (senderInbox) {
     if (outbox.kind === 'nativeAgentMessage') {
       if (!screenNativeMessage || failed.privateScreening) documents.push(...(await nativeCaseDocuments(failed, state, at)).documents);
-    } else {
+    } else if (!screenNativeMessage || failed.privateScreening) {
       const currentCase = await ensureStructuredCase(senderInbox, { ...failed, caseId: failed.caseId }, failed.senderAgentId, failed.createdAt);
       const updatedCase = setCaseMessageDeliveryState(structuredClone(currentCase), failed, state, at);
       documents.push(document(caseRecordPath(outbox.senderInboxId, updatedCase.id), updatedCase));
@@ -2838,6 +2858,7 @@ async function recordDeliveryFailure(outbox, error, { attempt, deadLettered }) {
 }
 
 const deliveryWorker = new DeliveryWorker({
+  ...(screenNativeMessage && externalEmailEnabled ? { leaseMs: Math.max(75_000, Number(process.env.ENVOI_DELIVERY_LEASE_MS) || 0) } : {}),
   store,
   workerId: consumerIdentity.workerId,
   observe: logConsumer,
@@ -5044,7 +5065,7 @@ async function route(req, res) {
       kind: 'emailWebhook',
       provider: 'resend',
       webhookId,
-      emailEvent,
+      emailEvent: screenNativeMessage ? { type: emailEvent.type, created_at: emailEvent.created_at, data: { email_id: emailEvent.data?.email_id } } : emailEvent,
       senderInboxId: null,
       recipientInboxId: null,
       orderingKey: emailEvent.data?.email_id ? `provider-email:${emailEvent.data.email_id}` : `webhook:${webhookId}`,
@@ -7092,6 +7113,9 @@ async function route(req, res) {
       const at = store.now();
       const queued = message ? { ...message, status: 'queued', queuedAt: at, updatedAt: at, lastDeliveryError: null, deliveryAttempts: 0 } : null;
       const documents = queued ? [document(messagePath(currentDelivery.senderInboxId, queued.id), queued)] : [];
+      if (queued && screenNativeMessage && currentDelivery.kind === 'externalEmail' && !queued.privateScreening) {
+        throw codedError(409, 'PRIVATE_SCREENING_REQUIRED', 'Submit a new email for private screening.');
+      }
       if (queued && currentDelivery.kind === 'nativeAgentMessage') {
         if (screenNativeMessage && !queued.privateScreening) throw codedError(409, 'PRIVATE_SCREENING_REQUIRED', 'Submit a new message for private screening.');
         documents.push(...(await nativeCaseDocuments(queued, 'queued', at)).documents);
@@ -7237,10 +7261,12 @@ async function route(req, res) {
     const html = input.html == null ? null : String(input.html);
     if (!subject || subject.length > 200) return fail(res, 400, 'subject is required and must be at most 200 characters');
     if (!text || text.length > 500_000 || (html && html.length > 500_000)) return fail(res, 400, 'text is required and email content must be at most 500000 characters');
+    if (screenNativeMessage && html) throw codedError(422, 'PRIVATE_SCREENING_PLAIN_TEXT_REQUIRED', 'Private screening requires a plain-text email body.');
     const contact = await store.getJson(externalContactPath(inboxId, recipientEmail));
     if (!contact?.approved || contact.blocked || !['outbound', 'both'].includes(contact.direction || 'both')) return fail(res, 403, 'Recipient is not an approved outbound contact');
     const messageId = `msg_email_${hashSecret(`${sender.id}:${idempotencyKey}`).slice(0, 32)}`;
-    const requestHash = hashSecret(JSON.stringify({ senderAgentId, recipientEmail, caseId: input.caseId || null, subject, text, html }));
+    const requestHash = hashSecret(JSON.stringify({ senderAgentId, recipientEmail, caseId: input.caseId || null, subject, text, html,
+      ...(screenNativeMessage ? { payload: input.payload ?? null, constraints: input.constraints ?? null } : {}) }));
     const queued = await withInboxMutation(inboxId, async writeAudit => {
       const [currentPrincipal, currentSender] = await Promise.all([
         getAgentPrincipal(req, inboxId),
@@ -7261,6 +7287,13 @@ async function route(req, res) {
         throw codedError(403, 'SIGNED_EXTERNAL_EMAIL_UNAVAILABLE', 'External email is unavailable in signed cases.');
       }
       const message = { id: messageId, caseId, senderInboxId: inboxId, transport: 'email', direction: 'outbound', senderType: 'agent', senderAgentId, senderEmail: publicEmailAddressForAgent(currentSender), recipientEmail, subject, type: 'email', text, html, payload: input.payload || null, replyAddress, requestHash, createdAt, queuedAt: createdAt, status: 'queued', externalDeliveryState: 'queued' };
+      const screened = screenNativeMessage ? await screenNativeMessage({ type: 'email', text, payload: {
+        subject, senderDisplayName: String(currentSender.name || currentSender.slug).replace(/[<>\r\n]/g, ''),
+        content: message.payload, constraints: input.constraints
+      } }) : null;
+      if (screened) {
+        message.privateScreening = screened.message.privateScreening;
+      }
       const currentCase = await ensureStructuredCase(inbox, { ...input, caseId, type: 'message', text, objective: subject }, currentSender.id, createdAt);
       const queuedCase = setCaseMessageDeliveryState(structuredClone(currentCase), message, 'queued', createdAt);
       const outbox = { id: `delivery_${message.id}`, kind: 'externalEmail', messageId, senderInboxId: inboxId, recipientInboxId: null, orderingKey: caseId, requestHash, status: 'queued', attempts: 0, maxAttempts: deliveryMaxAttempts, availableAt: createdAt, createdAt, updatedAt: createdAt };
@@ -7270,6 +7303,7 @@ async function route(req, res) {
         document(replyAddressDirectoryPath(replyAddress), { address: replyAddress, inboxId, agentId: currentSender.id, caseId, messageId })
       ], outbox);
       if (queuedDelivery.requestHash && queuedDelivery.requestHash !== requestHash) throw Object.assign(new Error('Idempotency key was already used for a different email'), { statusCode: 409 });
+      if (screened) await recordPrivateScreening(screened, { id: message.id, caseId, senderInboxId: inboxId }, createdAt, writeAudit);
       await writeAudit('email.queued', { messageId, caseId, senderAgentId, senderEmail: message.senderEmail, recipientEmail }, createdAt);
       return { status: 202, message: queuedDelivery.enqueueCreated ? message : await store.getJson(messagePath(inboxId, message.id), message) };
     });
