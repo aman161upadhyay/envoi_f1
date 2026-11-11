@@ -106,14 +106,16 @@ export function yamlScalar(text: string, dottedPath: string): string | undefined
   return found;
 }
 
-function apiOrigin(value: string) {
+export function hermesApiBase(value: string, profile?: string) {
   let url: URL;
   try { url = new URL(value); } catch { throw new ConnectorSetupError('CONFIG_INVALID', 'Hermes API URL must be an HTTPS or loopback HTTP origin.'); }
   const local = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
-  if ((url.protocol !== 'https:' && !(local && url.protocol === 'http:')) || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+  const profileRoute = local && /^\/p\/[a-z][a-z0-9-]*$/.test(url.pathname)
+    && (profile === undefined || url.pathname === `/p/${profile}`);
+  if ((url.protocol !== 'https:' && !(local && url.protocol === 'http:')) || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && !profileRoute)) {
     throw new ConnectorSetupError('CONFIG_INVALID', 'Hermes API URL must be an HTTPS or loopback HTTP origin.');
   }
-  return url.origin;
+  return profileRoute ? `${url.origin}${url.pathname}` : url.origin;
 }
 
 export async function discoverHermes(options: AdapterOptions, previous?: HermesConfiguration): Promise<HermesConfiguration> {
@@ -128,7 +130,7 @@ export async function discoverHermes(options: AdapterOptions, previous?: HermesC
       || previous.assetManifestPath !== undefined && (typeof previous.assetManifestPath !== 'string' || !path.isAbsolute(previous.assetManifestPath) || /[\r\n\x00]/.test(previous.assetManifestPath))) {
       throw new ConnectorSetupError('STATE_INVALID', 'The saved Hermes configuration is invalid; preserve the connection directory.');
     }
-    apiOrigin(previous.apiUrl);
+    hermesApiBase(previous.apiUrl, previous.profile);
   }
   const env = options.env ?? process.env;
   const accountHome = options.homeDir ?? env.HERMES_REAL_HOME ?? homedir();
@@ -196,7 +198,7 @@ export async function discoverHermes(options: AdapterOptions, previous?: HermesC
   }
   const port = yamlScalar(configuration ?? '', 'gateway.platforms.api_server.port') ?? yamlScalar(configuration ?? '', 'platforms.api_server.port') ?? envValue(text, 'API_SERVER_PORT') ?? env.API_SERVER_PORT ?? '8642';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new ConnectorSetupError('CONFIG_INVALID', 'Hermes API_SERVER_PORT is invalid.');
-  const apiUrl = apiOrigin(options.gatewayUrl ?? env.HERMES_API_URL ?? previous?.apiUrl ?? `http://127.0.0.1:${port}`);
+  const apiUrl = hermesApiBase(options.gatewayUrl ?? env.HERMES_API_URL ?? previous?.apiUrl ?? `http://127.0.0.1:${port}`, profile);
   const remote = !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(apiUrl).hostname);
   if (remote) {
     // Never attach a discovered local API key to an arbitrary HTTPS host.

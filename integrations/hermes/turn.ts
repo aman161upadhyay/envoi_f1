@@ -3,6 +3,7 @@ import { isHumanInstructionMessage, type WorkMessage } from '../../sdk/typescrip
 import { retryDelay } from '../../sdk/typescript/src/lifecycle';
 import { parseAgentReply, workPrompt, type AgentTurn, type BridgeLedger } from '../agent-bridges/bridge';
 import { HermesRunStore } from './run-store';
+import { hermesApiBase } from './config';
 
 type History = (caseId: string, group: boolean) => Promise<Array<Record<string, unknown>>>;
 
@@ -22,18 +23,6 @@ export interface HermesTurnOptions {
   onActive?: (message: WorkMessage, signal: AbortSignal | null) => void;
 }
 
-function origin(value: string): string {
-  const url = new URL(value);
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:')) {
-    throw new TypeError('Hermes API requires HTTPS or loopback HTTP');
-  }
-  if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
-    throw new TypeError('Hermes API URL must be an origin');
-  }
-  return url.origin;
-}
-
 function sessionId(agentId: string, caseId: string) {
   return `envoi-${createHash('sha256').update(agentId).update('\0').update(caseId).digest('hex').slice(0, 40)}`;
 }
@@ -49,7 +38,7 @@ function delay(ms: number, signal: AbortSignal) {
 
 /** Wakes a Hermes API Server run for one claimed Envoi message. */
 export function hermesTurn(options: HermesTurnOptions): AgentTurn {
-  const base = origin(options.apiUrl);
+  const base = hermesApiBase(options.apiUrl);
   if (!options.apiKey || /[\r\n]/.test(options.apiKey)) throw new TypeError('Hermes API key is required');
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(options.agentId)) throw new TypeError('Invalid Envoi agent ID');
   const pollMs = options.pollIntervalMs ?? 1_000;
