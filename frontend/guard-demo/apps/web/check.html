@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Check a proof · envoi</title>
+  <link rel="stylesheet" href="/check.css">
+</head>
+<body>
+  <header><a href="/check">envoi</a></header>
+  <main>
+    <h1>Check a proof</h1>
+    <label class="drop" id="drop">
+      <span>Drop a proof file here, or choose a file</span>
+      <input id="file" type="file" accept="application/json,.json">
+    </label>
+    <p>Checked on your device. The file is never uploaded.</p>
+    <section id="samples" hidden>
+      <h2>Try a sample</h2>
+      <button type="button" id="genuine">Genuine proof</button>
+      <button type="button" id="edited">Edited proof</button>
+      <p>Local demo samples</p>
+    </section>
+    <section aria-live="polite">
+      <ul id="results"></ul>
+      <strong id="verdict"></strong>
+    </section>
+  </main>
+  <script type="module" src="/check.mjs"></script>
+</body>
+</html>

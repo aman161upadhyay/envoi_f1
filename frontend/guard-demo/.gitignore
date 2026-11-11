@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+node_modules/
+*.sqlite*
+dist/
+target/
+
+signed-policy.json
+testnet-run*.json
+__pycache__/
+.venv/
+smoke-*.json
+signed-policy-*.json
