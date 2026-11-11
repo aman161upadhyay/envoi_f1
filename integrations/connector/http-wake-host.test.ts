@@ -116,6 +116,35 @@ describe('private wake host', () => {
     const setupState = setup(); setupState.transport.status.mockResolvedValue({ paused: false, wake: null } as never);
     await setupState.host.poll(); expect(setupState.driver.processWorkOnce).toHaveBeenCalledOnce(); expect(setupState.transport.create).not.toHaveBeenCalled();
   });
+  it.each(['list', 'create'] as const)('keeps safety claims active during a transient subscription %s outage', async route => {
+    const scenario = setup();
+    let clock = now;
+    const host = new HttpWakeHost(scenario.transport, scenario.store, scenario.driver, receiverUrl, () => clock);
+    scenario.transport.list.mockResolvedValue([]);
+    scenario.transport[route].mockRejectedValueOnce(new EnvoiError('retry', 503, 'SERVICE_UNAVAILABLE', { retryAfterSeconds: 120 }));
+    await host.poll();
+    expect(scenario.transport[route]).toHaveBeenCalledOnce();
+    expect(scenario.driver.processWorkOnce).toHaveBeenCalledOnce();
+    clock += 60_000;
+    await host.poll();
+    expect(scenario.transport.status).toHaveBeenCalledTimes(2);
+    expect(scenario.transport[route]).toHaveBeenCalledOnce();
+    expect(scenario.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+    clock += 60_000;
+    scenario.transport.status.mockResolvedValueOnce({ paused: true, wake: { available: true, version: 1, subscription: null } });
+    await host.poll();
+    expect(scenario.transport[route]).toHaveBeenCalledTimes(2);
+    expect(scenario.driver.processWorkOnce).toHaveBeenCalledTimes(2);
+  });
+  it('requires fresh canonical status and preserves credential failures during subscription maintenance', async () => {
+    const scenario = setup();
+    scenario.transport.status.mockRejectedValueOnce(new EnvoiError('offline', 503, 'SERVICE_UNAVAILABLE'));
+    await expect(scenario.host.poll()).rejects.toMatchObject({ status: 503 });
+    expect(scenario.transport.list).not.toHaveBeenCalled();
+    scenario.transport.list.mockRejectedValueOnce(new EnvoiError('refused', 401, 'CREDENTIAL_REVOKED'));
+    await expect(scenario.host.poll()).rejects.toMatchObject({ code: 'CREDENTIAL_REVOKED' });
+    expect(scenario.driver.processWorkOnce).not.toHaveBeenCalled();
+  });
   it('does not overlap claims when polling and durable dispatch race', async () => {
     const setupState = setup(); await pending(setupState.store, 'wake.work_available');
     let release!: () => void;

@@ -33,6 +33,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => !!value &
 const subscriptionPattern = /^wake_sub_[A-Za-z0-9_-]{3,64}$/;
 const endings = new Set(['superseded', 'replaced', 'challenge_expired', 'ended_by_host', 'revoked_by_owner', 'credential_ended', 'receiver_gone', 'delivery_failed', 'expired', 'feature_disabled']);
 const retryEndings = new Set(['challenge_expired', 'delivery_failed', 'expired', 'feature_disabled']);
+const transient = (error: unknown): error is EnvoiError => error instanceof EnvoiError
+  && (error.status !== undefined && error.status >= 500 || ['NETWORK_ERROR', 'TIMEOUT', 'RATE_LIMITED'].includes(error.code ?? ''));
 
 function canonicalUrl(value: string): string {
   const destination = new URL(value);
@@ -120,6 +122,7 @@ export class HttpWakeHost {
   private controlFlight: Promise<void> | null = null;
   private generation = 0;
   private wakeAvailable = true;
+  private subscriptionListRetryAt = 0;
   private subscriptionRetryAt = 0;
   private readonly url: string;
 
@@ -149,6 +152,16 @@ export class HttpWakeHost {
     });
   }
 
+  private async retrySubscriptionRequest<T>(request: Promise<T>, defer: (until: number) => void): Promise<T | undefined> {
+    try { return await request; }
+    catch (error) {
+      if (!transient(error)) throw error;
+      const delay = Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds! >= 0 ? error.retryAfterSeconds! * 1000 : 30_000;
+      defer(this.now() + delay);
+      return undefined;
+    }
+  }
+
   async maintain(signal?: AbortSignal): Promise<void> {
     if (this.createFlight) return this.createFlight;
     this.createFlight = (async () => {
@@ -171,8 +184,11 @@ export class HttpWakeHost {
       }
       const state = await this.store.read();
       if (generation !== this.generation || ['revoked_by_owner', 'ended_by_host', 'receiver_gone', 'credential_ended'].includes(state.endedReasons[this.transport.identity.installationId])) return;
-      const entries = await this.transport.list(signal);
-      if (generation !== this.generation) return;
+      if (this.now() < this.subscriptionListRetryAt) return;
+      // Status already verified this installation and its pause state. A transient
+      // subscription outage must not delay the independent canonical safety claim.
+      const entries = await this.retrySubscriptionRequest(this.transport.list(signal), until => { this.subscriptionListRetryAt = until; });
+      if (!entries || generation !== this.generation) return;
       for (const entry of entries) {
         if (entry.installationId !== this.transport.identity.installationId || entry.agentId !== this.transport.identity.agentId) throw new EnvoiError('Wake subscription identity changed');
         if (entry.endedReason === 'revoked_by_owner') await this.store.update(current => {
@@ -191,16 +207,12 @@ export class HttpWakeHost {
       if (active && (active.url !== this.url || active.expiresAt && Date.parse(active.expiresAt) > this.now() + 7 * 86_400_000)) return;
       if (this.now() < this.subscriptionRetryAt) return;
       signal?.throwIfAborted();
-      const created = await this.transport.create(this.url, signal);
-      if (generation !== this.generation) return;
+      const created = await this.retrySubscriptionRequest(this.transport.create(this.url, signal), until => { this.subscriptionRetryAt = until; });
+      if (!created || generation !== this.generation) return;
       if (created.status !== 'pending') throw new EnvoiError('Invalid new wake subscription');
       await this.remember(created);
     })().catch(async error => {
       if (error instanceof EnvoiError && error.code === 'FEATURE_DISABLED') { await this.disableWake(); return; }
-      if (error instanceof EnvoiError && error.code === 'RATE_LIMITED' && error.reason === 'wake_subscription_create_limit' && Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds! >= 0) {
-        this.subscriptionRetryAt = this.now() + error.retryAfterSeconds! * 1000;
-        return;
-      }
       throw error;
     }).finally(() => { this.createFlight = null; });
     return this.createFlight;
@@ -317,7 +329,6 @@ export class HttpWakeHost {
     let background: Promise<void> | undefined;
     let reschedule: (() => void) | undefined;
     let backgroundRetryAt = 0;
-    const transient = (error: unknown) => error instanceof EnvoiError && (error.status !== undefined && error.status >= 500 || ['NETWORK_ERROR', 'TIMEOUT', 'RATE_LIMITED'].includes(error.code ?? ''));
     while (!signal.aborted) {
       const started = this.now();
       let retryAfterMs = 0;
