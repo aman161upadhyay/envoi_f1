@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -82,6 +82,31 @@ async function eventually(check) {
   throw new Error('Expected recipient case did not become visible');
 }
 
+const officePython = process.platform === 'win32' ? 'python' : 'python3';
+function officeVersions() {
+  const fixtures = spawnSync(officePython, ['-c', `
+from base64 import b64encode
+from io import BytesIO
+from zipfile import ZipFile
+import json
+p = "http://schemas.openxmlformats.org/presentationml/2006/main"
+r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+rels = "http://schemas.openxmlformats.org/package/2006/relationships"
+def package(first, second):
+    stream = BytesIO()
+    with ZipFile(stream, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("ppt/presentation.xml", f'<presentation xmlns="{p}" xmlns:r="{r}"><sldIdLst><sldId r:id="r1"/><sldId r:id="r2"/></sldIdLst></presentation>')
+        archive.writestr("ppt/_rels/presentation.xml.rels", f'<Relationships xmlns="{rels}"><Relationship Id="r1" Type="{r}/slide" Target="slides/slide1.xml"/><Relationship Id="r2" Type="{r}/slide" Target="slides/slide2.xml"/></Relationships>')
+        for index, value in enumerate((first, second), 1):
+            archive.writestr(f"ppt/slides/slide{index}.xml", f'<sld xmlns="{p}"><cSld name="{value}"/></sld>')
+    return b64encode(stream.getvalue()).decode()
+print(json.dumps([package("before", "locked"), package("after", "locked"), package("before", "modified")]))
+`], { encoding: 'utf8', windowsHide: true });
+  assert.equal(fixtures.status, 0, fixtures.error?.message ?? fixtures.stderr);
+  return JSON.parse(fixtures.stdout).map(base64 => Buffer.from(base64, 'base64'));
+}
+
 test('owner-signed case grants narrow messages, file access, and recipient sharing', async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'envoi-signed-case-assets-'));
   const scan = await scanner();
@@ -106,6 +131,8 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
   await server.stop();
   server = null;
   server = await launch(dataDir, scan.url, {
+    ENVOI_ENABLE_CONSEQUENTIAL_ACTIONS: 'true',
+    ENVOI_OFFICE_EDIT_PYTHON: officePython,
     ENVOI_SIGNED_POLICY_NETWORK: 'near-testnet',
     ENVOI_SIGNED_POLICY_RECORD_CONTRACT: 'record.testnet',
     ENVOI_SIGNED_POLICY_RPC_URL: `http://127.0.0.1:${registry.address().port}`,
@@ -126,7 +153,9 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
 
   const checksum = bytes => crypto.createHash('sha256').update(bytes).digest('base64');
   const uploadTarget = (filename, bytes) => ({ filename, mimeType: 'text/plain', size: bytes.length, checksumSha256: checksum(bytes) });
-  const begin = target => api(baseUrl, `${aliceInbox}/asset-uploads`, { ...agent, body: { ...target, caseId } });
+  const begin = (target, policyEvaluationId, key) => api(baseUrl, `${aliceInbox}/asset-uploads`, {
+    ...agent, key, body: { ...target, caseId, ...(policyEvaluationId ? { policyEvaluationId } : {}) }
+  });
   const complete = assetId => api(baseUrl, `${aliceInbox}/assets/${assetId}/complete`, { ...agent, body: {} });
   async function upload(target, bytes, finish) {
     const result = await begin(target);
@@ -141,11 +170,17 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
   const hidden = await upload(uploadTarget('hidden.txt', bytes), bytes, true);
   const approvedUpload = uploadTarget('approved.txt', bytes);
   const pending = await upload(uploadTarget('pending.txt', bytes), bytes, false);
+  const officeMime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  const [beforeDeck, acceptedDeck, rejectedDeck] = officeVersions();
+  const deckUpload = version => ({ ...uploadTarget('review.pptx', version), mimeType: officeMime });
+  const baseDeck = await upload(deckUpload(beforeDeck), beforeDeck, true);
   const signedPolicy = `${aliceInbox}/cases/${caseId}/signed-policy`;
   const target = { assetId: visible.id, assetVersion: visible.checksumSha256 };
-  const grantAsset = assetId => api(baseUrl, `${aliceInbox}/assets/${assetId}/grants`, {
-    ...agent, key: `grant-${assetId}`, body: { caseId, recipientAgentId: bob.agent.id }
+  const grantAsset = (assetId, policyEvaluationId, key = `grant-${assetId}`) => api(baseUrl, `${aliceInbox}/assets/${assetId}/grants`, {
+    ...agent, key, body: { caseId, recipientAgentId: bob.agent.id, ...(policyEvaluationId ? { policyEvaluationId } : {}) }
   });
+  const sign = document => ({ document, publicKey, keyType: 'demo_device',
+    signature: crypto.sign(null, Buffer.from(valueDigest(document), 'hex'), privateKey).toString('hex') });
   async function setPolicy(grants) {
     const response = await api(baseUrl, signedPolicy, admin);
     assert.equal(response.status, 200, JSON.stringify(response.payload));
@@ -157,8 +192,7 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
     } });
     assert.equal(preview.status, 200, JSON.stringify(preview.payload));
     const { document } = preview.payload;
-    const signature = crypto.sign(null, Buffer.from(valueDigest(document), 'hex'), privateKey).toString('hex');
-    const saved = await api(baseUrl, signedPolicy, { ...admin, body: { document, signature, publicKey, keyType: 'demo_device' } });
+    const saved = await api(baseUrl, signedPolicy, { ...admin, body: sign(document) });
     assert.equal(saved.status, 200, JSON.stringify(saved.payload));
   }
   const messageText = 'The requested evidence is ready.';
@@ -203,6 +237,97 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
   const fetchVisible = () => fetch(download.payload.download.url, { headers: { authorization: `Bearer ${alice.agentApiToken}` } });
   assert.deepEqual(Buffer.from(await (await fetchVisible()).arrayBuffer()), bytes);
   assert.equal((await api(baseUrl, `${aliceInbox}/assets`, { token: `envoi_case_session_${'A'.repeat(43)}` })).status, 401);
+
+  const scopedCase = `${aliceInbox}/cases/${caseId}`;
+  const reviewedUpload = uploadTarget('reviewed.txt', bytes);
+  const hiddenTarget = { assetId: hidden.id, assetVersion: hidden.checksumSha256 };
+  const reviewedShare = { ...hiddenTarget, recipientAgentId: bob.agent.id };
+  const evaluate = async (requestedAction, actionPayload) => {
+    const result = await api(baseUrl, `${scopedCase}/policy-evaluations`, { ...agent, body: { requestedAction, actionPayload } });
+    assert.equal(result.status, 201, JSON.stringify(result.payload));
+    assert.equal(result.payload.decision, 'needsHuman');
+    return result.payload.id;
+  };
+  const approve = async policyEvaluationId => {
+    const draft = await api(baseUrl, `${scopedCase}/signed-approval/${policyEvaluationId}`, admin);
+    assert.equal(draft.status, 200, JSON.stringify(draft.payload));
+    const result = await api(baseUrl, `${scopedCase}/actions`, { ...admin, key: `approve-${policyEvaluationId}`, body: {
+      actionKey: 'approveOnce', externalRefs: { policyEvaluationId }, signedApproval: sign(draft.payload.document)
+    } });
+    assert.equal(result.status, 201, JSON.stringify(result.payload));
+  };
+  await setPolicy([
+    { id: 'review-upload', action: 'asset.upload', decision: 'needsHuman', target: reviewedUpload },
+    { id: 'review-read', action: 'asset.read', decision: 'needsHuman', target: hiddenTarget },
+    { id: 'review-share', action: 'asset.share', decision: 'needsHuman', target: reviewedShare }
+  ]);
+  const uploadEvaluation = await evaluate('asset.upload', reviewedUpload);
+  assert.equal((await begin(reviewedUpload, uploadEvaluation, 'approved-upload')).status, 409);
+  await approve(uploadEvaluation);
+  const approved = await begin(reviewedUpload, uploadEvaluation, 'approved-upload');
+  assert.equal(approved.status, 201, JSON.stringify(approved.payload));
+  const replay = await begin(reviewedUpload, uploadEvaluation, 'approved-upload');
+  assert.equal(replay.status, 200, JSON.stringify(replay.payload));
+  assert.equal(replay.payload.object.id, approved.payload.object.id);
+  assert.equal((await begin(reviewedUpload, uploadEvaluation, 'reuse-upload')).status, 409);
+  assert.equal((await fetch(approved.payload.upload.url, { method: 'PUT', headers: approved.payload.upload.headers, body: bytes })).status, 204);
+  const scanned = await complete(approved.payload.object.id);
+  assert.equal(scanned.payload.state, 'clean', JSON.stringify(scanned.payload));
+
+  const readEvaluation = await evaluate('asset.read', hiddenTarget);
+  const readApproved = () => fetch(`${baseUrl}${aliceInbox}/assets/${hidden.id}/content`, {
+    method: 'POST', headers: { authorization: `Bearer ${alice.agentApiToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ policyEvaluationId: readEvaluation })
+  });
+  assert.equal((await readApproved()).status, 409);
+  await approve(readEvaluation);
+  const read = await readApproved();
+  assert.equal(read.status, 200);
+  assert.deepEqual(Buffer.from(await read.arrayBuffer()), bytes);
+  assert.equal((await readApproved()).status, 409);
+  assert.equal((await api(baseUrl, `${aliceInbox}/assets/${hidden.id}/download`, agent)).status, 404);
+
+  const shareEvaluation = await evaluate('asset.share', reviewedShare);
+  assert.equal((await grantAsset(hidden.id, shareEvaluation)).status, 409);
+  await approve(shareEvaluation);
+  const shared = await grantAsset(hidden.id, shareEvaluation);
+  assert.equal(shared.status, 201, JSON.stringify(shared.payload));
+  const shareReplay = await grantAsset(hidden.id, shareEvaluation);
+  assert.equal(shareReplay.status, 200, JSON.stringify(shareReplay.payload));
+  assert.equal(shareReplay.payload.id, shared.payload.id);
+  assert.equal((await grantAsset(hidden.id, shareEvaluation, 'reuse-share')).status, 409);
+
+  const revision = { assetId: baseDeck.id, assetVersion: baseDeck.checksumSha256, parts: ['1'] };
+  await setPolicy([
+    { id: 'accept-edit', action: 'asset.edit', decision: 'needsHuman', target: { ...deckUpload(acceptedDeck), ...revision } },
+    { id: 'reject-edit', action: 'asset.edit', decision: 'allow', target: { ...deckUpload(rejectedDeck), ...revision } }
+  ]);
+  const officeApproval = await evaluate('asset.edit', { ...deckUpload(acceptedDeck), ...revision });
+  assert.equal((await begin({ ...deckUpload(acceptedDeck), revision }, officeApproval, 'pending-office')).status, 409);
+  await approve(officeApproval);
+  const uploadRevision = async (candidate, evaluation) => {
+    const staged = await begin({ ...deckUpload(candidate), revision }, evaluation);
+    assert.equal(staged.status, 201, JSON.stringify(staged.payload));
+    assert.equal((await fetch(staged.payload.upload.url, { method: 'PUT', headers: staged.payload.upload.headers, body: candidate })).status, 204);
+    return staged.payload.object;
+  };
+  const accepted = await uploadRevision(acceptedDeck, officeApproval);
+  const rejected = await uploadRevision(rejectedDeck);
+  const validated = await complete(accepted.id);
+  assert.equal(validated.status, 200, JSON.stringify(validated.payload));
+  assert.equal(validated.payload.state, 'clean');
+  assert.deepEqual(validated.payload.revision.changedParts, ['1']);
+  const refusedRevision = await complete(rejected.id);
+  assert.equal(refusedRevision.status, 422, JSON.stringify(refusedRevision.payload));
+  assert.equal(refusedRevision.payload.code, 'OFFICE_EDIT_OUT_OF_SCOPE');
+  const inspectOffice = assetId => api(baseUrl, `${aliceInbox}/assets/${assetId}/download`, admin);
+  assert.equal((await inspectOffice(rejected.id)).status, 423);
+  for (const [object, expected] of [[baseDeck, beforeDeck], [accepted, acceptedDeck]]) {
+    const link = await inspectOffice(object.id);
+    assert.equal(link.status, 200, JSON.stringify(link.payload));
+    assert.deepEqual(Buffer.from(await (await fetch(link.payload.download.url)).arrayBuffer()), expected);
+  }
+
   await setPolicy([]);
   assert.equal((await send(messageText, 'signed-message-revoked')).status, 403);
   assert.equal((await fetchVisible()).status, 404);

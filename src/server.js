@@ -19,6 +19,7 @@ import { createEmailTransport } from './email-transport.js';
 import { createProtocolMessage } from './protocol-v1.js';
 import { createNativePrivateScreening } from './native-private-screening.js';
 import { createObjectStorageAdapter, DocumentObjectMetadataStore, FailClosedScanner, HttpMalwareScanner, ObjectStorageService, PersistentQuotaLedger } from './object-storage.js';
+import { officeRevisionFormat, verifyOfficeRevision } from './office-edit.js';
 import { PostgresMalwareScanJobStore } from './object-scan-lifecycle.js';
 import { validateProductionConfiguration } from './production-config.js';
 import { evaluateReadiness } from './readiness.js';
@@ -1582,6 +1583,40 @@ const assetVersionTarget = asset => ({ assetId: asset.id, assetVersion: asset.ch
 const assetUploadTarget = asset => ({
   filename: asset.filename, mimeType: asset.mimeType, size: asset.size, checksumSha256: asset.checksumSha256
 });
+const officeEditPython = process.env.ENVOI_OFFICE_EDIT_PYTHON;
+function assetUploadOperation(asset) {
+  const payload = assetUploadTarget(asset);
+  if (!asset.revision) return { action: 'asset.upload', payload };
+  const { assetId, assetVersion, parts } = asset.revision;
+  return { action: 'asset.edit', payload: { ...payload, assetId, assetVersion, parts } };
+}
+
+function officeEditInput(input, caseId) {
+  if (input.revision == null) return null;
+  if (!officeEditPython) throw codedError(503, 'OFFICE_EDIT_VERIFIER_UNAVAILABLE', 'Office revision verification is unavailable.');
+  const format = officeRevisionFormat(input.mimeType);
+  const { assetId, assetVersion, parts } = input.revision;
+  if (!caseId || !format || !Array.isArray(parts) || !parts.length || parts.length > 100 || new Set(parts).size !== parts.length
+    || parts.some(part => typeof part !== 'string' || part.length > 128 || !part.trim() || /[\u0000-\u001f\u007f]/u.test(part))
+    || (format === 'pptx' && parts.some(part => !/^[1-9][0-9]{0,3}$/u.test(part)))
+    || typeof assetVersion !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(assetVersion)) {
+    throw codedError(400, 'OFFICE_EDIT_INVALID', 'A case, original Office version, and exact edit scope are required.');
+  }
+  return { assetId: assertSafeIdentifier(assetId, 'assetId'), assetVersion, parts };
+}
+
+async function requireOfficeRevisionBase(candidate) {
+  const original = await store.getJson(objectMetadataPath(candidate.revision.assetId));
+  if (!original?.key || original.workspaceId !== candidate.workspaceId || original.createdByAgentId !== candidate.createdByAgentId
+    || original.caseId !== candidate.caseId || original.state !== 'clean' || original.checksumSha256 !== candidate.revision.assetVersion
+    || original.mimeType !== candidate.mimeType || original.filename !== candidate.filename) {
+    throw codedError(403, 'OFFICE_EDIT_BASE_UNAVAILABLE', 'The original Office version is unavailable for this case edit.');
+  }
+  if (!await resolveSignedCasePolicy({ inboxId: candidate.workspaceId, caseId: candidate.caseId, agentId: candidate.createdByAgentId })) {
+    throw codedError(403, 'SIGNED_ASSET_GRANT_REQUIRED', 'A signed case grant is required for Office edits.');
+  }
+  return original;
+}
 
 async function signedAssetDecision(inboxId, caseId, agentId, action, payload) {
   if (!caseId || !agentId) return null;
@@ -1589,11 +1624,41 @@ async function signedAssetDecision(inboxId, caseId, agentId, action, payload) {
   return evaluateSignedCaseGrant(policy, action, payload);
 }
 
-async function requireSignedAssetGrant(inboxId, caseId, agentId, action, payload) {
-  const decision = await signedAssetDecision(inboxId, caseId, agentId, action, payload);
-  if (!decision || decision.decision === 'allow') return;
-  if (decision.decision === 'needsHuman') throw codedError(409, 'SIGNED_ASSET_APPROVAL_REQUIRED', 'The signed case policy requires approval for this asset action.');
-  throw codedError(403, 'SIGNED_ASSET_GRANT_REQUIRED', 'The signed case policy does not grant this asset action.');
+async function requireSignedAssetGrant(inboxId, caseId, principal, action, payload, {
+  evaluationId, executionId, replay = false, writeAudit
+} = {}) {
+  const decision = await signedAssetDecision(inboxId, caseId, principal.id, action, payload);
+  if (!decision || decision.decision === 'allow') return null;
+  if (decision.decision === 'deny') throw codedError(403, 'SIGNED_ASSET_GRANT_REQUIRED', 'The signed case policy does not grant this asset action.');
+  if (!evaluationId) throw codedError(409, 'SIGNED_ASSET_APPROVAL_REQUIRED', 'The signed case policy requires approval for this asset action.');
+  evaluationId = assertSafeIdentifier(evaluationId, 'policyEvaluationId');
+  const value = await getCase(inboxId, caseId);
+  if (!value || !isCaseParticipant(value, principal.id)) throw caseParticipantMismatch();
+  if (!replay) {
+    await validatedPolicyBinding(inboxId, value, principal, evaluationId, {
+      requestedAction: action, actionPayload: payload, executionId, writeAudit
+    });
+    return evaluationId;
+  }
+  const execution = await store.getJson(policyExecutionPath(inboxId, evaluationId));
+  if (!execution || execution.executionId !== executionId || execution.sourceEvaluationId !== evaluationId || execution.signedPolicy?.digest !== decision.digest) {
+    throw codedError(409, 'SIGNED_ASSET_APPROVAL_REQUIRED', 'A current approval for this exact asset action is required.');
+  }
+  assertExactBinding(execution, { requestedAction: action, actionPayload: payload, keyring: policyKeyring, at: store.now() });
+  if (execution.policy.digest !== (await activeWorkspacePolicy(inboxId)).digest) {
+    throw codedError(409, 'SIGNED_ASSET_APPROVAL_REQUIRED', 'The workspace policy changed. Evaluate the asset action again.');
+  }
+  const [inbox, binding, approval] = await Promise.all([
+    store.getJson(path.join('inboxes', inboxId, 'inbox.json')),
+    store.getJson(policyBindingPath(inboxId, evaluationId)),
+    store.getJson(signedCaseApprovalPath(inboxId, evaluationId))
+  ]);
+  const expected = await currentSignedApprovalDocument(inbox, value, binding);
+  if (!approval?.document || valueDigest(approval.document) !== valueDigest(expected)) {
+    throw codedError(409, 'SIGNED_ASSET_APPROVAL_REQUIRED', 'A current approval for this exact asset action is required.');
+  }
+  await verifySignedOwnerEnvelope(approval, inbox.ownerHumanId, store.now());
+  return evaluationId;
 }
 
 async function signedAssetReadAccess(asset, inbox, reader, access) {
@@ -1608,7 +1673,7 @@ async function signedAssetReadAccess(asset, inbox, reader, access) {
   }
 }
 
-async function assetReadAccess(asset, inbox, reader) {
+async function assetReadAccess(asset, inbox, reader, { checkSigned = true } = {}) {
   if (!asset) return { allowed: false };
   if (asset.caseId) {
     const shared = await sharedCaseForAsset(asset.caseId);
@@ -1620,9 +1685,10 @@ async function assetReadAccess(asset, inbox, reader) {
     if (agents.some(agent => !agent || agent.status !== 'active')) return { allowed: false };
   }
   if ((asset.workspaceId || asset.inboxId) === inbox.id) {
-    return signedAssetReadAccess(asset, inbox, reader, {
+    const access = {
       allowed: Boolean(reader.manager || reader.agent?.id === asset.createdByAgentId && canAct(reader.agent, 'create_assets')), owner: true
-    });
+    };
+    return checkSigned ? signedAssetReadAccess(asset, inbox, reader, access) : access;
   }
   const grant = await store.getJson(assetGrantPath(inbox.id, asset.id));
   if (!grant || grant.assetId !== asset.id || grant.caseId !== asset.caseId || grant.ownerInboxId !== asset.workspaceId
@@ -1630,7 +1696,8 @@ async function assetReadAccess(asset, inbox, reader) {
     || !reader.manager && (reader.agent?.id !== grant.recipientAgentId || !canAct(reader.agent, 'receive_agent_messages'))
     || !await assetPair(asset, grant.recipientAgentId, inbox.id)) return { allowed: false };
   if (await assetRelationshipBlocked(asset, grant.recipientAgentId, inbox.id)) return { allowed: false, blocked: true };
-  return signedAssetReadAccess(asset, inbox, reader, { allowed: true, owner: false, grant });
+  const access = { allowed: true, owner: false, grant };
+  return checkSigned ? signedAssetReadAccess(asset, inbox, reader, access) : access;
 }
 async function saveCase(inboxId, value) {
   const binding = await store.getJson(caseBindingPath(value.id));
@@ -3881,7 +3948,7 @@ async function shareCaseToolAsset(ctx, asset) {
   if (!asset || asset.caseId !== ctx.session.caseId || asset.createdByAgentId !== ctx.agent.id || asset.workspaceId !== ctx.session.inboxId) throw caseToolError('ASSET_NOT_SHAREABLE');
   if (asset.state !== 'clean') throw caseToolError('ASSET_NOT_CLEAN');
   if (!await assetPair(asset, ctx.session.counterpartyAgentId, ctx.session.counterpartyInboxId) || await assetRelationshipBlocked(asset, ctx.session.counterpartyAgentId, ctx.session.counterpartyInboxId)) throw caseToolError('REF_NOT_FOUND');
-  await requireSignedAssetGrant(ctx.session.inboxId, asset.caseId, ctx.agent.id, 'asset.share',
+  await requireSignedAssetGrant(ctx.session.inboxId, asset.caseId, ctx.agent, 'asset.share',
     { ...assetVersionTarget(asset), recipientAgentId: ctx.session.counterpartyAgentId });
   const location = assetGrantPath(ctx.session.counterpartyInboxId, asset.id);
   if (await store.getJson(location)) return true;
@@ -3895,7 +3962,7 @@ async function shareCaseToolAsset(ctx, asset) {
 async function readCaseToolContent(ctx, asset) {
   const { bytes } = await objectStorage.readCleanObject(asset.id);
   await assertLiveToolSession(ctx.session);
-  await requireSignedAssetGrant(ctx.session.inboxId, asset.caseId, ctx.agent.id, 'asset.read', assetVersionTarget(asset));
+  await requireSignedAssetGrant(ctx.session.inboxId, asset.caseId, ctx.agent, 'asset.read', assetVersionTarget(asset));
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 async function completeCaseTool(ctx, result, authority, evidence, id) {
@@ -7326,36 +7393,50 @@ async function route(req, res) {
     if (!principal || !canAct(principal, 'create_assets')) return fail(res, 403, 'Agent credential with create_assets permission required');
     if (input.createdByAgentId && input.createdByAgentId !== principal.id) return fail(res, 403, 'createdByAgentId must match the authenticated agent');
     const caseId = input.caseId ? assertSafeIdentifier(input.caseId, 'caseId') : null;
+    const revision = officeEditInput(input, caseId);
+    const uploadInput = { workspaceId: inboxId, ...assetUploadTarget(input), caseId, createdByAgentId: principal.id, ...(revision ? { revision } : {}) };
+    const uploadOperation = assetUploadOperation(uploadInput);
     if (caseId) {
       const [shared, directory] = await Promise.all([sharedCaseForAsset(caseId), store.getJson(path.join('directory', 'agents', `${principal.id}.json`))]);
       if (!shared || !shared.binding.agentIds.includes(principal.id) || !shared.binding.inboxIds.includes(inboxId)
         || directory?.inboxId !== inboxId || inbox.ownerAgentId !== principal.id) return fail(res, 403, 'CASE_PARTICIPANT_MISMATCH');
       await assertCaseProgressAllowed(inboxId, caseId);
-      await requireSignedAssetGrant(inboxId, caseId, principal.id, 'asset.upload', assetUploadTarget(input));
     }
+    const evaluationId = input.policyEvaluationId == null ? null : assertSafeIdentifier(input.policyEvaluationId, 'policyEvaluationId');
     const idempotencyKey = validateIdempotencyKey(req.headers['idempotency-key'] || input.idempotencyKey);
     const idempotencyPath = idempotencyKey ? scopedIdempotencyPath('asset-upload', inboxId, principal.id, idempotencyKey) : null;
-    const requestDigest = idempotencyPath ? semanticDigest({ filename: input.filename, mimeType: input.mimeType, size: input.size, checksumSha256: input.checksumSha256, caseId }) : null;
-    const claimed = idempotencyPath ? await claimIdempotency(store, idempotencyPath, { principalId: principal.id, requestDigest, createdAt: store.now() }) : null;
-    if (claimed?.replay) return json(res, 200, claimed.replay);
-    let persisted = false;
-    let started;
-    try {
-      started = await objectStorage.beginUpload({ workspaceId: inboxId, filename: input.filename, mimeType: input.mimeType, size: input.size, checksumSha256: input.checksumSha256, caseId, createdByAgentId: principal.id }, { lockKeys: [inboxMutationKey(inboxId)], authorize: async () => {
-        const current = await getAgentPrincipal(req, inboxId);
-        if (current?.id !== principal.id) throw Object.assign(new Error('Agent access ended'), { statusCode: 403 });
-        await requireSignedAssetGrant(inboxId, caseId, current.id, 'asset.upload', assetUploadTarget(input));
-      } });
-      const response = { object: started.object, upload: browserObjectUrl(started.upload, req) };
+    const requestDigest = idempotencyPath ? semanticDigest({ ...assetUploadTarget(input), caseId, ...(revision ? { revision } : {}), ...(evaluationId ? { evaluationId } : {}) }) : null;
+    let response;
+    let executionAudit;
+    const started = await objectStorage.beginUpload(uploadInput, { lockKeys: [inboxMutationKey(inboxId), ...(caseId ? [caseMutationKey(caseId)] : []),
+      ...(revision ? [`object-upload:${revision.assetId}`] : [])], authorize: async id => {
+      const current = await getAgentPrincipal(req, inboxId);
+      if (current?.id !== principal.id || !canAct(current, 'create_assets')) throw Object.assign(new Error('Agent access ended'), { statusCode: 403 });
+      if (caseId) await assertCaseProgressAllowed(inboxId, caseId);
+      if (revision) await requireOfficeRevisionBase(uploadInput);
+      const claimed = idempotencyPath ? await claimIdempotency(store, idempotencyPath, { principalId: principal.id, requestDigest, createdAt: store.now() }) : null;
+      if (claimed?.replay) {
+        const previous = claimed.replay.object;
+        await requireSignedAssetGrant(inboxId, caseId, current, uploadOperation.action, uploadOperation.payload, {
+          evaluationId: previous.uploadPolicyEvaluationId, executionId: previous.id, replay: true
+        });
+        return { replay: claimed.replay };
+      }
+      const policyEvaluationId = await requireSignedAssetGrant(inboxId, caseId, current, uploadOperation.action, uploadOperation.payload, {
+        evaluationId, executionId: id, writeAudit: async (type, data) => {
+          executionAudit = await auditRecord(inboxId, type, data);
+          await store.putJson(executionAudit.document.path, executionAudit.document.value);
+        }
+      });
+      return { policyEvaluationId };
+    }, onCreated: async created => {
+      response = { object: created.object, upload: browserObjectUrl(created.upload, req) };
       if (idempotencyPath) await completeIdempotency(store, idempotencyPath, { principalId: principal.id, requestDigest, response, createdAt: store.now() });
-      persisted = true;
-      await audit(inboxId, 'asset.upload_started', { assetId: started.object.id, caseId: started.object.caseId, createdByAgentId: principal.id, size: started.object.size, state: started.object.state });
-      return json(res, 201, response);
-    } catch (error) {
-      if (!persisted && started) await objectStorage.abortUpload(started.object.id).catch(() => {});
-      if (claimed?.claimed && !persisted) await store.deleteJson(idempotencyPath).catch(() => {});
-      throw error;
-    }
+    } });
+    if (!response) return json(res, 200, started);
+    if (executionAudit) publish(inboxId, executionAudit.event);
+    await audit(inboxId, 'asset.upload_started', { assetId: response.object.id, caseId: response.object.caseId, createdByAgentId: principal.id, size: response.object.size, state: response.object.state });
+    return json(res, 201, response);
   }
 
   const completeAssetUpload = suffix.match(/^assets\/([^/]+)\/complete$/);
@@ -7364,11 +7445,34 @@ async function route(req, res) {
     const principal = await getAgentPrincipal(req, inboxId);
     const asset = await objectStorage.getObject(completeAssetUpload[1]);
     if (asset.workspaceId !== inboxId) return fail(res, 404, 'Asset not found');
-    if (!await canManageInbox(human, inbox)) {
-      if (principal?.id !== asset.createdByAgentId) return fail(res, 403, 'Asset creator or workspace administrator required');
-      await requireSignedAssetGrant(inboxId, asset.caseId, principal.id, 'asset.upload', assetUploadTarget(asset));
-    }
-    const scanned = await objectStorage.scanObject(asset.id);
+    const manager = await canManageInbox(human, inbox);
+    if (!manager && principal?.id !== asset.createdByAgentId) return fail(res, 403, 'Asset creator or workspace administrator required');
+    let revisionBase;
+    const scanned = await objectStorage.scanObject(asset.id, {
+      lockKeys: [inboxMutationKey(inboxId), ...(asset.caseId ? [caseMutationKey(asset.caseId)] : []),
+        ...(asset.revision ? [`object-upload:${asset.revision.assetId}`] : [])],
+      authorize: async currentAsset => {
+        const currentManager = manager && await canManageInbox(await auth.getHuman(req), inbox);
+        if (currentManager && !currentAsset.revision) return;
+        const current = currentManager
+          ? await store.getJson(path.join('inboxes', inboxId, 'agents', `${currentAsset.createdByAgentId}.json`))
+          : await getAgentPrincipal(req, inboxId);
+        if (!current || current.id !== currentAsset.createdByAgentId) throw codedError(403, 'ASSET_COMPLETION_DENIED', 'Asset creator or workspace administrator required.');
+        if (currentAsset.revision) {
+          if (!canAct(current, 'create_assets')) throw codedError(403, 'ASSET_COMPLETION_DENIED', 'The agent cannot complete this Office revision.');
+          await assertCaseProgressAllowed(inboxId, currentAsset.caseId);
+          revisionBase = await requireOfficeRevisionBase(currentAsset);
+        }
+        const operation = assetUploadOperation(currentAsset);
+        await requireSignedAssetGrant(inboxId, currentAsset.caseId, current, operation.action, operation.payload, {
+          evaluationId: currentAsset.uploadPolicyEvaluationId, executionId: currentAsset.id, replay: true
+        });
+      },
+      verifyRevision: officeEditPython ? async (current, candidate) => verifyOfficeRevision({
+        executable: officeEditPython, format: officeRevisionFormat(current.mimeType), parts: current.revision.parts,
+        previous: (await objectStorage.readCleanObject(revisionBase.id)).bytes, candidate
+      }) : undefined
+    });
     await audit(inboxId, `asset.scan_${scanned.state}`, { assetId: scanned.id, caseId: scanned.caseId, createdByAgentId: scanned.createdByAgentId, scan: scanned.scan });
     return json(res, 200, scanned);
   }
@@ -7380,8 +7484,9 @@ async function route(req, res) {
     if (!principal || !canAct(principal, 'create_assets')) return fail(res, 403, 'Asset creator credential with create_assets permission required');
     const caseId = assertSafeIdentifier(input.caseId, 'caseId');
     const recipientAgentId = assertSafeIdentifier(input.recipientAgentId, 'recipientAgentId');
+    const requestedEvaluationId = input.policyEvaluationId == null ? null : assertSafeIdentifier(input.policyEvaluationId, 'policyEvaluationId');
     const idempotencyKey = validateIdempotencyKey(req.headers['idempotency-key'] || input.idempotencyKey, { required: true });
-    const requestDigest = semanticDigest({ assetId: grantAsset[1], caseId, recipientAgentId });
+    const requestDigest = semanticDigest({ assetId: grantAsset[1], caseId, recipientAgentId, ...(requestedEvaluationId ? { evaluationId: requestedEvaluationId } : {}) });
     const keyPath = scopedIdempotencyPath('asset-grant', inboxId, principal.id, idempotencyKey);
     const priorRequest = await store.getJson(keyPath);
     if (priorRequest && (priorRequest.principalId !== principal.id || priorRequest.requestDigest !== requestDigest)) throw nativeIdempotencyConflict();
@@ -7411,20 +7516,23 @@ async function route(req, res) {
           resourceGrant: { resourceId: currentAsset.id, agentId: currentPrincipal.id, active: currentAsset.workspaceId === inboxId && currentAsset.createdByAgentId === currentPrincipal.id }
         });
       }
-      await requireSignedAssetGrant(inboxId, caseId, currentPrincipal.id, 'asset.share',
-        { ...assetVersionTarget(currentAsset), recipientAgentId });
       const priorKey = await store.getJson(keyPath);
       if (priorKey && (priorKey.principalId !== principal.id || priorKey.requestDigest !== requestDigest)) throw nativeIdempotencyConflict();
       let grant = await store.getJson(grantPath);
       if (priorKey && (!grant || grant.id !== priorKey.grantId)) throw Object.assign(new Error('Grant retry has no matching durable record'), { statusCode: 409 });
       if (grant && (grant.assetId !== asset.id || grant.caseId !== caseId || grant.ownerInboxId !== inboxId
         || grant.ownerAgentId !== principal.id || grant.recipientInboxId !== recipientInboxId || grant.recipientAgentId !== recipientAgentId)) throw nativeIdempotencyConflict();
+      const grantId = `grant_${hashSecret(`${asset.id}:${caseId}:${recipientAgentId}`).slice(0, 40)}`;
+      const evaluationId = await requireSignedAssetGrant(inboxId, caseId, currentPrincipal, 'asset.share',
+        { ...assetVersionTarget(currentAsset), recipientAgentId }, {
+          evaluationId: priorKey?.policyEvaluationId ?? requestedEvaluationId, executionId: grantId, replay: Boolean(priorKey), writeAudit
+        });
       const created = !grant;
       if (!grant) {
-        grant = { id: `grant_${hashSecret(`${asset.id}:${caseId}:${recipientAgentId}`).slice(0, 40)}`, schemaVersion: '1.0', assetId: asset.id, caseId, ownerInboxId: inboxId, ownerAgentId: principal.id, recipientInboxId, recipientAgentId, grantedByAgentId: principal.id, createdAt: store.now() };
+        grant = { id: grantId, schemaVersion: '1.0', assetId: asset.id, caseId, ownerInboxId: inboxId, ownerAgentId: principal.id, recipientInboxId, recipientAgentId, grantedByAgentId: principal.id, createdAt: store.now() };
         if (!await store.putJsonIfAbsent(grantPath, grant)) throw Object.assign(new Error('Asset grant was created concurrently; retry'), { statusCode: 409 });
       }
-      if (!priorKey) await store.putJson(keyPath, { principalId: principal.id, requestDigest, grantId: grant.id, createdAt: store.now() });
+      if (!priorKey) await store.putJson(keyPath, { principalId: principal.id, requestDigest, grantId: grant.id, ...(evaluationId ? { policyEvaluationId: evaluationId } : {}), createdAt: store.now() });
       if (created) await writeAudit('asset.granted', { assetId: asset.id, caseId, grantId: grant.id, recipientAgentId, recipientInboxId, actorAgentId: principal.id });
       return { status: created ? 201 : 200, grant: { ...grant, active: currentAsset.state === 'clean' } };
     }, [recipientInboxId], [`asset-grant:${asset.id}`]);
@@ -7481,6 +7589,32 @@ async function route(req, res) {
     return json(res, 200, visible);
   }
   const assetMatch = suffix.match(/^assets\/([^/]+)\/content$/);
+  if (req.method === 'POST' && assetMatch) {
+    const principal = await getAgentPrincipal(req, inboxId);
+    const asset = await store.getJson(objectMetadataPath(assetMatch[1]));
+    if (!principal || !asset?.key || !asset.caseId) return fail(res, 404, 'ASSET_NOT_FOUND');
+    const input = await body(req);
+    const read = await withInboxMutation(inboxId, async writeAudit => {
+      const [agent, current] = await Promise.all([
+        getAgentPrincipal(req, inboxId), store.getJson(objectMetadataPath(asset.id))
+      ]);
+      if (agent?.id !== principal.id || !current || current.state !== 'clean'
+        || !(await assetReadAccess(current, inbox, { agent, manager: false }, { checkSigned: false })).allowed) {
+        throw codedError(404, 'ASSET_NOT_FOUND', 'Asset not found.');
+      }
+      const target = assetVersionTarget(current);
+      const decision = await signedAssetDecision(inboxId, current.caseId, agent.id, 'asset.read', target);
+      if (decision?.decision !== 'needsHuman') throw codedError(404, 'ASSET_NOT_FOUND', 'Asset not found.');
+      await requireSignedAssetGrant(inboxId, current.caseId, agent, 'asset.read', target, {
+        evaluationId: input.policyEvaluationId, executionId: store.id('asset_read'), writeAudit
+      });
+      return objectStorage.readCleanObject(current.id);
+    }, [asset.workspaceId], [caseMutationKey(asset.caseId), `object-upload:${asset.id}`]);
+    res.setHeader('content-type', read.object.mimeType);
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader('content-disposition', 'attachment');
+    return res.end(read.bytes);
+  }
   if (req.method === 'GET' && assetMatch) {
     const sharedAsset = await store.getJson(objectMetadataPath(assetMatch[1]));
     if (sharedAsset?.key) {

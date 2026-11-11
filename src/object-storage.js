@@ -531,19 +531,24 @@ export class ObjectStorageService {
     this.scanLifecycle = scanJobStore ? new DurableMalwareScanLifecycle({ jobStore: scanJobStore, adapter, metadataStore, quotaLedger, scanner, ...scanLifecycle }) : null;
   }
   async init() { await this.adapter.init?.(); }
-  async beginUpload(input, { lockKeys = [], authorize } = {}) {
+  async beginUpload(input, { lockKeys = [], authorize, onCreated } = {}) {
     validateUploadInput(input, this.config);
     const id = `obj_${crypto.randomUUID()}`;
     // Durable retained quota and its cleanup metadata must commit together.
     return this.metadataStore.withUploadLock(id, async () => {
-      if (authorize) await authorize();
+      const authorization = await authorize?.(id);
+      if (authorization?.replay) return authorization.replay;
       const reservation = await this.quotaLedger.reserve(input.workspaceId, input.size);
       const createdAt = this.clock();
       const record = { id, workspaceId: input.workspaceId, key: `workspaces/${input.workspaceId}/objects/${id}`, filename: input.filename, mimeType: input.mimeType, size: input.size, checksumSha256: input.checksumSha256, caseId: input.caseId || null, createdByAgentId: input.createdByAgentId || null, state: 'quarantine', createdAt: createdAt.toISOString(), uploadExpiresAt: new Date(createdAt.getTime() + this.config.uploadUrlTtlSeconds * 1000).toISOString(), cleanupAt: new Date(createdAt.getTime() + this.config.uploadUrlTtlSeconds * 1000 + this.config.uploadCleanupGraceMs).toISOString(), uploadCompletedAt: null, scannedAt: null, scan: null, reservationId: reservation.id };
+      if (authorization?.policyEvaluationId) record.uploadPolicyEvaluationId = authorization.policyEvaluationId;
+      if (input.revision) record.revision = clone(input.revision);
       try {
         if (!await this.metadataStore.create(record)) throw new ObjectStorageError('OBJECT_EXISTS', 'Object metadata already exists', 409);
         const upload = await this.adapter.createPresignedUpload({ key: record.key, contentType: record.mimeType, checksumSha256: record.checksumSha256, expiresInSeconds: this.config.uploadUrlTtlSeconds, size: record.size });
-        return immutable({ object: record, upload });
+        const started = immutable({ object: record, upload });
+        await onCreated?.(started);
+        return started;
       } catch (error) {
         await this.metadataStore.remove(record.id);
         await this.quotaLedger.release(reservation.id);
@@ -551,9 +556,10 @@ export class ObjectStorageService {
       }
     }, lockKeys);
   }
-  async completeUpload(id) {
+  async completeUpload(id, { lockKeys = [], authorize, verifyRevision } = {}) {
     const result = await this.metadataStore.withUploadLock(id, async () => {
       const record = await this.#recoverLegacyUpload(await this.#requireObject(id));
+      if (authorize) await authorize(record);
       if (record.state === 'upload-cleanup-pending' || record.state === 'deleted') return { error: new ObjectStorageError('UPLOAD_REJECTED', 'Upload was rejected or expired; begin a new upload', 409) };
       if (record.state !== 'quarantine' || record.uploadCompletedAt) return { record };
       if (uploadCleanupDue(record, this.clock())) {
@@ -573,17 +579,20 @@ export class ObjectStorageService {
         await this.#markUploadCleanup(record, 'UPLOAD_VERIFICATION_FAILED');
         return { error: new ObjectStorageError('UPLOAD_VERIFICATION_FAILED', 'Uploaded object does not match immutable metadata', 422) };
       }
+      if (record.revision && !verifyRevision) throw new ObjectStorageError('OFFICE_EDIT_VERIFIER_UNAVAILABLE', 'Office revision verification is unavailable', 503);
+      const changedParts = record.revision ? await verifyRevision(record, await this.#readVerifiedBytes(record)) : null;
       try { await this.quotaLedger.commit(record.reservationId); }
       catch (error) {
         if (error.code !== 'QUOTA_RESERVATION_EXPIRED') throw error;
         await this.#markUploadCleanup(record, 'QUOTA_RESERVATION_EXPIRED');
         return { error };
       }
-      const verified = await this.metadataStore.updateUpload(id, { uploadCompletedAt: this.clock().toISOString() });
+      const verified = await this.metadataStore.updateUpload(id, { uploadCompletedAt: this.clock().toISOString(),
+        ...(changedParts ? { revision: { ...record.revision, changedParts } } : {}) });
       // Keep verified uploads recoverable across a crash before inline scanning.
       if (this.scanLifecycle) await this.scanLifecycle.enqueue(id);
       return { record: verified };
-    });
+    }, lockKeys);
     if (result.error) throw result.error;
     return result.record;
   }
@@ -636,8 +645,8 @@ export class ObjectStorageService {
     }
     return result;
   }
-  async scanObject(id) {
-    const record = await this.completeUpload(id);
+  async scanObject(id, options) {
+    const record = await this.completeUpload(id, options);
     if (this.scanLifecycle) return this.scanLifecycle.processObject(id);
     try {
       const body = await this.adapter.getObject(record.key);
@@ -667,11 +676,14 @@ export class ObjectStorageService {
   async readCleanObject(id) {
     const record = await this.#requireObject(id);
     if (record.state !== 'clean') throw new ObjectStorageError('OBJECT_NOT_CLEAN', 'Object is unavailable until malware scanning completes', 423);
+    return { object: record, bytes: await this.#readVerifiedBytes(record) };
+  }
+  async #readVerifiedBytes(record) {
     const bytes = await this.adapter.getObject(record.key);
     if (!bytes || bytes.length !== record.size || sha256Base64(bytes) !== record.checksumSha256) {
       throw new ObjectStorageError('CHECKSUM_MISMATCH', 'Stored object failed immutable size or checksum verification', 422);
     }
-    return { object: record, bytes };
+    return bytes;
   }
   async requestRemoval(id) {
     return this.metadataStore.withUploadLock(id, async () => {

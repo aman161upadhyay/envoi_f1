@@ -15,6 +15,7 @@ const SAFE_INTERNAL_ACTIONS = new Set([
   'message.reply'
 ]);
 const POLICY_ACTION = /^(calendar\.|email\.|payment\.|contract\.|asset\.share(?:\.|$)|external\.)/;
+const SIGNED_INTERNAL_ACTIONS = new Set(['case.appendEvent', 'asset.read', 'asset.upload', 'asset.edit']);
 
 export const canonicalValue = value => {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -154,7 +155,7 @@ export function evaluatePolicy({
   if (!issuedAt) throw new Error('A valid policy evaluation time is required');
   const action = String(requestedAction || '').trim();
   if (!action) throw new Error('A requested action is required');
-  const actionClass = signedGrant && action === 'case.appendEvent' ? 'safeInternal' : classifyAction(action);
+  const actionClass = signedGrant && SIGNED_INTERNAL_ACTIONS.has(action) ? 'safeInternal' : classifyAction(action);
   const exactNear = action === 'payment.near' && Boolean(signedGrant);
   const binding = actionBinding(actionPayload, policy.executeAtToleranceSeconds, { exactNear });
   const deadline = isoInstant(caseDeadline);
