@@ -86,6 +86,25 @@ describe('Hermes automatic run bridge', () => {
     } finally { await state.cleanup(); }
   });
 
+  it('keeps polling the same admitted run through temporary status errors', async () => {
+    const state = await fixture();
+    try {
+      const responses = [
+        json({ run_id: 'run_retry', status: 'started' }, 202),
+        json({}, 503),
+        json({ run_id: 'run_retry', status: 'completed', output: '{"stop":true}' })
+      ];
+      const fetcher = vi.fn<typeof fetch>(async () => responses.shift()!);
+      const turn = hermesTurn({ apiUrl: 'http://127.0.0.1:8642', apiKey: 'key', agentId: 'hermes_agent',
+        runs: state.runs, replies: state.replies, fetch: fetcher, pollIntervalMs: 1 });
+      await expect(turn(message('msg_1', 'case_1'), new AbortController().signal)).resolves.toEqual({ stop: true });
+      expect(fetcher.mock.calls.map(([url, init]) => [new URL(String(url)).pathname, init?.method])).toEqual([
+        ['/v1/runs', 'POST'], ['/v1/runs/run_retry', 'GET'], ['/v1/runs/run_retry', 'GET']
+      ]);
+      expect(await state.replies.replyFor('msg_1')).toEqual({ stop: true });
+    } finally { await state.cleanup(); }
+  });
+
   it('does not resubmit after Hermes idempotency retention can no longer be relied on', async () => {
     const state = await fixture();
     try {

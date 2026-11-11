@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isHumanInstructionMessage, type WorkMessage } from '../../sdk/typescript/src/connector';
+import { retryDelay } from '../../sdk/typescript/src/lifecycle';
 import { parseAgentReply, workPrompt, type AgentTurn, type BridgeLedger } from '../agent-bridges/bridge';
 import { HermesRunStore } from './run-store';
 
@@ -100,6 +101,8 @@ export function hermesTurn(options: HermesTurnOptions): AgentTurn {
         runId = record.runId;
       }
       if (!runId) throw new Error('Hermes run identity was not saved');
+      const deadline = Date.parse(record.attemptedAt) + maxRunMs;
+      let pollFailures = 0;
       while (!signal.aborted) {
         if (options.allowEnvoiMcpWrites && !isHumanInstructionMessage(message) && await options.mcpReplySent?.(message.id)) {
           if (signal.aborted) throw new Error('Hermes turn was interrupted');
@@ -112,7 +115,19 @@ export function hermesTurn(options: HermesTurnOptions): AgentTurn {
         const response = await fetcher(`${base}/v1/runs/${encodeURIComponent(runId)}`, {
           method: 'GET', redirect: 'error', headers, signal
         });
+        if ([408, 429, 502, 503, 504].includes(response.status)) {
+          await response.body?.cancel();
+          const retryAfter = response.headers.get('retry-after')?.trim() ?? '';
+          const seconds = /^\d{1,6}$/.test(retryAfter) ? Number(retryAfter) : 0;
+          const wait = Math.max(pollMs, retryDelay(pollFailures++, Math.random(), seconds));
+          if (wait >= deadline - Date.now()) {
+            throw new Error('Hermes run status is temporarily unavailable; the saved run can be reconciled');
+          }
+          await delay(wait, signal);
+          continue;
+        }
         if (!response.ok) throw new Error(`Hermes run status failed with HTTP ${response.status}; operator recovery may be required`);
+        pollFailures = 0;
         let payload: unknown;
         try { payload = await response.json(); } catch { throw new Error('Hermes run status returned invalid JSON'); }
         const result = payload && typeof payload === 'object' && !Array.isArray(payload)
@@ -138,7 +153,7 @@ export function hermesTurn(options: HermesTurnOptions): AgentTurn {
         if (!['started', 'queued', 'running', 'stopping', 'waiting_for_approval'].includes(result.status)) {
           throw new Error('Hermes run reported an unknown status');
         }
-        if (Date.now() - Date.parse(record.attemptedAt) >= maxRunMs) {
+        if (Date.now() >= deadline) {
           await stop(runId);
           throw new Error('Hermes run timed out');
         }
