@@ -54,7 +54,7 @@ export async function createHermesBridge(config: HermesBridgeConfiguration,
   const relay = config.relayToken ? await startMcpRelay({
     connector, bearerToken: config.relayToken, port: config.relayPort ?? 8789,
     allowCollaborationWrites: config.writeEnabled,
-    collaborationToolNames: ['envoi_start_case', 'envoi_send_message', 'envoi_send_proposal', 'envoi_send_decision'],
+    collaborationToolNames: ['envoi_start_case', 'envoi_send_message', 'envoi_start_group_case', 'envoi_send_group_message', 'envoi_send_proposal', 'envoi_send_decision'],
     authorizeWrite: (name, args) => authorizedHermesWrite(active, name, args),
     onSuccessfulToolCall: options.onSuccessfulToolCall,
     onSuccessfulWrite: async (name, args) => { const id = mcpReplyMessageId(name, args); if (id) await store.markMcpReplySent(id); }

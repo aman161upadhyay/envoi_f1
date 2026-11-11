@@ -6,6 +6,23 @@ import { authorizedHermesReply, authorizedHermesWrite } from './lease-write';
 const relayToken = 'hermes-local-mcp-secret-at-least-32-characters';
 
 describe('Hermes loopback MCP lease fence', () => {
+  it('fences group replies to the active group case, message and live turn', () => {
+    const controller = new AbortController();
+    const active = { signal: controller.signal, message: {
+      id: 'work_message', caseId: 'group_case', text: 'Request',
+      from: { agentId: 'peer', address: 'peer@envoi.mail' },
+      groupCase: { messageId: 'group_message', memberAgentIds: ['peer', 'hermes', 'third'] }
+    } };
+    const args = { caseId: 'group_case', inReplyTo: 'group_message', idempotencyKey: 'bridge:work_message:reply:1' };
+    expect(authorizedHermesWrite(active, 'envoi_send_group_message', args)).toBe(true);
+    expect(authorizedHermesWrite(active, 'envoi_send_group_message', { ...args, caseId: 'other' })).toBe(false);
+    expect(authorizedHermesWrite(active, 'envoi_send_group_message', { ...args, inReplyTo: 'other' })).toBe(false);
+    expect(authorizedHermesWrite(active, 'envoi_send_message', { ...args, recipientAddress: 'peer@envoi.mail' })).toBe(false);
+    expect(authorizedHermesWrite(null, 'envoi_start_group_case', { idempotencyKey: 'interactive:group' })).toBe(true);
+    expect(authorizedHermesWrite(null, 'envoi_send_group_message', args)).toBe(false);
+    controller.abort();
+    expect(authorizedHermesWrite(active, 'envoi_send_group_message', args)).toBe(false);
+  });
   it('permits an interactive first send, fences automatic replies, and denies stale writes', async () => {
     const session: ConnectorSession = {
       agentId: 'hermes_agent', inboxId: 'inbox_hermes', address: 'hermes@envoi.mail', cursor: null,
