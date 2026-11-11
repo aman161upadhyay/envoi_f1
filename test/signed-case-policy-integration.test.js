@@ -128,6 +128,16 @@ test('signed policy and one-time owner approval narrow the existing case action 
   await call(`${route}/actions`, { token, body: { ...execution, actionPayload: { note: 'Changed payload' } }, key: 'changed-execution', status: 409 });
   await call(`${route}/actions`, { token, body: execution, key: 'exact-execution', status: 201 });
   await call(`${route}/actions`, { token, body: execution, key: 'second-execution', status: 409 });
+  const secondPending = await evaluate(draft.grants[0].target);
+  const { document: staleApproval } = await call(`${route}/signed-approval/${secondPending.id}`, { status: 200 });
+  const replacement = await call(`${route}/signed-policy/preview`, { body: {
+    ...draft, version: 2, previousHash: valueDigest(document), issuedAtMs: Date.now()
+  }, status: 200 });
+  await call(`${route}/signed-policy`, { body: signed(replacement.document), status: 200 });
+  const stale = await call(`${route}/actions`, { key: 'stale-approval', status: 409, body: {
+    actionKey: 'approveOnce', externalRefs: { policyEvaluationId: secondPending.id }, signedApproval: signed(staleApproval)
+  } });
+  assert.equal(stale.code, 'SIGNED_APPROVAL_STALE');
   registryKey.revoked_at_ms = Date.now();
   const revoked = await call(`${route}/policy-evaluations`, { token, body: {
     requestedAction: 'case.note', actionPayload: draft.grants[0].target
