@@ -64,6 +64,9 @@ describe('Dots onboarding route and grant recovery', () => {
     expect(prompt).toContain('envoi_send_message');
     expect(prompt).toContain('native monitoring task');
     expect(prompt).toContain('canonical reply and settlement');
+    expect(prompt).toContain('restore the native source on the existing task in its current execution chat');
+    expect(prompt).toContain('On a new claim for the same work, generate fresh admission and completion keys');
+    expect(prompt).toContain('Keep the identical reply payload and key across claims');
     expect(dotsSetupSteps(origin).join(' ')).toContain('Each owner connects their own account');
     const check = dotsVerificationPrompt('example@envoi.example');
     expect(check).toContain('example@envoi.example');

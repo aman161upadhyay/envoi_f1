@@ -21,8 +21,8 @@ async function eventually(read) {
   assert.fail('Local canonical delivery did not become available');
 }
 
-test('settling an authorized acknowledgement without a reply unblocks the next request and preserves unrelated work', { timeout: 30000 }, async t => {
-  const server = await remoteServer(t, { name: 'FileStore', env: {} });
+test('receipt-only settlement drains the queue and a reclaimed request keeps exactly one reply', { timeout: 30000 }, async t => {
+  const server = await remoteServer(t, { name: 'FileStore', env: {} }, { env: { ENVOI_AGENT_WORK_RETRY_BASE_MS: '40' } });
   async function owner() {
     const account = await freshOwner(server);
     const grant = await connect(server, account);
@@ -51,14 +51,15 @@ test('settling an authorized acknowledgement without a reply unblocks the next r
   // The host stopped its run on this receipt-only item. The server does not impose
   // a global queue barrier; the corrected worker completes it and keeps claiming.
   assert.equal((await call(receiver, 'envoi_list_messages', { caseId })).payload.find(message => message.id === firstWork.workId).status, 'delivered');
-  async function admit(work) {
+  async function admit(work, attempt = 'first') {
     assert.equal((await call(receiver, 'envoi_renew_work', { workId: work.workId, leaseToken: work.leaseToken })).status, 200);
-    assert.equal((await call(receiver, 'envoi_acknowledge_work', {
-      workId: work.workId, leaseToken: work.leaseToken, idempotencyKey: 'admit:' + work.workId
-    })).status, 201);
+    const args = { workId: work.workId, leaseToken: work.leaseToken, idempotencyKey: `admit:${work.workId}:${attempt}` };
+    const admitted = await call(receiver, 'envoi_acknowledge_work', args);
+    assert.equal(admitted.status, attempt === 'first' ? 201 : 200);
+    return args;
   }
-  async function complete(work) {
-    const args = { workId: work.workId, leaseToken: work.leaseToken, idempotencyKey: 'complete:' + work.workId };
+  async function complete(work, attempt = 'first') {
+    const args = { workId: work.workId, leaseToken: work.leaseToken, idempotencyKey: `complete:${work.workId}:${attempt}` };
     const done = await call(receiver, 'envoi_complete_work', args);
     assert.equal(done.status, 201);
     assert.equal(done.payload.status, 'processed');
@@ -70,15 +71,29 @@ test('settling an authorized acknowledgement without a reply unblocks the next r
   assert.equal(requestWork.workId, request.payload.id);
   assert.equal(requestWork.message.from.address, sender.info.address);
   assert.equal(requestWork.message.caseId, caseId);
-  await admit(requestWork);
+  const priorAdmission = await admit(requestWork);
   const replyArgs = {
     caseId, recipientAddress: sender.info.address, text: 'Ready to exchange messages.',
     intent: 'status', idempotencyKey: 'reply:' + requestWork.workId
   };
   const reply = await call(receiver, 'envoi_send_message', replyArgs);
   assert.equal(reply.status, 202);
+  // Recover when a send committed but this attempt could not settle the work.
+  const deferred = await call(receiver, 'envoi_fail_work', {
+    workId: requestWork.workId, leaseToken: requestWork.leaseToken, retryable: true
+  });
+  assert.equal(deferred.payload.status, 'retryable');
+  const reclaimed = await eventually(async () => (await call(receiver, 'envoi_claim_work')).payload.work);
+  assert.equal(reclaimed.workId, requestWork.workId);
+  assert.notEqual(reclaimed.leaseToken, requestWork.leaseToken);
+  const conflict = await rpc(server, receiver.token, 'envoi_acknowledge_work', {
+    ...priorAdmission, leaseToken: reclaimed.leaseToken
+  });
+  assert.equal(conflict.payload.result.isError, true);
+  assert.match(conflict.payload.result.content[0].text, /idempotency key was already used/i);
+  await admit(reclaimed, 'retry');
   assert.equal((await call(receiver, 'envoi_send_message', replyArgs)).payload.id, reply.payload.id);
-  await complete(requestWork);
+  await complete(reclaimed, 'retry');
   const messages = (await call(receiver, 'envoi_list_messages', { caseId })).payload;
   assert.equal(messages.filter(message => message.from.address === receiver.info.address).length, 1);
   assert.equal(messages.find(message => message.id === reply.payload.id).intent, 'status');
