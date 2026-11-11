@@ -64,6 +64,8 @@ async function fixture(kind: 'unified' | 'quick') {
         status: 'pending', endedReason: null, expiresAt: null, replacesSubscriptionId: null } });
     }
     if (route === '/api/agent/wake-subscriptions') return Response.json({ installationId, subscriptions: [] });
+    if (route === '/api/agent/events') return new Response(`event: ready\ndata: ${JSON.stringify({ inboxId: session.inboxId, cursor: null })}\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } });
     if (route === '/api/agent/work/claim') {
       expect(init?.method).toBe('POST');
       expect(JSON.parse(String(init?.body))).toEqual({ acceptHumanInstructions: true });
@@ -160,6 +162,34 @@ describe('normal hosted wake entrypoints (offline simulated services)', () => {
       await expect(fetch(`http://127.0.0.1:${test.port}/envoi/wake`)).rejects.toThrow();
       const releaseMain = await acquireConnectorLock(test.stateDir); await releaseMain();
       const wake = await FileWakeStore.open(path.join(test.stateDir, 'wake')); await wake.close();
+    });
+
+    it(`${kind} still claims through the direct connector when the callback port is occupied`, async () => {
+      const test = await fixture(kind);
+      const occupied = createServer((_request, response) => { response.writeHead(204); response.end(); });
+      await new Promise<void>((resolve, reject) => {
+        occupied.once('error', reject);
+        occupied.listen(test.port, '127.0.0.1', resolve);
+      });
+      const stop = new AbortController();
+      const ready = vi.fn();
+      const run = kind === 'unified'
+        ? startConnection(test.stateDir, stop.signal, () => scopedAdapter, { env: test.env, fetch: test.fetcher,
+          secureDirectory, control: false, onReady: ready })
+        : startQuickConnect(test.stateDir, stop.signal, { env: test.env, fetch: test.fetcher, secureDirectory, onReady: ready });
+      try {
+        await Promise.race([run, vi.waitFor(() => expect(test.calls).toContain('POST /api/agent/work/claim'), { timeout: 5_000 })]);
+        expect(test.calls).toContain('POST /api/agent/work/claim');
+        expect(test.calls).toContain('GET /api/agent/status');
+        expect(test.calls).not.toContain('POST /api/agent/wake-subscriptions');
+        expect(ready).not.toHaveBeenCalled();
+        expect((await fetch(`http://127.0.0.1:${test.port}/`)).status).toBe(204);
+      } finally {
+        stop.abort();
+        occupied.closeAllConnections();
+        await new Promise<void>(resolve => occupied.close(() => resolve()));
+        await run;
+      }
     });
   }
 

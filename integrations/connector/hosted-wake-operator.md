@@ -20,6 +20,8 @@ The Hermes artifact is `integrations/hermes/dist/run.mjs`. OpenClaw's `run.mjs` 
 
 The selected installed connector entry point starts a separate private `wake/` directory under its persistent `ENVOI_STATE_DIR`, binds one HTTP listener on `127.0.0.1`, starts it **before** `host.run()`, then lets the host verify callbacks and poll the canonical Envoi queue. It never listens on a public interface. Abort closes the listener before releasing the wake store lock. Do not run two connector processes against the same enrollment.
 
+If another process already owns the callback port, the connector verifies the saved Envoi installation and keeps checking its queue through the ordinary event stream and safety polling. The startup log identifies the port conflict. Free the configured port and restart the connector under its supervisor to restore callback delivery.
+
 OpenClaw's hosted launcher acquires the shared `connector.lock` in `ENVOI_STATE_DIR` before loading or writing connection state, so a running Quick Connect process using that directory prevents a second launcher. Stop the ordinary connector under its supervisor before starting this hosted variant; keep the same private state and do not bypass the lock.
 
 | Variable | Required value for wake |
