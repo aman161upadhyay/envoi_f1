@@ -163,7 +163,7 @@
 .app-shell .primary-nav { background: var(--lx-paper); border-right: 1px solid var(--lx-line); }
 .app-shell .nav-item { color: var(--lx-ink-2); border-radius: 10px; transition: background-color var(--lx-fast) var(--lx-ease); }
 .app-shell .nav-item:hover { background: var(--lx-paper-2); }
-.app-shell .nav-item[aria-current="page"], .app-shell .nav-item.active { background: var(--lx-accent-soft); color: var(--lx-ink); }
+.app-shell .nav-item.active { background: var(--lx-accent-soft); color: var(--lx-ink); }
 .app-shell .nav-section-heading { font-size: 11px; letter-spacing: .08em; color: var(--lx-ink-3); }
 .app-shell .case-queue { background: var(--lx-canvas); }
 .app-shell .queue-header h1 { font-family: var(--lx-serif); font-weight: 400; letter-spacing: -.01em; }
