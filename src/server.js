@@ -1551,6 +1551,36 @@ async function assetReader(req, inbox) {
   const [human, agent] = await Promise.all([auth.getHuman(req), getAgentPrincipal(req, inbox.id)]);
   return { agent, manager: await canManageInbox(human, inbox) };
 }
+const assetVersionTarget = asset => ({ assetId: asset.id, assetVersion: asset.checksumSha256 });
+const assetUploadTarget = asset => ({
+  filename: asset.filename, mimeType: asset.mimeType, size: asset.size, checksumSha256: asset.checksumSha256
+});
+
+async function signedAssetDecision(inboxId, caseId, agentId, action, payload) {
+  if (!caseId || !agentId) return null;
+  const policy = await resolveSignedCasePolicy({ inboxId, caseId, agentId });
+  return evaluateSignedCaseGrant(policy, action, payload);
+}
+
+async function requireSignedAssetGrant(inboxId, caseId, agentId, action, payload) {
+  const decision = await signedAssetDecision(inboxId, caseId, agentId, action, payload);
+  if (!decision || decision.decision === 'allow') return;
+  if (decision.decision === 'needsHuman') throw codedError(409, 'SIGNED_ASSET_APPROVAL_REQUIRED', 'The signed case policy requires approval for this asset action.');
+  throw codedError(403, 'SIGNED_ASSET_GRANT_REQUIRED', 'The signed case policy does not grant this asset action.');
+}
+
+async function signedAssetReadAccess(asset, inbox, reader, access) {
+  if (!access.allowed || reader.manager) return access;
+  try {
+    const decision = await signedAssetDecision(inbox.id, asset.caseId, reader.agent.id, 'asset.read', assetVersionTarget(asset));
+    if (!decision) return access;
+    return decision.decision === 'allow' ? { ...access, signedScope: true } : { allowed: false };
+  } catch {
+    // Restricted metadata and content stay hidden if current authority cannot be established.
+    return { allowed: false };
+  }
+}
+
 async function assetReadAccess(asset, inbox, reader) {
   if (!asset) return { allowed: false };
   if (asset.caseId) {
@@ -1562,14 +1592,18 @@ async function assetReadAccess(asset, inbox, reader) {
     }));
     if (agents.some(agent => !agent || agent.status !== 'active')) return { allowed: false };
   }
-  if ((asset.workspaceId || asset.inboxId) === inbox.id) return { allowed: Boolean(reader.manager || reader.agent?.id === asset.createdByAgentId && canAct(reader.agent, 'create_assets')), owner: true };
+  if ((asset.workspaceId || asset.inboxId) === inbox.id) {
+    return signedAssetReadAccess(asset, inbox, reader, {
+      allowed: Boolean(reader.manager || reader.agent?.id === asset.createdByAgentId && canAct(reader.agent, 'create_assets')), owner: true
+    });
+  }
   const grant = await store.getJson(assetGrantPath(inbox.id, asset.id));
   if (!grant || grant.assetId !== asset.id || grant.caseId !== asset.caseId || grant.ownerInboxId !== asset.workspaceId
     || grant.ownerAgentId !== asset.createdByAgentId || grant.recipientInboxId !== inbox.id
     || !reader.manager && (reader.agent?.id !== grant.recipientAgentId || !canAct(reader.agent, 'receive_agent_messages'))
     || !await assetPair(asset, grant.recipientAgentId, inbox.id)) return { allowed: false };
   if (await assetRelationshipBlocked(asset, grant.recipientAgentId, inbox.id)) return { allowed: false, blocked: true };
-  return { allowed: true, owner: false, grant };
+  return signedAssetReadAccess(asset, inbox, reader, { allowed: true, owner: false, grant });
 }
 async function saveCase(inboxId, value) {
   const binding = await store.getJson(caseBindingPath(value.id));
@@ -3640,6 +3674,8 @@ async function shareCaseToolAsset(ctx, asset) {
   if (!asset || asset.caseId !== ctx.session.caseId || asset.createdByAgentId !== ctx.agent.id || asset.workspaceId !== ctx.session.inboxId) throw caseToolError('ASSET_NOT_SHAREABLE');
   if (asset.state !== 'clean') throw caseToolError('ASSET_NOT_CLEAN');
   if (!await assetPair(asset, ctx.session.counterpartyAgentId, ctx.session.counterpartyInboxId) || await assetRelationshipBlocked(asset, ctx.session.counterpartyAgentId, ctx.session.counterpartyInboxId)) throw caseToolError('REF_NOT_FOUND');
+  await requireSignedAssetGrant(ctx.session.inboxId, asset.caseId, ctx.agent.id, 'asset.share',
+    { ...assetVersionTarget(asset), recipientAgentId: ctx.session.counterpartyAgentId });
   const location = assetGrantPath(ctx.session.counterpartyInboxId, asset.id);
   if (await store.getJson(location)) return true;
   const grant = { id: `grant_${hashSecret(`${asset.id}:${asset.caseId}:${ctx.session.counterpartyAgentId}`).slice(0, 40)}`, schemaVersion: '1.0', assetId: asset.id, caseId: asset.caseId,
@@ -3652,6 +3688,7 @@ async function shareCaseToolAsset(ctx, asset) {
 async function readCaseToolContent(ctx, asset) {
   const { bytes } = await objectStorage.readCleanObject(asset.id);
   await assertLiveToolSession(ctx.session);
+  await requireSignedAssetGrant(ctx.session.inboxId, asset.caseId, ctx.agent.id, 'asset.read', assetVersionTarget(asset));
   return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 async function completeCaseTool(ctx, result, authority, evidence, id) {
@@ -6857,6 +6894,7 @@ async function route(req, res) {
       if (!shared || !shared.binding.agentIds.includes(principal.id) || !shared.binding.inboxIds.includes(inboxId)
         || directory?.inboxId !== inboxId || inbox.ownerAgentId !== principal.id) return fail(res, 403, 'CASE_PARTICIPANT_MISMATCH');
       await assertCaseProgressAllowed(inboxId, caseId);
+      await requireSignedAssetGrant(inboxId, caseId, principal.id, 'asset.upload', assetUploadTarget(input));
     }
     const idempotencyKey = validateIdempotencyKey(req.headers['idempotency-key'] || input.idempotencyKey);
     const idempotencyPath = idempotencyKey ? scopedIdempotencyPath('asset-upload', inboxId, principal.id, idempotencyKey) : null;
@@ -6867,7 +6905,9 @@ async function route(req, res) {
     let started;
     try {
       started = await objectStorage.beginUpload({ workspaceId: inboxId, filename: input.filename, mimeType: input.mimeType, size: input.size, checksumSha256: input.checksumSha256, caseId, createdByAgentId: principal.id }, { lockKeys: [inboxMutationKey(inboxId)], authorize: async () => {
-        if (!await getAgentPrincipal(req, inboxId)) throw Object.assign(new Error('Agent access ended'), { statusCode: 403 });
+        const current = await getAgentPrincipal(req, inboxId);
+        if (current?.id !== principal.id) throw Object.assign(new Error('Agent access ended'), { statusCode: 403 });
+        await requireSignedAssetGrant(inboxId, caseId, current.id, 'asset.upload', assetUploadTarget(input));
       } });
       const response = { object: started.object, upload: browserObjectUrl(started.upload, req) };
       if (idempotencyPath) await completeIdempotency(store, idempotencyPath, { principalId: principal.id, requestDigest, response, createdAt: store.now() });
@@ -6887,7 +6927,10 @@ async function route(req, res) {
     const principal = await getAgentPrincipal(req, inboxId);
     const asset = await objectStorage.getObject(completeAssetUpload[1]);
     if (asset.workspaceId !== inboxId) return fail(res, 404, 'Asset not found');
-    if (!await canManageInbox(human, inbox) && principal?.id !== asset.createdByAgentId) return fail(res, 403, 'Asset creator or workspace administrator required');
+    if (!await canManageInbox(human, inbox)) {
+      if (principal?.id !== asset.createdByAgentId) return fail(res, 403, 'Asset creator or workspace administrator required');
+      await requireSignedAssetGrant(inboxId, asset.caseId, principal.id, 'asset.upload', assetUploadTarget(asset));
+    }
     const scanned = await objectStorage.scanObject(asset.id);
     await audit(inboxId, `asset.scan_${scanned.state}`, { assetId: scanned.id, caseId: scanned.caseId, createdByAgentId: scanned.createdByAgentId, scan: scanned.scan });
     return json(res, 200, scanned);
@@ -6931,6 +6974,8 @@ async function route(req, res) {
           resourceGrant: { resourceId: currentAsset.id, agentId: currentPrincipal.id, active: currentAsset.workspaceId === inboxId && currentAsset.createdByAgentId === currentPrincipal.id }
         });
       }
+      await requireSignedAssetGrant(inboxId, caseId, currentPrincipal.id, 'asset.share',
+        { ...assetVersionTarget(currentAsset), recipientAgentId });
       const priorKey = await store.getJson(keyPath);
       if (priorKey && (priorKey.principalId !== principal.id || priorKey.requestDigest !== requestDigest)) throw nativeIdempotencyConflict();
       let grant = await store.getJson(grantPath);
@@ -6956,7 +7001,7 @@ async function route(req, res) {
     if (access.blocked) return fail(res, 403, 'AGENT_BLOCKED');
     if (!access.allowed) return fail(res, 404, 'ASSET_NOT_FOUND');
     if (asset.state !== 'clean') return fail(res, 423, 'ASSET_NOT_CLEAN');
-    if (!access.owner) return json(res, 200, { object: asset, download: {
+    if (!access.owner || access.signedScope) return json(res, 200, { object: asset, download: {
       url: `${publicBaseUrl(req)}/api/inboxes/${encodeURIComponent(inboxId)}/assets/${encodeURIComponent(asset.id)}/content`,
       method: 'GET', headers: {}
     } });
@@ -7002,10 +7047,12 @@ async function route(req, res) {
   if (req.method === 'GET' && assetMatch) {
     const sharedAsset = await store.getJson(objectMetadataPath(assetMatch[1]));
     if (sharedAsset?.key) {
-      const access = await assetReadAccess(sharedAsset, inbox, await assetReader(req, inbox));
+      const reader = await assetReader(req, inbox);
+      const access = await assetReadAccess(sharedAsset, inbox, reader);
       if (access.blocked) return fail(res, 403, 'AGENT_BLOCKED');
       if (!access.allowed) return fail(res, 404, 'ASSET_NOT_FOUND');
       const { bytes } = await objectStorage.readCleanObject(sharedAsset.id);
+      if (access.signedScope && !(await assetReadAccess(sharedAsset, inbox, await assetReader(req, inbox))).allowed) return fail(res, 404, 'ASSET_NOT_FOUND');
       res.writeHead(200, { 'content-type': sharedAsset.mimeType, 'content-length': String(bytes.length),
         'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff',
         'content-disposition': `attachment; filename="${String(sharedAsset.filename || 'download').replace(/[\r\n"\\]/g, '_').slice(0, 180)}"` });
