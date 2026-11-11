@@ -13,16 +13,3 @@ export function HighlightedText({ text }: { text: string }) {
 export function HighlightLegend() {
   return <p className="hl-legend" aria-label="Highlight key"><mark className="hl hl-blocking">Needs your decision</mark><mark className="hl hl-review">Worth a look</mark><span>Hover or focus a highlight to see why.</span></p>;
 }
-
-export function HighlightSummary({ text }: { text: string }) {
-  const spans = findHighlights(text);
-  if (!spans.length) return null;
-  const blocking = spans.filter(span => span.tier === 'blocking').length;
-  const review = spans.length - blocking;
-  const jump = (target: EventTarget, tier: 'blocking' | 'review') =>
-    (target as HTMLElement).closest('.message-content')?.querySelector<HTMLElement>(`mark.hl-${tier}`)?.focus();
-  return <div className="hl-summary" aria-label="Highlights in this message">
-    {blocking > 0 && <button type="button" className="hl-chip hl-chip-blocking" onClick={event => jump(event.currentTarget, 'blocking')}>{blocking} {blocking === 1 ? 'needs' : 'need'} your decision</button>}
-    {review > 0 && <button type="button" className="hl-chip hl-chip-review" onClick={event => jump(event.currentTarget, 'review')}>{review} worth a look</button>}
-  </div>;
-}

@@ -87,14 +87,6 @@
 .app-shell .mine .message-content { align-items: flex-start; }
 .app-shell .mine .message-meta { justify-content: flex-start; }
 
-.app-shell .hl-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
-.app-shell .hl-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: var(--lx-radius-pill); font: 500 12px/1 var(--lx-sans); cursor: pointer; transition: transform var(--lx-fast) var(--lx-ease), background-color var(--lx-fast) var(--lx-ease); }
-.app-shell .hl-chip::before { content: ""; width: 7px; height: 7px; border-radius: 2px; transform: rotate(45deg); }
-.app-shell .hl-chip-blocking { background: var(--lx-gold-soft); border: 1px solid var(--lx-gold-line); color: var(--lx-gold-ink); }
-.app-shell .hl-chip-blocking::before { background: var(--lx-gold); }
-.app-shell .hl-chip-review { background: var(--lx-green-soft); border: 1px solid var(--lx-green-line); color: var(--lx-green-ink); }
-.app-shell .hl-chip-review::before { background: #9ad78f; }
-.app-shell .hl-chip:active { transform: scale(.97); }
 
 .app-shell .conversation-event { display: flex; align-items: center; gap: 10px; max-width: none; margin: 10px 0; padding: 8px 12px 8px 60px; font-size: 13px; color: var(--lx-ink-2); text-align: left; }
 .app-shell .conversation-event svg { width: 24px; height: 24px; padding: 5px; border-radius: 8px; background: var(--lx-paper); border: 1px solid var(--lx-line); color: var(--lx-ink-3); flex: none; }
@@ -199,3 +191,23 @@
 .app-shell .decision-bar button:active { transform: scale(.97); }
 @keyframes lx-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (max-width: 700px) { .app-shell .decision-bar-label { display: none; } }
+
+
+/* One scroll area. Absolutely positioned screen-reader text inside the thread used to stretch the outer
+   .case-main, which then scrolled the whole page (composer included). Containing it fixes both bars. */
+.app-shell .thread-scroll { position: relative; }
+.app-shell .case-main { overflow: hidden; }
+.app-shell .decision-card .proposal-option .risk-label { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.app-shell .decision-card .proposal-option button.risk-label:hover { background: #f6ecc9; }
+
+/* TRIAL: blue highlight palette (swatch supplied 11 Nov: #3a5e95 bar, #ecf2f8 fill).
+   Delete this whole block to go back to the green highlights in product-brand.css. The golden underline
+   on "needs your decision" marks is unchanged. */
+.app-shell {
+  --lx-hl: #c9daf0;
+  --lx-hl-dot: #7f9fcf;
+  --lx-hl-soft: #ecf2f8;
+  --lx-hl-line: #c5d3e8;
+  --lx-hl-ink: #2f5088;
+}
+.app-shell .hl { background: var(--lx-hl); }
