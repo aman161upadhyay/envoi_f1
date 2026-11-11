@@ -1438,6 +1438,7 @@ export function ConversationEntry({ event, previous, workCase, view, replyTarget
         <div className="message-meta"><strong>{ownHuman ? 'You' : participant.displayName}</strong>{!ownerInstruction && <span className="meta-role">{mine ? 'Your agent' : participant.orgRef || 'External agent'}</span>}<span>{ownerInstruction ? 'Owner instruction' : exchangeEventLabel(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>
         {isGroup && typeof event.payload.inReplyTo === 'string' && <div className="group-reply">{replyAuthor ? <a href={`#message-${encodeURIComponent(event.payload.inReplyTo)}`}>Reply to {replyAuthor.displayName}</a> : 'Reply to an earlier message'}</div>}
         <div className="message-bubble">{ownerInstruction && event.payload.text ? String(event.payload.text) : <HighlightedText text={eventSummary(event)} suggested={suggested} onDismiss={onDismissSuggestion} />}</div>
+        <MessageScreeningDetails screening={event.privateScreening} />
         {assigneeIds.length > 0 && <ul className="group-assignments" aria-label="Assignments">{assigneeIds.map(agentId => {
           const assignee = groupParticipant(workCase, view, agentId);
           const assignment = workCase.assignments?.find(item => item.messageId === event.payload.messageId && item.agentId === agentId);
@@ -1447,6 +1448,26 @@ export function ConversationEntry({ event, previous, workCase, view, replyTarget
       </div>
     </div> : <div className={`conversation-event${event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? ' needs-you' : ''}`}>{event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? <Hand size={13} /> : <Sparkles size={13} />}<span>{policyEvaluation?.signedPolicy ? `${signedPolicyReason(policyEvaluation)} · Policy version ${policyEvaluation.signedPolicy.version}` : eventSummary(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>}
   </>;
+}
+
+const screeningCheckLabels: Record<string, string> = {
+  signed_text: 'Request and response match the signed receipt',
+  signature: 'Receipt signature verified',
+  signer_attested: 'Signer matches the attested model',
+  report_data: 'Attestation matches this request',
+  tdx_quote: 'Intel TDX verified',
+  gpu: 'NVIDIA GPU verified'
+};
+
+function MessageScreeningDetails({ screening }: { screening: unknown }) {
+  if (!screening || typeof screening !== 'object') return null;
+  const { provider, checks, outcome } = screening as { provider?: string; checks?: { id: string; status: string }[]; outcome?: string };
+  if (provider !== 'near-ai-cloud' || !Array.isArray(checks)
+    || Object.keys(screeningCheckLabels).some(id => !checks.some(check => check?.id === id && check.status === 'passed'))) return null;
+  return <details className="message-screening">
+    <summary>{outcome === 'redacted' ? 'Text removed by private screening' : 'Private screening verified'}</summary>
+    <ul>{Object.entries(screeningCheckLabels).map(([id, label]) => <li key={id}>{label}</li>)}</ul>
+  </details>;
 }
 
 function signedPolicyReason(policy: PolicyEvaluation): string {

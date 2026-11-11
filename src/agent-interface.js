@@ -314,7 +314,9 @@ export function advanceNativeCase(caseInput, message, deliveryState, at, { scope
       payload.proposalId = proposal.id;
     }
   }
-  appendEvent(value, { id: eventId, type: type === 'decision' ? 'decision' : 'message', actor: message.senderAgentId, createdAt: message.createdAt, payload, linkedPolicyEvaluation: null, precedingEventRef: value.events.at(-1)?.id || null });
+  appendEvent(value, { id: eventId, type: type === 'decision' ? 'decision' : 'message', actor: message.senderAgentId, createdAt: message.createdAt, payload,
+    ...(message.privateScreening ? { privateScreening: message.privateScreening } : {}),
+    linkedPolicyEvaluation: null, precedingEventRef: value.events.at(-1)?.id || null });
   if (value.state === 'new') value = transitionCase(value, 'inProgress', { actor: message.senderAgentId, at, reasonCode: 'caseStarted' });
   if (type === 'decision' && (message.payload?.decision?.kind === 'accept' || message.intent === 'accept')) {
     if (!scopedAccept) value = transitionCase(value, 'waitingForHuman', { actor: message.senderAgentId, at, reasonCode: 'agentDecisionNeedsHumanReview' });

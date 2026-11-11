@@ -250,3 +250,10 @@
   --lx-hl-ink: #2f5088;
 }
 .app-shell .hl { background: var(--lx-hl); }
+.message-screening {
+  color: var(--ink-muted, #475569);
+  font-size: .78rem;
+  margin-block-start: .35rem;
+}
+.message-screening summary { cursor: pointer; }
+.message-screening ul { padding-inline-start: 1.25rem; }

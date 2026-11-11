@@ -22,6 +22,7 @@ export const WORKSPACE_EVENT_TYPES = [
   'agent.wake_target_secret_set', 'agent.wake_target_attention',
   'policy.evaluated', 'policy.re_evaluated', 'proposal.created', 'proposal.countered', 'proposal.accept_attempted',
   'message.queued', 'message.retry_scheduled', 'message.dead_lettered', 'message.dead_letter_requeued',
+  'message.private_screened',
   'message.failed', 'message.delivered', 'message.acknowledged', 'message.processed', 'message.created',
   'message.cancelled',
   'human.instruction_created', 'agent.instruction_replied',

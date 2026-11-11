@@ -126,6 +126,31 @@
         "actor": { "$ref": "#/definitions/ref" },
         "createdAt": { "$ref": "#/definitions/timestamp" },
         "payload": { "type": "object" },
+        "privateScreening": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "outcome", "checks", "receiptDigest"],
+          "properties": {
+            "provider": { "const": "near-ai-cloud" },
+            "outcome": { "enum": ["clean", "redacted"] },
+            "checks": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "status"],
+                "properties": {
+                  "id": { "enum": ["signed_text", "signature", "signer_attested", "report_data", "tdx_quote", "gpu"] },
+                  "status": { "const": "passed" }
+                }
+              }
+            },
+            "receiptDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          }
+        },
         "linkedPolicyEvaluation": { "type": ["string", "null"] },
         "precedingEventRef": { "type": ["string", "null"] }
       }

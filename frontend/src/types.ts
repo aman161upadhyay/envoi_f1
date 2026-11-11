@@ -119,6 +119,7 @@ export interface CaseEvent {
   actor: string;
   createdAt: string;
   payload: Record<string, any>;
+  privateScreening?: unknown;
   linkedPolicyEvaluation: string | null;
   precedingEventRef: string | null;
   summary?: string;

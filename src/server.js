@@ -17,6 +17,7 @@ import { DeliveryWorker } from './delivery-worker.js';
 import { createConsumerIdentity, consumerLogger } from './consumer-identity.js';
 import { createEmailTransport } from './email-transport.js';
 import { createProtocolMessage } from './protocol-v1.js';
+import { createNativePrivateScreening } from './native-private-screening.js';
 import { createObjectStorageAdapter, DocumentObjectMetadataStore, FailClosedScanner, HttpMalwareScanner, ObjectStorageService, PersistentQuotaLedger } from './object-storage.js';
 import { PostgresMalwareScanJobStore } from './object-scan-lifecycle.js';
 import { validateProductionConfiguration } from './production-config.js';
@@ -118,6 +119,10 @@ const calendarWritesEnabled = process.env.ENVOI_ENABLE_CALENDAR_WRITES === 'true
 const consequentialActionsEnabled = process.env.ENVOI_ENABLE_CONSEQUENTIAL_ACTIONS === 'true';
 const sensitiveCasesEnabled = process.env.ENVOI_ENABLE_SENSITIVE_CASES === 'true';
 const traceSigner = createTraceSigner(process.env.ENVOI_CASE_TRACE_SIGNING_KEY);
+const screenNativeMessage = createNativePrivateScreening({
+  enabled: process.env.ENVOI_ENABLE_PRIVATE_MESSAGE_SCREENING === 'true',
+  apiKey: process.env.NEAR_AI_API_KEY, model: process.env.NEAR_AI_MODEL
+});
 const policyActiveKeyId = process.env.ENVOI_POLICY_ACTIVE_KEY_ID || 'primary';
 const policySigningKeys = (() => {
   const configured = process.env.ENVOI_POLICY_SIGNING_KEYS ? JSON.parse(process.env.ENVOI_POLICY_SIGNING_KEYS) : {};
@@ -1777,14 +1782,19 @@ async function writeGroupMessage(binding, identity, input, messageId, writeAudit
   if (inReplyTo !== null && !value.events.some(event => event.type === 'message' && event.payload?.id === inReplyTo)) {
     throw codedError(404, 'GROUP_REPLY_NOT_FOUND', 'Reply target is not in this group case.');
   }
+  const screened = screenNativeMessage ? await screenNativeMessage({ type: 'message', intent: 'message',
+    text, content: [{ type: 'text', text }] }) : null;
   const at = store.now();
   const message = { id: messageId, caseId, senderAgentId: identity.agent.id, senderAddress: identity.agent.address,
-    text, inReplyTo, assigneeAgentIds: assignees, createdAt: at };
+    text, inReplyTo, assigneeAgentIds: assignees, createdAt: at,
+    ...(screened ? { privateScreening: screened.message.privateScreening } : {}) };
   appendEvent(value, { id: `evt_${messageId}`, type: 'message', actor: identity.agent.id, createdAt: at,
+    ...(screened ? { privateScreening: message.privateScreening } : {}),
     payload: { ...message, messageId, messageType: 'message', deliveryState: 'delivered' } });
   value.updatedAt = at;
   const documents = [
     document(requestPath, { requestHash, message }),
+    ...(screened ? [screeningReceiptDocument({ ...message, senderInboxId: identity.inboxId }, screened.evidence, at)] : []),
     document(sharedCasePath(caseId), value),
     ...binding.inboxIds.map(inboxId => document(caseRecordPath(inboxId, caseId), value))
   ];
@@ -1799,6 +1809,11 @@ async function writeGroupMessage(binding, identity, input, messageId, writeAudit
     }));
   }
   await store.putJsonBatch(documents);
+  if (screened) {
+    const { outcome, receiptDigest } = message.privateScreening;
+    await writeAudit('message.private_screened', { caseId, messageId, outcome, receiptDigest,
+      groupCase: true, memberAgentIds: binding.agentIds }, at);
+  }
   for (const inboxId of binding.inboxIds) {
     await writeAudit('group.message_posted', { caseId, messageId, senderAgentId: identity.agent.id, groupCase: true, memberAgentIds: binding.agentIds }, at, inboxId);
   }
@@ -1874,6 +1889,8 @@ async function handleGroupCaseRoute(req, res, route) {
       throw codedError(409, 'GROUP_MEMBER_CHANGED', 'Group membership changed while creating the case. Retry.');
     }
     const inbox = await verifyGroupMembers(members);
+    const screened = screenNativeMessage && input.objective !== undefined
+      ? await screenNativeMessage({ type: 'message', intent: 'message', text: objective, content: [{ type: 'text', text: objective }] }) : null;
     const at = store.now();
     const agentIds = pairIds(members.map(member => member.agentId));
     if (agentIds.length !== members.length) throw codedError(400, 'GROUP_CASE_INVALID', 'Group members must be distinct.');
@@ -1885,6 +1902,8 @@ async function handleGroupCaseRoute(req, res, route) {
     await store.putJsonBatch([
       document(caseBindingPath(id), { caseId: id, mode: 'group', agentIds, inboxIds, members, requestHash, createdAt: at }),
       document(sharedCasePath(id), value),
+      ...(screened ? [screeningReceiptDocument({ id, caseId: id, senderInboxId: identity.inboxId,
+        privateScreening: screened.message.privateScreening }, screened.evidence, at)] : []),
       ...inboxIds.map(inboxId => document(caseRecordPath(inboxId, id), value))
     ]);
     for (const inboxId of inboxIds) await writeAudit('group.case_created', { caseId: id, agentId: identity.agent.id, groupCase: true, memberAgentIds: agentIds }, at, inboxId);
@@ -2262,7 +2281,7 @@ async function assertSignedMessageGrant(inboxId, message, replyPolicyDigest = nu
   const policy = await resolveSignedCasePolicy({ inboxId, caseId: message.caseId, agentId: message.senderAgentId });
   if (!policy) return;
   // Only the gateway's already checked reply/approval path supplies this value.
-  if (replyPolicyDigest && policy.digest === replyPolicyDigest) return;
+  if (replyPolicyDigest && policy.digest === replyPolicyDigest) return policy;
   const target = {
     recipientAgentId: message.recipientAgentId ?? null,
     recipientHumanId: message.recipientHumanId ?? null,
@@ -2282,7 +2301,14 @@ async function assertSignedMessageGrant(inboxId, message, replyPolicyDigest = nu
   if (evaluation.decision !== 'allow') {
     throw codedError(403, 'SIGNED_MESSAGE_DENIED', 'The signed case policy has no current grant for this message.');
   }
+  return policy;
 }
+
+const screeningReceiptDocument = (message, evidence, at) => document(
+  path.join('private-message-screening', message.senderInboxId, `${message.id}.json`),
+  { caseId: message.caseId, messageId: message.id, receiptDigest: message.privateScreening.receiptDigest,
+    encrypted: encryptConnectorTokens(evidence), createdAt: at }
+);
 
 async function enqueueNativeMessage(message, senderInbox, recipientInboxId, eventType = 'message.queued', writeAudit = null, agentRequest = null, caseOptions = {}) {
   if (!writeAudit) {
@@ -2311,9 +2337,10 @@ async function enqueueNativeMessage(message, senderInbox, recipientInboxId, even
     if (existing.requestHash && existing.requestHash !== message.requestHash) throw nativeIdempotencyConflict();
     if (existing.status !== 'pendingContactApproval') return existing;
   }
+  const signedPolicy = await assertSignedMessageGrant(senderInbox.id, message, caseOptions.signedReplyPolicyDigest);
+  const screened = screenNativeMessage ? await screenNativeMessage(message, { allowRedaction: !signedPolicy }) : null;
   const queuedAt = store.now();
-  await assertSignedMessageGrant(senderInbox.id, message, caseOptions.signedReplyPolicyDigest);
-  const queued = { ...message, recipientInboxId, status: 'queued', queuedAt, updatedAt: queuedAt };
+  const queued = { ...(screened?.message ?? message), recipientInboxId, status: 'queued', queuedAt, updatedAt: queuedAt };
   const shared = await nativeCaseDocuments(queued, 'queued', queuedAt, caseOptions);
   const auditData = {
     messageId: queued.id,
@@ -2344,16 +2371,24 @@ async function enqueueNativeMessage(message, senderInbox, recipientInboxId, even
   };
   const delivery = await store.enqueueOutbox([
     document(messagePath(senderInbox.id, queued.id), queued),
+    ...(screened ? [screeningReceiptDocument(queued, screened.evidence, queuedAt)] : []),
     ...shared.documents
   ], outbox);
   if (delivery.requestHash && delivery.requestHash !== queued.requestHash) throw nativeIdempotencyConflict();
   await writeAudit(eventType, auditData, queuedAt);
+  if (screened) {
+    const { outcome, receiptDigest } = queued.privateScreening;
+    await writeAudit('message.private_screened', { messageId: queued.id, caseId: queued.caseId, outcome, receiptDigest }, queuedAt);
+  }
   return delivery.enqueueCreated ? queued : await store.getJson(messagePath(senderInbox.id, queued.id), queued);
 }
 
 async function deliverNativeAgentMessage(outbox) {
   const queued = await store.getJson(messagePath(outbox.senderInboxId, outbox.messageId));
   if (!queued) throw permanentDeliveryError('Queued message no longer exists');
+  if (screenNativeMessage && !queued.privateScreening) {
+    throw permanentDeliveryError('Queued message has no private screening receipt. Submit it again for verification.', 'PRIVATE_SCREENING_REQUIRED');
+  }
   const sender = await store.getJson(path.join('inboxes', outbox.senderInboxId, 'agents', `${queued.senderAgentId}.json`));
   if (!sender || !canAct(sender, 'send_agent_messages')) throw permanentDeliveryError('Sender agent is no longer approved to send messages');
   const senderFamilies = outbox.senderCredentialFamilyId
@@ -2692,8 +2727,9 @@ async function recordDeliveryFailure(outbox, error, { attempt, deadLettered }) {
   const events = [];
   const senderInbox = await store.getJson(path.join('inboxes', outbox.senderInboxId, 'inbox.json'));
   if (senderInbox) {
-    if (outbox.kind === 'nativeAgentMessage') documents.push(...(await nativeCaseDocuments(failed, state, at)).documents);
-    else {
+    if (outbox.kind === 'nativeAgentMessage') {
+      if (!screenNativeMessage || failed.privateScreening) documents.push(...(await nativeCaseDocuments(failed, state, at)).documents);
+    } else {
       const currentCase = await ensureStructuredCase(senderInbox, { ...failed, caseId: failed.caseId }, failed.senderAgentId, failed.createdAt);
       const updatedCase = setCaseMessageDeliveryState(structuredClone(currentCase), failed, state, at);
       documents.push(document(caseRecordPath(outbox.senderInboxId, updatedCase.id), updatedCase));
@@ -6635,9 +6671,22 @@ async function route(req, res) {
           type: input.type, payload: input.payload || {}, precedingEventRef: input.precedingEventRef || value.events.at(-1)?.id || null
         }, writeAudit);
       }
+      const payload = input.payload || {};
+      const eventId = store.id('evt');
+      const screened = screenNativeMessage ? await screenNativeMessage({ type: input.type, payload }) : null;
       const now = store.now();
-      appendEvent(value, { id: store.id('evt'), type: input.type, actor: currentPrincipal.id, createdAt: now, payload: input.payload || {}, linkedPolicyEvaluation: input.linkedPolicyEvaluation || null, precedingEventRef: input.precedingEventRef || value.events.at(-1)?.id || null });
+      appendEvent(value, { id: eventId, type: input.type, actor: currentPrincipal.id, createdAt: now, payload,
+        ...(screened ? { privateScreening: screened.message.privateScreening } : {}),
+        linkedPolicyEvaluation: input.linkedPolicyEvaluation || null, precedingEventRef: input.precedingEventRef || value.events.at(-1)?.id || null });
       await saveCase(inboxId, value);
+      if (screened) {
+        const privateScreening = screened.message.privateScreening;
+        const receipt = screeningReceiptDocument({ id: eventId, caseId: value.id, senderInboxId: inboxId,
+          privateScreening }, screened.evidence, now);
+        await store.putJson(receipt.path, receipt.value);
+        await writeAudit('message.private_screened', { caseId: value.id, messageId: eventId,
+          outcome: privateScreening.outcome, receiptDigest: privateScreening.receiptDigest }, now);
+      }
       const appended = value.events.at(-1);
       await writeAudit('case.event_appended', { caseId: value.id, eventId: appended.id, eventType: input.type, actor: currentPrincipal.id });
       return appended;
@@ -6930,7 +6979,10 @@ async function route(req, res) {
       const at = store.now();
       const queued = message ? { ...message, status: 'queued', queuedAt: at, updatedAt: at, lastDeliveryError: null, deliveryAttempts: 0 } : null;
       const documents = queued ? [document(messagePath(currentDelivery.senderInboxId, queued.id), queued)] : [];
-      if (queued && currentDelivery.kind === 'nativeAgentMessage') documents.push(...(await nativeCaseDocuments(queued, 'queued', at)).documents);
+      if (queued && currentDelivery.kind === 'nativeAgentMessage') {
+        if (screenNativeMessage && !queued.privateScreening) throw codedError(409, 'PRIVATE_SCREENING_REQUIRED', 'Submit a new message for private screening.');
+        documents.push(...(await nativeCaseDocuments(queued, 'queued', at)).documents);
+      }
       else if (queued) {
         const senderInbox = await store.getJson(path.join('inboxes', currentDelivery.senderInboxId, 'inbox.json'));
         if (senderInbox) {
