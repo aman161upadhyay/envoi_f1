@@ -101,10 +101,23 @@ def package(first, second):
         for index, value in enumerate((first, second), 1):
             archive.writestr(f"ppt/slides/slide{index}.xml", f'<sld xmlns="{p}"><cSld name="{value}"/></sld>')
     return b64encode(stream.getvalue()).decode()
-print(json.dumps([package("before", "locked"), package("after", "locked"), package("before", "modified")]))
+w = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+def workbook(first, second):
+    stream = BytesIO()
+    with ZipFile(stream, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("xl/workbook.xml", f'<workbook xmlns="{w}" xmlns:r="{r}"><sheets><sheet name="Costs" r:id="r1"/></sheets></workbook>')
+        archive.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="{rels}"><Relationship Id="r1" Type="{r}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        archive.writestr("xl/worksheets/sheet1.xml", f'<worksheet xmlns="{w}"><sheetData><row r="1"><c r="A1"><v>{first}</v></c><c r="B1"><v>{second}</v></c></row></sheetData></worksheet>')
+    return b64encode(stream.getvalue()).decode()
+print(json.dumps({
+    "deck": [package("before", "locked"), package("after", "locked"), package("before", "modified")],
+    "book": [workbook(1, 2), workbook(3, 2), workbook(1, 4)]
+}))
 `], { encoding: 'utf8', windowsHide: true });
   assert.equal(fixtures.status, 0, fixtures.error?.message ?? fixtures.stderr);
-  return JSON.parse(fixtures.stdout).map(base64 => Buffer.from(base64, 'base64'));
+  return Object.fromEntries(Object.entries(JSON.parse(fixtures.stdout)).map(([format, versions]) =>
+    [format, versions.map(base64 => Buffer.from(base64, 'base64'))]));
 }
 
 test('owner-signed case grants narrow messages, file access, and recipient sharing', async t => {
@@ -170,10 +183,11 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
   const hidden = await upload(uploadTarget('hidden.txt', bytes), bytes, true);
   const approvedUpload = uploadTarget('approved.txt', bytes);
   const pending = await upload(uploadTarget('pending.txt', bytes), bytes, false);
-  const officeMime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-  const [beforeDeck, acceptedDeck, rejectedDeck] = officeVersions();
-  const deckUpload = version => ({ ...uploadTarget('review.pptx', version), mimeType: officeMime });
+  const { deck: [beforeDeck, acceptedDeck, rejectedDeck], book: [beforeBook, acceptedBook, rejectedBook] } = officeVersions();
+  const deckUpload = version => ({ ...uploadTarget('review.pptx', version), mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
+  const bookUpload = version => ({ ...uploadTarget('review.xlsx', version), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const baseDeck = await upload(deckUpload(beforeDeck), beforeDeck, true);
+  const baseBook = await upload(bookUpload(beforeBook), beforeBook, true);
   const signedPolicy = `${aliceInbox}/cases/${caseId}/signed-policy`;
   const target = { assetId: visible.id, assetVersion: visible.checksumSha256 };
   const grantAsset = (assetId, policyEvaluationId, key = `grant-${assetId}`) => api(baseUrl, `${aliceInbox}/assets/${assetId}/grants`, {
@@ -298,21 +312,24 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
   assert.equal((await grantAsset(hidden.id, shareEvaluation, 'reuse-share')).status, 409);
 
   const revision = { assetId: baseDeck.id, assetVersion: baseDeck.checksumSha256, parts: ['1'] };
+  const workbookRevision = { assetId: baseBook.id, assetVersion: baseBook.checksumSha256, parts: ['Costs!A1'] };
   await setPolicy([
     { id: 'accept-edit', action: 'asset.edit', decision: 'needsHuman', target: { ...deckUpload(acceptedDeck), ...revision } },
-    { id: 'reject-edit', action: 'asset.edit', decision: 'allow', target: { ...deckUpload(rejectedDeck), ...revision } }
+    { id: 'reject-edit', action: 'asset.edit', decision: 'allow', target: { ...deckUpload(rejectedDeck), ...revision } },
+    { id: 'accept-cell-edit', action: 'asset.edit', decision: 'allow', target: { ...bookUpload(acceptedBook), ...workbookRevision } },
+    { id: 'reject-cell-edit', action: 'asset.edit', decision: 'allow', target: { ...bookUpload(rejectedBook), ...workbookRevision } }
   ]);
   const officeApproval = await evaluate('asset.edit', { ...deckUpload(acceptedDeck), ...revision });
   assert.equal((await begin({ ...deckUpload(acceptedDeck), revision }, officeApproval, 'pending-office')).status, 409);
   await approve(officeApproval);
-  const uploadRevision = async (candidate, evaluation) => {
-    const staged = await begin({ ...deckUpload(candidate), revision }, evaluation);
+  const uploadRevision = async (target, candidate, evaluation) => {
+    const staged = await begin(target, evaluation);
     assert.equal(staged.status, 201, JSON.stringify(staged.payload));
     assert.equal((await fetch(staged.payload.upload.url, { method: 'PUT', headers: staged.payload.upload.headers, body: candidate })).status, 204);
     return staged.payload.object;
   };
-  const accepted = await uploadRevision(acceptedDeck, officeApproval);
-  const rejected = await uploadRevision(rejectedDeck);
+  const accepted = await uploadRevision({ ...deckUpload(acceptedDeck), revision }, acceptedDeck, officeApproval);
+  const rejected = await uploadRevision({ ...deckUpload(rejectedDeck), revision }, rejectedDeck);
   const validated = await complete(accepted.id);
   assert.equal(validated.status, 200, JSON.stringify(validated.payload));
   assert.equal(validated.payload.state, 'clean');
@@ -322,7 +339,14 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
   assert.equal(refusedRevision.payload.code, 'OFFICE_EDIT_OUT_OF_SCOPE');
   const inspectOffice = assetId => api(baseUrl, `${aliceInbox}/assets/${assetId}/download`, admin);
   assert.equal((await inspectOffice(rejected.id)).status, 423);
-  for (const [object, expected] of [[baseDeck, beforeDeck], [accepted, acceptedDeck]]) {
+  const acceptedWorkbook = await uploadRevision({ ...bookUpload(acceptedBook), revision: workbookRevision }, acceptedBook);
+  const rejectedWorkbook = await uploadRevision({ ...bookUpload(rejectedBook), revision: workbookRevision }, rejectedBook);
+  const checkedWorkbook = await complete(acceptedWorkbook.id);
+  assert.equal(checkedWorkbook.status, 200, JSON.stringify(checkedWorkbook.payload));
+  assert.deepEqual(checkedWorkbook.payload.revision.changedParts, ['Costs']);
+  assert.equal((await complete(rejectedWorkbook.id)).payload.code, 'OFFICE_EDIT_OUT_OF_SCOPE');
+  assert.equal((await inspectOffice(rejectedWorkbook.id)).status, 423);
+  for (const [object, expected] of [[baseDeck, beforeDeck], [accepted, acceptedDeck], [baseBook, beforeBook], [acceptedWorkbook, acceptedBook]]) {
     const link = await inspectOffice(object.id);
     assert.equal(link.status, 200, JSON.stringify(link.payload));
     assert.deepEqual(Buffer.from(await (await fetch(link.payload.download.url)).arrayBuffer()), expected);
