@@ -8,9 +8,9 @@ import path from 'node:path';
 import { generateSync } from 'otplib';
 import { BrowserSession } from './browser-session.js';
 
-async function launch(existingDataDir = null) {
+async function launch(existingDataDir = null, extraEnv = {}) {
   const dataDir = existingDataDir || await mkdtemp(path.join(tmpdir(), 'sinaloa-controls-'));
-  const child = spawn(process.execPath, ['src/server.js'], { cwd: process.cwd(), env: { ...process.env, DATABASE_URL: '', ENVOI_PORT: '0', ENVOI_AUTH_MODE: 'development', ENVOI_DATA_DIR: dataDir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['src/server.js'], { cwd: process.cwd(), env: { ...process.env, DATABASE_URL: '', ENVOI_PORT: '0', ENVOI_AUTH_MODE: 'development', ENVOI_DATA_DIR: dataDir, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr += chunk.toString(); });
   const baseUrl = await new Promise((resolve, reject) => {
@@ -40,6 +40,31 @@ async function owner(baseUrl, suffix) {
   assert.equal(enrolled.status, 201, JSON.stringify(enrolled.payload));
   return { session, human: verified.payload.human, ...enrolled.payload };
 }
+
+test('case sensitivity is an owner-only, idempotent case update', async t => {
+  const server = await launch(null, { ENVOI_ENABLE_SENSITIVE_CASES: 'true' });
+  t.after(server.stop);
+  const [alice, bob] = await Promise.all([owner(server.baseUrl, '4411'), owner(server.baseUrl, '4412')]);
+  const inbox = `/api/inboxes/${alice.inbox.id}`;
+  const created = await api(server.baseUrl, `${inbox}/cases`, {
+    token: alice.agentApiToken, body: { objective: 'Sensitive procurement review' }
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.payload));
+  const caseId = created.payload.id;
+  const marker = `${inbox}/cases/${caseId}/sensitive`;
+  const readView = () => api(server.baseUrl, `${inbox}/human-view`, { session: alice.session });
+  assert.equal((await readView()).payload.caseQueue.find(item => item.id === caseId).canMarkSensitive, true);
+  assert.ok([401, 403].includes((await api(server.baseUrl, marker, { token: alice.agentApiToken, body: {} })).status));
+  assert.equal((await api(server.baseUrl, marker, { session: bob.session, body: {} })).status, 403);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.deepEqual(await api(server.baseUrl, marker, { session: alice.session, body: {} }),
+      { status: 200, payload: { caseId, sensitive: true } });
+  }
+  const view = (await readView()).payload;
+  assert.equal(view.caseQueue.find(item => item.id === caseId).sensitive, true);
+  assert.equal(view.caseQueue.find(item => item.id === caseId).canMarkSensitive, undefined);
+  assert.equal(view.recentEvents.filter(event => event.type === 'case.marked_sensitive' && event.caseId === caseId).length, 1);
+});
 
 test('workspace owner can revise approved agent permissions and changes gate existing credentials', async t => {
   const server = await launch();

@@ -43,6 +43,7 @@ export function projectCaseForHuman(value) {
   return {
     id: value.id,
     schemaVersion: value.schemaVersion,
+    ...(value.sensitive === true ? { sensitive: true } : {}),
     objective: value.objective,
     ...(value.caseMode === 'group' ? { caseMode: 'group', members: value.members, assignments: value.assignments || [] } : {}),
     collaborationMode: value.collaborationMode || 'collaboration',

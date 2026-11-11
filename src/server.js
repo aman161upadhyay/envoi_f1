@@ -113,6 +113,7 @@ const deliveryMaxAttempts = Number(process.env.ENVOI_DELIVERY_MAX_ATTEMPTS || 5)
 const externalEmailEnabled = process.env.ENVOI_ENABLE_EXTERNAL_EMAIL === 'true';
 const calendarWritesEnabled = process.env.ENVOI_ENABLE_CALENDAR_WRITES === 'true';
 const consequentialActionsEnabled = process.env.ENVOI_ENABLE_CONSEQUENTIAL_ACTIONS === 'true';
+const sensitiveCasesEnabled = process.env.ENVOI_ENABLE_SENSITIVE_CASES === 'true';
 const policyActiveKeyId = process.env.ENVOI_POLICY_ACTIVE_KEY_ID || 'primary';
 const policySigningKeys = (() => {
   const configured = process.env.ENVOI_POLICY_SIGNING_KEYS ? JSON.parse(process.env.ENVOI_POLICY_SIGNING_KEYS) : {};
@@ -5793,6 +5794,11 @@ async function route(req, res) {
     const requester = { id: human.id, auth: { provider: auth.provider, assurance: session.assurance || 'provider' } };
     const preferences = await getPrefsForCases(store, { scopeMode: 'personal', organizationId: inbox.organizationId, humanId: human.id, inboxId, cases: view.caseQueue });
     const personalizedView = attachInboxPreferencesToView(view, preferences);
+    if (sensitiveCasesEnabled && requesterCanManage && human.id === inbox.ownerHumanId) {
+      for (const item of personalizedView.caseQueue) {
+        if (!item.sensitive && item.principal === human.id && item.caseMode !== 'group') item.canMarkSensitive = true;
+      }
+    }
     return json(res, 200, { ...personalizedView, canManageInbox: requesterCanManage, requester });
   }
 
@@ -6169,6 +6175,29 @@ async function route(req, res) {
     } });
     const result = await sendInstruction({ inboxId, caseId: instructionRoute[1], input, idempotencyKey: req.headers['idempotency-key'] });
     return json(res, result.status, result.payload);
+  }
+
+  const sensitiveCaseRoute = suffix.match(/^cases\/([^/]+)\/sensitive$/);
+  if (req.method === 'POST' && sensitiveCaseRoute && sensitiveCasesEnabled) {
+    const caseId = assertSafeIdentifier(sensitiveCaseRoute[1], 'caseId');
+    const human = await auth.getHuman(req);
+    if (!human) return fail(res, 401, 'Authenticated human session required');
+    if (human.id !== inbox.ownerHumanId || !await canManageInbox(human, inbox)) return fail(res, 403, 'Case owner required');
+    const result = await withCaseMutation(inboxId, caseId, async writeAudit => {
+      const currentInbox = await store.getJson(path.join('inboxes', inboxId, 'inbox.json'));
+      const value = await getCase(inboxId, caseId);
+      if (!value?.schemaVersion) throw codedError(404, 'CASE_NOT_FOUND', 'Case not found');
+      if (human.id !== value.principal || human.id !== currentInbox?.ownerHumanId
+        || !await canManageInbox(human, currentInbox, { maxAgeMs: 0 })) {
+        throw codedError(403, 'CASE_OWNER_REQUIRED', 'Case owner required');
+      }
+      if (value.sensitive === true) return { caseId, sensitive: true };
+      const at = store.now();
+      await saveCase(inboxId, { ...value, sensitive: true, sensitiveSince: at });
+      await writeAudit('case.marked_sensitive', { caseId, actor: human.id }, at);
+      return { caseId, sensitive: true };
+    }, { allowPaused: true });
+    return json(res, 200, result);
   }
 
   const caseRoute = suffix.match(/^cases\/([^/]+)(?:\/(events|actions|policy-evaluations|proposals|receipt))?$/);
