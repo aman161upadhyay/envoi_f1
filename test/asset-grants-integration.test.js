@@ -176,6 +176,12 @@ test('owner-signed case grants narrow messages, file access, and recipient shari
     } }
   ]);
   assert.equal((await send('The changed message is outside the grant.', 'signed-message-denied')).status, 403);
+  assert.equal((await api(baseUrl, `${aliceInbox}/cases/${caseId}`, agent)).status, 404);
+  assert.equal((await api(baseUrl, `${aliceInbox}/cases/${caseId}`, admin)).status, 200);
+  assert.deepEqual((await api(baseUrl, `${aliceInbox}/messages?caseId=${caseId}`, agent)).payload, []);
+  const operatorView = await api(baseUrl, `${aliceInbox}/agent-view?agentId=${alice.agent.id}`, agent);
+  assert.equal(operatorView.status, 200);
+  assert.deepEqual(operatorView.payload.queue.createdAssets.map(asset => asset.id), [visible.id]);
   const allowed = await send(messageText, 'signed-message-allowed');
   assert.equal(allowed.status, 202, JSON.stringify(allowed.payload));
   await eventually(async () => (await api(baseUrl, `${bobInbox}/messages`, { token: bob.agentApiToken }))

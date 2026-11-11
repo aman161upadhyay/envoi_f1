@@ -1879,6 +1879,8 @@ function policyEvaluationFromInput(input, actor, now) {
 const policyBindingPath = (inboxId, evaluationId) => path.join('inboxes', inboxId, 'policy-bindings', `${evaluationId}.json`);
 const policyExecutionPath = (inboxId, executionId) => path.join('inboxes', inboxId, 'policy-executions', `${executionId}.json`);
 const signedCasePolicyPath = (inboxId, caseId) => path.join('inboxes', inboxId, 'signed-case-policies', `${caseId}.json`);
+const signedCaseIds = async inboxId => new Set((await store.listJson(path.join('inboxes', inboxId, 'signed-case-policies')))
+  .map(envelope => envelope.document?.caseId).filter(Boolean));
 const signedCaseApprovalPath = (inboxId, evaluationId) => path.join('inboxes', inboxId, 'signed-case-approvals', `${evaluationId}.json`);
 
 function signedCasePolicyContext(inbox, caseId, agentId = inbox.ownerAgentId) {
@@ -2803,7 +2805,7 @@ async function humanView(inboxId, inbox, cursors = {}, { includeOwnerReviews = f
   };
 }
 
-async function agentView(inboxId, inbox, agentId) {
+async function agentView(inboxId, inbox, agentId, { humanReader = false } = {}) {
   const agent = await store.getJson(path.join('inboxes', inboxId, 'agents', `${agentId}.json`));
   if (!agent) return null;
   const [cases, messages, assets, deliveryReceipts, calendarConnectors] = await Promise.all([
@@ -2816,7 +2818,12 @@ async function agentView(inboxId, inbox, agentId) {
   const groupCaseIds = cases.filter(item => item.caseMode === 'group' && isCaseParticipant(item, agentId)).map(item => item.id);
   const groupVisibility = await Promise.all(groupCaseIds.map(caseId => groupAgentReadable({ agent, inboxId }, caseId)));
   const visibleGroups = new Set(groupCaseIds.filter((_id, index) => groupVisibility[index]));
-  const visibleMessages = messages.filter(message => !message.groupCase || visibleGroups.has(message.caseId));
+  const signedCases = humanReader ? new Set() : await signedCaseIds(inboxId);
+  const visibleMessages = messages.filter(message => !signedCases.has(message.caseId) && (!message.groupCase || visibleGroups.has(message.caseId)));
+  const createdAssets = await Promise.all(assets.filter(item => item.createdByAgentId === agentId).map(async item => {
+    if (!signedCases.has(item.caseId)) return item;
+    return (await assetReadAccess(item, inbox, { agent, manager: false })).allowed ? item : null;
+  }));
   return {
     inbox,
     mode: 'agent-operator',
@@ -2826,10 +2833,10 @@ async function agentView(inboxId, inbox, agentId) {
     queue: {
       assignedMessages: visibleMessages.filter((item) => item.recipientAgentId === agentId),
       authoredMessages: visibleMessages.filter((item) => item.senderAgentId === agentId),
-      activeCases: cases.filter(item => item.schemaVersion
+      activeCases: cases.filter(item => !signedCases.has(item.id)).filter(item => item.schemaVersion
         ? isActiveCase(item) && isCaseParticipant(item, agentId) && (item.caseMode !== 'group' || visibleGroups.has(item.id))
         : item.status === 'active' && item.participantAgentIds?.includes(agentId)),
-      createdAssets: assets.filter((item) => item.createdByAgentId === agentId),
+      createdAssets: createdAssets.filter(Boolean),
       calendarConnectors: calendarConnectors.map(publicCalendarConnector),
       deliveryReceipts: deliveryReceipts.filter(item => (item.senderAgentId === agentId || item.recipientAgentId === agentId)
         && (!item.groupCase || visibleGroups.has(item.caseId)))
@@ -6001,8 +6008,9 @@ async function route(req, res) {
   if (req.method === 'GET' && suffix === 'agent-view') {
     const human = await auth.getHuman(req);
     const agentPrincipal = await getAgentPrincipal(req, inboxId);
-    if (!await canAccessInbox(human, inbox) && agentPrincipal?.id !== url.searchParams.get('agentId')) return fail(res, 403, 'Authenticated inbox participant required');
-    const view = await agentView(inboxId, inbox, url.searchParams.get('agentId'));
+    const humanReader = await canAccessInbox(human, inbox);
+    if (!humanReader && agentPrincipal?.id !== url.searchParams.get('agentId')) return fail(res, 403, 'Authenticated inbox participant required');
+    const view = await agentView(inboxId, inbox, url.searchParams.get('agentId'), { humanReader });
     return view ? json(res, 200, view) : fail(res, 404, 'Agent not found');
   }
 
@@ -6469,6 +6477,8 @@ async function route(req, res) {
 
   const caseRoute = suffix.match(/^cases\/([^/]+)(?:\/(events|actions|policy-evaluations|proposals|receipt))?$/);
   if (req.method === 'GET' && caseRoute && !caseRoute[2]) {
+    if (await store.getJson(signedCasePolicyPath(inboxId, assertSafeIdentifier(caseRoute[1], 'caseId')))
+      && !await canAccessInbox(await auth.getHuman(req), inbox)) return fail(res, 404, 'Case not found');
     const value = await getCase(inboxId, caseRoute[1]);
     if (value?.caseMode === 'group' && !await groupInboxReadable(req, inbox, value.id)) return fail(res, 404, 'Case not found');
     return value ? json(res, 200, value) : fail(res, 404, 'Case not found');
@@ -6743,13 +6753,15 @@ async function route(req, res) {
 
   if (req.method === 'GET' && suffix === 'cases') {
     const cases = await listCases(inboxId, { limit: url.searchParams.get('limit'), before: url.searchParams.get('before') });
+    const signedCases = await canAccessInbox(await auth.getHuman(req), inbox) ? new Set() : await signedCaseIds(inboxId);
     const visible = await Promise.all(cases.map(async value => value.caseMode !== 'group' || await groupInboxReadable(req, inbox, value.id)));
-    return json(res, 200, cases.filter((_value, index) => visible[index]));
+    return json(res, 200, cases.filter((value, index) => visible[index] && !signedCases.has(value.id)));
   }
   if (req.method === 'GET' && suffix === 'messages') {
     const caseId = url.searchParams.get('caseId');
     const messages = await listMessages(inboxId, caseId, { limit: url.searchParams.get('limit'), before: url.searchParams.get('before') });
-    return json(res, 200, messages.filter(message => !message.groupCase));
+    const signedCases = await canAccessInbox(await auth.getHuman(req), inbox) ? new Set() : await signedCaseIds(inboxId);
+    return json(res, 200, messages.filter(message => !message.groupCase && !signedCases.has(message.caseId)));
   }
   if (req.method === 'GET' && suffix === 'delivery-receipts') {
     const receipts = await store.listJson(path.join('inboxes', inboxId, 'delivery-receipts'));
