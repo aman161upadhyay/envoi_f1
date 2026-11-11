@@ -76,6 +76,19 @@ describe('approved a4 wake consumption', () => {
     await h.tick(44999); expect(h.claims).toHaveBeenCalledTimes(before); await h.tick(1); expect(h.claims).toHaveBeenCalledTimes(before+1);
     h.close(); await h.tick(); await h.tick(15000); expect(h.claims.mock.calls.length).toBeGreaterThan(before+1);
   });
+  it('reports a live queue check separately from an outstanding claim attempt', async () => {
+    let finishClaim!: (response: Response) => void;
+    const h = await harness({ claim: () => new Promise(resolve => { finishClaim = resolve; }) });
+    const at = new Date().toISOString();
+    expect(h.connector.workMonitorStatus()).toEqual({
+      lastClaimAttemptAt: at, lastClaimResponse: null, checkingOrProcessing: true
+    });
+    finishClaim(Response.json(fixture('claim-idle-no-hint').response.body));
+    await h.tick();
+    expect(h.connector.workMonitorStatus()).toEqual({
+      lastClaimAttemptAt: at, lastClaimResponse: { at, result: 'idle' }, checkingOrProcessing: false
+    });
+  });
   it('recovers delta only after replay_required from its processed cursor, not control cursor', async () => {
     const h = await harness({ session: { cursor: '00000000000000000044' } });
     h.raw({ event: 'replay_required', data: { cursor: '00000000000000999999', hasMore: true } }); await h.tick();

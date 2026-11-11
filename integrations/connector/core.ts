@@ -409,7 +409,11 @@ export async function startConnection(stateDir: string, signal: AbortSignal, res
     await startup.start();
     const adapter = resolveAdapter(saved.runtime);
     const context = { ...options, signal: stop.signal, apiUrl: saved.apiUrl, stateDir: directory, fetch: fetcher };
-    if (options.control !== false) control = await startControl(directory, { runtime: saved.runtime, address: saved.address, apiUrl: saved.apiUrl }, cancel, () => diagnostics,
+    if (options.control !== false) control = await startControl(directory, { runtime: saved.runtime, address: saved.address, apiUrl: saved.apiUrl }, cancel,
+      () => ({
+        ...diagnostics,
+        ...(bridge ? { workMonitor: { hostedWakeConfigured: Boolean(wake), ...bridge.connector.workMonitorStatus() } } : {})
+      }),
       createHostTaskSender(directory, saved, () => {
         if (!bridge || diagnostics.runtimeChecks !== 'passed' || stop.signal.aborted) throw new HostTaskError('CONNECTOR_NOT_READY');
         return bridge.connector;
@@ -485,6 +489,7 @@ export async function connectionStatus(stateDir: string) {
   return { runtime: saved.runtime, address: saved.address, apiUrl: saved.apiUrl, agentId: session?.agentId,
     credentialState: session ? 'saved' : 'missing', lifecycle: session?.lifecycle, guidance: session?.lifecycle?.guidance, ...(enrollmentError ? { enrollmentError } : {}),
     stateDir: directory, status: live?.status ?? 'stopped', checkedAt: live?.checkedAt ?? checks?.checkedAt,
+    ...(live?.workMonitor ? { workMonitor: live.workMonitor } : {}),
     credentialExpiresAt: session?.agentTokenExpiresAt, refreshExpiresAt: session?.agentRefreshTokenExpiresAt,
     note: 'A running connector is not proof of successful message delivery. Verify a real agent exchange' };
 }

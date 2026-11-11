@@ -339,6 +339,8 @@ export class EnvoiConnector {
   private refreshInFlight: Promise<ConnectorSession> | null = null;
   private workInFlight: Promise<boolean> | null = null;
   private workFollowup = false;
+  private lastClaimAttemptAt: string | null = null;
+  private lastClaimResponse: { at: string; result: 'idle' | 'claimed' | 'paused' } | null = null;
   private nextClaimAt = Infinity;
   private wakeTrigger?: () => void;
   private readonly activeStreams = new Set<AbortController>();
@@ -886,6 +888,14 @@ export class EnvoiConnector {
     return this.workInFlight;
   }
 
+  workMonitorStatus() {
+    return {
+      lastClaimAttemptAt: this.lastClaimAttemptAt,
+      lastClaimResponse: this.lastClaimResponse ? { ...this.lastClaimResponse } : null,
+      checkingOrProcessing: this.workInFlight !== null
+    };
+  }
+
   private async processWorkAttempt(signal?: AbortSignal): Promise<boolean> {
     const scoped = this.options.caseSessionHandler;
     const handler = scoped ?? this.options.handler;
@@ -899,14 +909,20 @@ export class EnvoiConnector {
       if ((await this.lifecycle()).paused) return false;
     }
     let claimed: { work: WorkLease | null; state?: string; nextAvailableInMs?: number };
+    this.lastClaimAttemptAt = new Date().toISOString();
     try { claimed = await this.postWork<{ work: WorkLease | null; state?: string }>('/api/agent/work/claim', { acceptHumanInstructions: true }); }
     catch (error) {
       if (error instanceof EnvoiError && [404, 405, 501].includes(error.status || 0)) throw new ConnectorContractError();
       throw error;
     }
-    if (claimed.state === 'paused') { await this.observeError(new EnvoiError('Paused', undefined, 'AGENT_PAUSED')); return false; }
+    if (claimed.state === 'paused') {
+      this.lastClaimResponse = { at: new Date().toISOString(), result: 'paused' };
+      await this.observeError(new EnvoiError('Paused', undefined, 'AGENT_PAUSED'));
+      return false;
+    }
     this.nextClaimAt = Infinity;
     if (claimed.work === null) {
+      this.lastClaimResponse = { at: new Date().toISOString(), result: 'idle' };
       if (claimed.state === 'idle' && Number.isSafeInteger(claimed.nextAvailableInMs) && claimed.nextAvailableInMs! >= 0)
         this.nextClaimAt = Date.now() + Math.max(1000, claimed.nextAvailableInMs!);
       return false;
@@ -915,6 +931,7 @@ export class EnvoiConnector {
     if (!work || typeof work.workId !== 'string' || typeof work.leaseToken !== 'string' || !Number.isFinite(Date.parse(work.leaseExpiresAt)) || typeof work.message?.id !== 'string' || !work.message.id) {
       throw new EnvoiError('Envoi returned an invalid work claim');
     }
+    this.lastClaimResponse = { at: new Date().toISOString(), result: 'claimed' };
     const session = validSession(await this.store.load());
     if (isHumanDecisionMessage(work.message)) {
       if (!scoped) throw new EnvoiError('Human decisions require a scoped runtime', undefined, 'FEATURE_DISABLED');
