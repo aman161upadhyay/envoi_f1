@@ -514,7 +514,7 @@ export class S3CompatibleObjectStorageAdapter {
 }
 
 export class ObjectStorageService {
-  constructor({ adapter, metadataStore, quotaLedger, scanner, scanJobStore = null, scanLifecycle = {}, maxObjectBytes = 25 * 1024 * 1024, allowedMimeTypes = DEFAULT_ALLOWED_MIME_TYPES, uploadUrlTtlSeconds = 900, downloadUrlTtlSeconds = 300, uploadCleanupGraceMs = 15 * 60_000, uploadCleanupRetryMs = 60_000, clock = () => new Date() } = {}) {
+  constructor({ adapter, metadataStore, quotaLedger, scanner, verifyContent = null, scanJobStore = null, scanLifecycle = {}, maxObjectBytes = 25 * 1024 * 1024, allowedMimeTypes = DEFAULT_ALLOWED_MIME_TYPES, uploadUrlTtlSeconds = 900, downloadUrlTtlSeconds = 300, uploadCleanupGraceMs = 15 * 60_000, uploadCleanupRetryMs = 60_000, clock = () => new Date() } = {}) {
     if (!adapter || !['createPresignedUpload', 'createPresignedDownload', 'headObject', 'getObject', 'deleteObject'].every(method => typeof adapter[method] === 'function')) throw new ObjectStorageError('INVALID_ADAPTER', 'Object storage adapter is incomplete');
     if (!metadataStore || !['create', 'get', 'updateScan', 'updateUpload', 'withUploadLock', 'listUploadCleanupCandidates', 'remove'].every(method => typeof metadataStore[method] === 'function')) throw new ObjectStorageError('INVALID_METADATA_STORE', 'Metadata store is incomplete');
     if (!quotaLedger || !['reserve', 'commit', 'release'].every(method => typeof quotaLedger[method] === 'function')) throw new ObjectStorageError('INVALID_QUOTA_LEDGER', 'Quota ledger is incomplete');
@@ -523,6 +523,7 @@ export class ObjectStorageService {
     this.metadataStore = metadataStore;
     this.quotaLedger = quotaLedger;
     this.scanner = scanner;
+    this.verifyContent = verifyContent;
     validatePresignExpiry(uploadUrlTtlSeconds);
     validatePresignExpiry(downloadUrlTtlSeconds);
     if (!Number.isSafeInteger(uploadCleanupGraceMs) || uploadCleanupGraceMs < 0 || !Number.isSafeInteger(uploadCleanupRetryMs) || uploadCleanupRetryMs < 1) throw new ObjectStorageError('INVALID_CLEANUP_CONFIG', 'Upload cleanup intervals must be nonnegative grace and positive retry integers');
@@ -580,7 +581,9 @@ export class ObjectStorageService {
         return { error: new ObjectStorageError('UPLOAD_VERIFICATION_FAILED', 'Uploaded object does not match immutable metadata', 422) };
       }
       if (record.revision && !verifyRevision) throw new ObjectStorageError('OFFICE_EDIT_VERIFIER_UNAVAILABLE', 'Office revision verification is unavailable', 503);
-      const changedParts = record.revision ? await verifyRevision(record, await this.#readVerifiedBytes(record)) : null;
+      const bytes = record.revision || this.verifyContent ? await this.#readVerifiedBytes(record) : null;
+      const changedParts = record.revision ? await verifyRevision(record, bytes) : null;
+      const contentScreening = this.verifyContent ? await this.verifyContent(record, bytes) : null;
       try { await this.quotaLedger.commit(record.reservationId); }
       catch (error) {
         if (error.code !== 'QUOTA_RESERVATION_EXPIRED') throw error;
@@ -588,7 +591,8 @@ export class ObjectStorageService {
         return { error };
       }
       const verified = await this.metadataStore.updateUpload(id, { uploadCompletedAt: this.clock().toISOString(),
-        ...(changedParts ? { revision: { ...record.revision, changedParts } } : {}) });
+        ...(changedParts ? { revision: { ...record.revision, changedParts } } : {}),
+        ...(contentScreening ? { contentScreening } : {}) });
       // Keep verified uploads recoverable across a crash before inline scanning.
       if (this.scanLifecycle) await this.scanLifecycle.enqueue(id);
       return { record: verified };
@@ -670,13 +674,19 @@ export class ObjectStorageService {
   }
   async createDownload(id) {
     const record = await this.#requireObject(id);
-    if (record.state !== 'clean') throw new ObjectStorageError('OBJECT_NOT_CLEAN', 'Object is unavailable until malware scanning completes', 423);
+    this.#requireCleanDownload(record);
     return this.adapter.createPresignedDownload({ key: record.key, expiresInSeconds: this.config.downloadUrlTtlSeconds });
   }
   async readCleanObject(id) {
     const record = await this.#requireObject(id);
-    if (record.state !== 'clean') throw new ObjectStorageError('OBJECT_NOT_CLEAN', 'Object is unavailable until malware scanning completes', 423);
+    this.#requireCleanDownload(record);
     return { object: record, bytes: await this.#readVerifiedBytes(record) };
+  }
+  #requireCleanDownload(record) {
+    if (record.state !== 'clean') throw new ObjectStorageError('OBJECT_NOT_CLEAN', 'Object is unavailable until malware scanning completes', 423);
+    if (this.verifyContent && !record.contentScreening) {
+      throw new ObjectStorageError('PRIVATE_SCREENING_REQUIRED', 'Upload this file again for private screening before sharing it.', 423);
+    }
   }
   async #readVerifiedBytes(record) {
     const bytes = await this.adapter.getObject(record.key);

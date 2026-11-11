@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path, PurePosixPath
+import posixpath
 import re
 import sys
 from xml.etree import ElementTree
@@ -18,22 +19,27 @@ PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main"
 WORKBOOK = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 OFFICE_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 PACKAGE_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+PACKAGE_CONTENT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-types"
 REL_ID = f"{{{OFFICE_REL}}}id"
 CELL = re.compile(r"([A-Z]{1,3})([1-9][0-9]{0,6})\Z")
 
 
-def xml(data, root_tag):
+def safe_xml(data):
     # Office XML is UTF-8. Reject all declarations that can define entities.
     text = data.decode("utf-8-sig", errors="strict")
     if "\x00" in text or re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", text, re.I):
         raise ValueError("Unsupported Office XML declaration")
-    root = ElementTree.fromstring(text)
+    return ElementTree.fromstring(text)
+
+
+def xml(data, root_tag):
+    root = safe_xml(data)
     if root.tag != root_tag:
         raise ValueError("Unexpected Office XML root")
     return root
 
 
-def read_package(stream):
+def read_package(stream, allow_directories=False):
     stream.seek(0, 2)
     if stream.tell() > MAX_PACKAGE_BYTES:
         raise ValueError("Office package exceeds the size limit")
@@ -47,6 +53,8 @@ def read_package(stream):
         parts = {}
         for info in entries:
             name = info.filename
+            if allow_directories and info.is_dir() and not info.file_size and re.fullmatch(r"(?:[A-Za-z0-9_-]+/)+", name):
+                continue
             if (
                 info.orig_filename != name or not re.fullmatch(r"[A-Za-z0-9_./\[\]-]+", name)
                 or any(piece in ("", ".", "..") for piece in name.split("/"))
@@ -223,18 +231,90 @@ def verify_edit(previous, candidate, file_format, grants):
     return [name for name, path in by_name.items() if path in changed]
 
 
+def office_comments(stream):
+    parts = read_package(stream, allow_directories=True)
+    manifest = xml(parts["[Content_Types].xml"], f"{{{PACKAGE_CONTENT_TYPES}}}Types")
+    main_types = {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+    }
+    overrides = {}
+    defaults = {}
+    for entry in manifest:
+        content_type = entry.attrib["ContentType"].lower()
+        if entry.tag == f"{{{PACKAGE_CONTENT_TYPES}}}Override":
+            name = entry.attrib["PartName"].removeprefix("/")
+            if name not in parts or name in overrides:
+                raise ValueError("Missing or ambiguous Office content type")
+            overrides[name] = content_type
+        elif entry.tag == f"{{{PACKAGE_CONTENT_TYPES}}}Default":
+            extension = entry.attrib["Extension"].lower()
+            if extension in defaults:
+                raise ValueError("Ambiguous Office content type")
+            defaults[extension] = content_type
+        else:
+            raise ValueError("Unknown Office content type declaration")
+    if not main_types.intersection(overrides.values()):
+        raise ValueError("Only DOCX, XLSX and PPTX Office packages can be screened")
+    if any("/embeddings/" in name.lower() for name in parts):
+        raise ValueError("Embedded Office packages cannot be screened")
+    comment_parts = {
+        name for name in parts if "comment" in overrides.get(name, defaults.get(name.rsplit(".", 1)[-1].lower(), ""))
+        or re.search(r"(?:^|/)(?:comments?|threadedcomments?|comments?extended)(?:/|[0-9.]|$)", name, re.I)
+    }
+    for name, data in parts.items():
+        if not name.endswith(".rels"):
+            continue
+        relations = xml(data, f"{{{PACKAGE_REL}}}Relationships")
+        folder = name.rsplit("/", 2)[0] if name.count("/") >= 2 else ""
+        for entry in relations:
+            kind = entry.attrib["Type"].lower()
+            if kind.endswith(("/package", "/oleobject")):
+                raise ValueError("Embedded Office packages cannot be screened")
+            if "comment" not in kind:
+                continue
+            target = entry.attrib["Target"]
+            resolved = posixpath.normpath(target[1:] if target.startswith("/") else posixpath.join(folder, target))
+            if entry.attrib.get("TargetMode", "Internal") != "Internal" or resolved not in parts:
+                raise ValueError("Unresolved Office comment relationship")
+            comment_parts.add(resolved)
+    comments = []
+    byte_count = 0
+    for name in sorted(comment_parts):
+        root = safe_xml(parts[name])
+        if any(node.tag.rsplit("}", 1)[-1].lower() in {"altchunk", "object", "subdoc"} for node in root.iter()):
+            raise ValueError("Embedded comment content cannot be screened")
+        items = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1].lower() in {"comment", "cm", "threadedcomment"}]
+        for node in items or [root]:
+            # Joining XML runs exposes phrases split across bold, mention, or other formatting.
+            text = "".join(node.itertext()).strip()
+            if text:
+                comments.append(text)
+                byte_count += len(text.encode("utf-8"))
+                if byte_count > 60_000 or len(comments) > 1024:
+                    raise ValueError("Office comments exceed the private screening size limit")
+    return comments
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("format", choices=("pptx", "xlsx"))
+    parser.add_argument("format", choices=("pptx", "xlsx", "comments"))
     parser.add_argument("previous")
-    parser.add_argument("candidate")
-    parser.add_argument("--part", action="append", required=True,
+    parser.add_argument("candidate", nargs="?")
+    parser.add_argument("--part", action="append",
                         help="One-based slide position, Excel sheet name, or Sheet!A1:B5")
     arguments = parser.parse_args()
     try:
-        with Path(arguments.previous).open("rb") as previous, Path(arguments.candidate).open("rb") as candidate:
-            changed = verify_edit(previous, candidate, arguments.format, arguments.part)
-        print(json.dumps({"changedParts": changed}))
+        with Path(arguments.previous).open("rb") as previous:
+            if arguments.format == "comments":
+                print(json.dumps({"comments": office_comments(previous)}))
+            else:
+                if not arguments.candidate or not arguments.part:
+                    parser.error("Scoped edits need a candidate file and at least one granted part")
+                with Path(arguments.candidate).open("rb") as candidate:
+                    changed = verify_edit(previous, candidate, arguments.format, arguments.part)
+                print(json.dumps({"changedParts": changed}))
     except (OSError, ValueError, BadZipFile, ElementTree.ParseError, expat.ExpatError, KeyError, NotImplementedError, RuntimeError) as error:
         print(f"Office edit rejected: {error}", file=sys.stderr)
         sys.exit(1)

@@ -19,7 +19,7 @@ import { createEmailTransport } from './email-transport.js';
 import { createProtocolMessage } from './protocol-v1.js';
 import { createNativePrivateScreening } from './native-private-screening.js';
 import { createObjectStorageAdapter, DocumentObjectMetadataStore, FailClosedScanner, HttpMalwareScanner, ObjectStorageService, PersistentQuotaLedger } from './object-storage.js';
-import { officeRevisionFormat, verifyOfficeRevision } from './office-edit.js';
+import { officeRevisionFormat, readOfficeComments, verifyOfficeRevision } from './office-edit.js';
 import { PostgresMalwareScanJobStore } from './object-scan-lifecycle.js';
 import { validateProductionConfiguration } from './production-config.js';
 import { evaluateReadiness } from './readiness.js';
@@ -246,7 +246,8 @@ const scanLifecycle = {
   completedJobRetentionMs: Number(process.env.ENVOI_SCAN_COMPLETED_JOB_RETENTION_MS || 90 * 24 * 60 * 60_000),
   retentionRetryMs: Number(process.env.ENVOI_SCAN_RETENTION_RETRY_MS || 60 * 60_000)
 };
-const objectStorage = new ObjectStorageService({ adapter: objectStorageAdapter, metadataStore: new DocumentObjectMetadataStore(store), quotaLedger: objectQuotaLedger, scanner: objectScanner, scanJobStore, scanLifecycle, maxObjectBytes: objectMaxBytes, allowedMimeTypes: objectAllowedMimeTypes });
+const objectStorage = new ObjectStorageService({ adapter: objectStorageAdapter, metadataStore: new DocumentObjectMetadataStore(store), quotaLedger: objectQuotaLedger, scanner: objectScanner,
+  verifyContent: screenNativeMessage ? screenUploadedOfficeComments : null, scanJobStore, scanLifecycle, maxObjectBytes: objectMaxBytes, allowedMimeTypes: objectAllowedMimeTypes });
 if (scanJobStore && !['processNextScan', 'reapScanRetention'].every(method => typeof objectStorage[method] === 'function')) throw new TypeError('Object storage durable scan lifecycle is not configured');
 const readinessTimeoutMs = Number(process.env.ENVOI_READINESS_TIMEOUT_MS || 5_000);
 
@@ -1676,6 +1677,7 @@ async function signedAssetReadAccess(asset, inbox, reader, access) {
 
 async function assetReadAccess(asset, inbox, reader, { checkSigned = true } = {}) {
   if (!asset) return { allowed: false };
+  if (screenNativeMessage && (!asset.key || asset.state === 'clean' && !asset.contentScreening)) return { allowed: false };
   if (asset.caseId) {
     const shared = await sharedCaseForAsset(asset.caseId);
     if (!shared || shared.value.state === 'paused' || shared.value.state === 'revoked') return { allowed: false };
@@ -2433,6 +2435,15 @@ async function recordPrivateScreening(screened, { id, caseId, senderInboxId }, a
     const { outcome, receiptDigest } = privateScreening;
     await writeAudit('message.private_screened', { caseId, messageId: id, outcome, receiptDigest }, at);
   }
+}
+
+async function screenUploadedOfficeComments(object, bytes) {
+  const executable = officeEditPython || (process.platform === 'win32' ? 'python' : 'python3');
+  const comments = await readOfficeComments({ executable, bytes, object });
+  if (!comments.length) return { scope: 'office-comments', outcome: 'none' };
+  const screened = await screenNativeMessage({ type: 'office-comments', payload: { comments } });
+  await recordPrivateScreening(screened, { id: object.id, caseId: object.caseId, senderInboxId: object.workspaceId }, store.now());
+  return { ...screened.message.privateScreening, scope: 'office-comments' };
 }
 
 async function enqueueNativeMessage(message, senderInbox, recipientInboxId, eventType = 'message.queued', writeAudit = null, agentRequest = null, caseOptions = {}) {
@@ -7639,6 +7650,10 @@ async function route(req, res) {
       }) : undefined
     });
     await audit(inboxId, `asset.scan_${scanned.state}`, { assetId: scanned.id, caseId: scanned.caseId, createdByAgentId: scanned.createdByAgentId, scan: scanned.scan });
+    if (scanned.contentScreening?.receiptDigest) {
+      const { outcome, receiptDigest } = scanned.contentScreening;
+      await audit(inboxId, 'message.private_screened', { assetId: scanned.id, caseId: scanned.caseId, outcome, receiptDigest });
+    }
     return json(res, 200, scanned);
   }
 
@@ -7711,7 +7726,7 @@ async function route(req, res) {
     if (access.blocked) return fail(res, 403, 'AGENT_BLOCKED');
     if (!access.allowed) return fail(res, 404, 'ASSET_NOT_FOUND');
     if (asset.state !== 'clean') return fail(res, 423, 'ASSET_NOT_CLEAN');
-    if (!access.owner || access.signedScope) return json(res, 200, { object: asset, download: {
+    if (!access.owner || access.signedScope || screenNativeMessage) return json(res, 200, { object: asset, download: {
       url: `${publicBaseUrl(req)}/api/inboxes/${encodeURIComponent(inboxId)}/assets/${encodeURIComponent(asset.id)}/content`,
       method: 'GET', headers: {}
     } });
@@ -7721,7 +7736,7 @@ async function route(req, res) {
   if (req.method === 'GET' && suffix === 'assets/quota') return json(res, 200, await objectStorage.quotaLedger.usage(inboxId));
 
   if (req.method === 'POST' && suffix === 'assets') {
-    if (objectStorageProvider === 's3') return fail(res, 410, 'Direct asset uploads are disabled; use asset-uploads and signed URLs');
+    if (objectStorageProvider === 's3' || screenNativeMessage) return fail(res, 410, 'Direct asset uploads are disabled; use asset-uploads and signed URLs');
     const input = await body(req);
     if (input.caseId) return fail(res, 410, 'Case assets require scanner-gated asset-uploads');
     if (!input.name || !input.contentBase64 || !input.createdByAgentId) return fail(res, 400, 'name, contentBase64, and createdByAgentId are required');

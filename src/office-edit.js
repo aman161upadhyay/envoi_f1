@@ -11,9 +11,43 @@ const formats = new Map([
   ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 'pptx'],
   ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx']
 ]);
+const pythonEnvironment = () => Object.fromEntries(['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP']
+  .filter(name => process.env[name]).map(name => [name, process.env[name]]));
+const zipHeader = Buffer.from('504b0304', 'hex');
+const zipEnd = Buffer.from('504b0506', 'hex');
+const compoundHeader = Buffer.from('d0cf11e0a1b11ae1', 'hex');
 
 export function officeRevisionFormat(mimeType) {
   return formats.get(mimeType);
+}
+
+export async function readOfficeComments({ executable, bytes, object }) {
+  const officeName = /\.(?:docx?|xlsx?|pptx?|docm|xlsm|pptm)$/i.test(object.filename);
+  const officeMime = /(?:officedocument|msword|ms-excel|ms-powerpoint|ms-word)/i.test(object.mimeType);
+  const zipTail = bytes.length >= 22 && bytes.lastIndexOf(zipEnd, bytes.length - 22) >= Math.max(0, bytes.length - 65_557);
+  if (!officeName && !officeMime && !zipTail && !bytes.subarray(0, 4).equals(zipHeader)
+    && !bytes.subarray(0, 8).equals(compoundHeader)) return [];
+  const workspace = await mkdtemp(path.join(tmpdir(), 'envoi-office-comments-'));
+  const input = path.join(workspace, 'upload');
+  try {
+    await writeFile(input, bytes);
+    const { stdout } = await compare(executable, [script, 'comments', input], {
+      timeout: 5_000, maxBuffer: 400_000, windowsHide: true, encoding: 'utf8', cwd: workspace, env: pythonEnvironment()
+    });
+    const { comments } = JSON.parse(stdout);
+    if (!Array.isArray(comments) || comments.some(text => typeof text !== 'string')) throw new Error('Malformed Office comment extraction');
+    return comments;
+  } catch (error) {
+    if (error.code === 1 && error.stderr?.startsWith('Office edit rejected:')) {
+      throw Object.assign(new Error('The upload format or embedded comments cannot be privately verified.'),
+        { statusCode: 422, code: 'PRIVATE_SCREENING_OFFICE_UNSUPPORTED' });
+    }
+    throw Object.assign(new Error('Office comment verification is unavailable.'),
+      { statusCode: 503, code: 'PRIVATE_SCREENING_OFFICE_UNAVAILABLE' });
+  } finally {
+    await unlink(input).catch(() => {});
+    await rmdir(workspace).catch(() => {});
+  }
 }
 
 export async function verifyOfficeRevision({ executable, format, previous, candidate, parts }) {
@@ -25,7 +59,7 @@ export async function verifyOfficeRevision({ executable, format, previous, candi
     await writeFile(after, candidate);
     const { stdout } = await compare(executable, [script, format, before, after, ...parts.map(part => `--part=${part}`)], {
       timeout: 5_000, maxBuffer: 32_768, windowsHide: true, encoding: 'utf8', cwd: workspace,
-      env: Object.fromEntries(['PATH', 'Path', 'SYSTEMROOT', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP'].filter(name => process.env[name]).map(name => [name, process.env[name]]))
+      env: pythonEnvironment()
     });
     const result = JSON.parse(stdout);
     if (!Array.isArray(result?.changedParts) || !result.changedParts.length) throw Object.assign(new Error('The Office revision does not change any granted parts.'), { statusCode: 422, code: 'OFFICE_EDIT_UNCHANGED' });
