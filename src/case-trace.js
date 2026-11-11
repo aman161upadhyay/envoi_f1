@@ -5,6 +5,7 @@ import { canonicalValue, valueDigest } from './policy-engine.js';
 const tracedTypes = new Set([
   'case.marked_sensitive', 'case.signed_policy_updated', 'policy.evaluated', 'policy.re_evaluated',
   'case.action_recorded', 'case.human_decision_requested', 'case.human_decision_resolved',
+  'group.approval_requested', 'group.approval_recorded',
   'asset.granted', 'asset.scan_clean', 'message.private_screened', 'payment.confirmed'
 ]);
 const publicFields = [
