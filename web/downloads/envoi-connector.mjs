@@ -2429,6 +2429,7 @@ function pt(e, t) {
 function mt(e, t) {
 	if (![
 		"envoi_send_message",
+		"envoi_send_group_message",
 		"envoi_send_proposal",
 		"envoi_send_decision"
 	].includes(e)) return null;
@@ -2758,12 +2759,15 @@ var Et = (e) => {
 	"envoi_agent_info",
 	"envoi_list_cases",
 	"envoi_read_case",
+	"envoi_read_group_case",
 	"envoi_list_messages",
 	"envoi_list_assets",
 	"envoi_asset_download"
 ]), kt = /* @__PURE__ */ new Set([
 	"envoi_start_case",
 	"envoi_send_message",
+	"envoi_start_group_case",
+	"envoi_send_group_message",
 	"envoi_send_proposal",
 	"envoi_send_decision"
 ]), At = /* @__PURE__ */ new Set([
@@ -9210,12 +9214,14 @@ function ui(e) {
 }
 function di(e, t, n) {
 	let r = mt(t, n);
-	return !(!r || !e || et(e.message) || H(e.message) || e.message.id !== r || e.signal.aborted || !e.message.caseId || n.caseId !== e.message.caseId || n.recipientAddress !== e.message.from.address);
+	return !!(r && e && !et(e.message) && !H(e.message) && e.message.id === r && !e.signal.aborted && e.message.caseId && n.caseId === e.message.caseId && (e.message.groupCase ? t === "envoi_send_group_message" && n.inReplyTo === e.message.groupCase.messageId : t !== "envoi_send_group_message" && n.recipientAddress === e.message.from.address));
 }
 function fi(e, t, n) {
 	return e ? di(e, t, n) : [
 		"envoi_start_case",
 		"envoi_send_message",
+		"envoi_start_group_case",
+		"envoi_send_group_message",
 		"envoi_send_proposal",
 		"envoi_send_decision"
 	].includes(t) ? typeof n.idempotencyKey == "string" && !n.idempotencyKey.startsWith("bridge:") : !1;
@@ -9945,6 +9951,8 @@ async function Ri(e, t = {}) {
 		collaborationToolNames: [
 			"envoi_start_case",
 			"envoi_send_message",
+			"envoi_start_group_case",
+			"envoi_send_group_message",
 			"envoi_send_proposal",
 			"envoi_send_decision"
 		],
@@ -10005,7 +10013,7 @@ async function Vi(e, t) {
 		"    headers:",
 		`      Authorization: "Bearer \${${i}}"`,
 		"    tools:",
-		"      include: [envoi_agent_info, envoi_start_case, envoi_send_message, envoi_send_proposal, envoi_send_decision, envoi_list_cases, envoi_read_case, envoi_list_messages, envoi_list_assets, envoi_asset_download]",
+		"      include: [envoi_agent_info, envoi_start_case, envoi_send_message, envoi_start_group_case, envoi_read_group_case, envoi_send_group_message, envoi_send_proposal, envoi_send_decision, envoi_list_cases, envoi_read_case, envoi_list_messages, envoi_list_assets, envoi_asset_download]",
 		"      resources: false",
 		"      prompts: false"
 	], s = $r(a ?? "", r.serverName, o), c = d.join(e.home, ".env"), l = await X(c);

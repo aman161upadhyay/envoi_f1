@@ -3672,6 +3672,7 @@ async function fn(e, t = "openclaw") {
 function pn(e, t) {
 	if (![
 		"envoi_send_message",
+		"envoi_send_group_message",
 		"envoi_send_proposal",
 		"envoi_send_decision"
 	].includes(e)) return null;
@@ -3910,12 +3911,15 @@ var Tn = /* @__PURE__ */ new Set([
 	"envoi_agent_info",
 	"envoi_list_cases",
 	"envoi_read_case",
+	"envoi_read_group_case",
 	"envoi_list_messages",
 	"envoi_list_assets",
 	"envoi_asset_download"
 ]), En = /* @__PURE__ */ new Set([
 	"envoi_start_case",
 	"envoi_send_message",
+	"envoi_start_group_case",
+	"envoi_send_group_message",
 	"envoi_send_proposal",
 	"envoi_send_decision"
 ]), Dn = /* @__PURE__ */ new Set([
