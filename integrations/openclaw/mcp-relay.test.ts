@@ -55,7 +55,8 @@ describe('OpenClaw local MCP relay', () => {
     };
     const store: ConnectorStore = { load: async () => current, save: async () => {} };
     const upstream = vi.fn<typeof fetch>(async () => json({ jsonrpc: '2.0', id: 1, result: { tools: [
-      { name: 'envoi_agent_info' }, { name: 'envoi_send_message' }
+      { name: 'envoi_agent_info' }, { name: 'envoi_send_message' },
+      { name: 'envoi_read_group_case' }, { name: 'envoi_start_group_case' }, { name: 'envoi_send_group_message' }
     ] } }));
     const relay = await startOpenClawMcpRelay({
       connector: new EnvoiConnector('https://envoi.example.test', store, { fetch: upstream }),
@@ -66,7 +67,12 @@ describe('OpenClaw local MCP relay', () => {
         headers: { authorization: `Bearer ${relayToken}`, 'content-type': 'application/json' },
         body: JSON.stringify(request) });
       const catalog = await call({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-      expect((await catalog.json()).result.tools.map((tool: { name: string }) => tool.name)).toEqual(['envoi_agent_info']);
+      expect((await catalog.json()).result.tools.map((tool: { name: string }) => tool.name)).toEqual(['envoi_agent_info', 'envoi_read_group_case']);
+      for (const name of ['envoi_start_group_case', 'envoi_send_group_message']) {
+        const deniedGroup = await call({ jsonrpc: '2.0', id: 3, method: 'tools/call',
+          params: { name, arguments: { idempotencyKey: 'group' } } });
+        expect(deniedGroup.status).toBe(403);
+      }
       const denied = await call({ jsonrpc: '2.0', id: 2, method: 'tools/call',
         params: { name: 'envoi_send_message', arguments: { idempotencyKey: 'one' } } });
       expect(denied.status).toBe(403);
@@ -102,7 +108,8 @@ describe('OpenClaw local MCP relay', () => {
         { name: 'envoi_agent_info' }, { name: 'envoi_read_case' },
         { name: 'envoi_start_case' }, { name: 'envoi_send_message' },
         { name: 'envoi_send_proposal' }, { name: 'envoi_send_decision' },
-        { name: 'envoi_begin_asset_upload' }
+        { name: 'envoi_begin_asset_upload' },
+        { name: 'envoi_read_group_case' }, { name: 'envoi_start_group_case' }, { name: 'envoi_send_group_message' }
       ] } });
       if (request.method === 'tools/call') {
         const key = request.params.arguments.idempotencyKey;
@@ -136,24 +143,27 @@ describe('OpenClaw local MCP relay', () => {
       expect(catalog.status).toBe(200);
       expect((await catalog.json()).result.tools.map((tool: { name: string }) => tool.name)).toEqual([
         'envoi_agent_info', 'envoi_read_case', 'envoi_start_case',
-        'envoi_send_message', 'envoi_send_proposal', 'envoi_send_decision'
+        'envoi_send_message', 'envoi_send_proposal', 'envoi_send_decision',
+        'envoi_read_group_case', 'envoi_start_group_case', 'envoi_send_group_message'
       ]);
       expect(current.agentRefreshToken).toBe('next-private-refresh');
 
       const allowed = await call({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'envoi_read_case', arguments: { caseId: 'case_one' } } });
       expect(allowed.status).toBe(200);
       expect((await allowed.json()).result.content[0].text).toBe('read result');
-      for (const name of ['envoi_start_case', 'envoi_send_message', 'envoi_send_proposal', 'envoi_send_decision']) {
+      for (const name of ['envoi_start_case', 'envoi_send_message', 'envoi_send_proposal', 'envoi_send_decision', 'envoi_start_group_case', 'envoi_send_group_message']) {
         const args = { recipientAddress: 'peer@envoi.example', caseId: 'case_one', text: 'A proposed plan',
           ...(name === 'envoi_send_proposal' ? { proposal: { plan: 'meet' } } : {}),
           ...(name === 'envoi_send_decision' ? { decision: 'accept' } : {}),
+          ...(name === 'envoi_start_group_case' ? { memberAddresses: ['peer@envoi.example', 'third@envoi.example'] } : {}),
+          ...(name === 'envoi_send_group_message' ? { inReplyTo: 'group_message' } : {}),
           idempotencyKey: `openclaw-case-one-${name}` };
         const first = await call({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name, arguments: args } });
         const second = await call({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name, arguments: args } });
         expect(first.status).toBe(200);
         expect((await first.json()).result.content).toEqual((await second.json()).result.content);
       }
-      expect(writes.size).toBe(4);
+      expect(writes.size).toBe(6);
       const count = upstream.mock.calls.length;
       const missingKey = await call({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'envoi_send_message', arguments: {} } });
       expect(missingKey.status).toBe(400);
@@ -169,7 +179,7 @@ describe('OpenClaw local MCP relay', () => {
       } });
       expect(afterRestart.status).toBe(200);
       expect((await afterRestart.json()).result.content[0].text).toBe('message-3');
-      expect(writes.size).toBe(4);
+      expect(writes.size).toBe(6);
     } finally { await relay.close(); }
   });
 });

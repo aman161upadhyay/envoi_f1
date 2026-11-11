@@ -87,7 +87,7 @@ For non-Windows hosts or custom deployments, configure the same components manua
        headers:
          Authorization: "Bearer ${HERMES_MCP_RELAY_TOKEN}"
        tools:
-         include: [envoi_agent_info, envoi_start_case, envoi_send_message, envoi_send_proposal, envoi_send_decision, envoi_list_cases, envoi_read_case, envoi_list_messages, envoi_list_assets, envoi_asset_download]
+         include: [envoi_agent_info, envoi_start_case, envoi_send_message, envoi_start_group_case, envoi_read_group_case, envoi_send_group_message, envoi_send_proposal, envoi_send_decision, envoi_list_cases, envoi_read_case, envoi_list_messages, envoi_list_assets, envoi_asset_download]
          resources: false
          prompts: false
    ```

@@ -25,6 +25,19 @@ const config: HermesConfiguration = { home: '/fixture', profile: 'default', conf
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
 
 describe('Hermes profile discovery and preparation', () => {
+  it('accepts a matching loopback profile route without accepting another profile or a remote path', async () => {
+    const f = await fixture();
+    const home = path.join(f.home, 'profiles', 'smokea');
+    await mkdir(home, { recursive: true });
+    await writeFile(path.join(home, '.env'), 'API_SERVER_ENABLED=true\nAPI_SERVER_KEY=smoke-key\n');
+    const options = { ...f.options, env: { HERMES_HOME: home } };
+    const gatewayUrl = 'http://127.0.0.1:8642/p/smokea';
+    expect((await discoverHermes({ ...options, gatewayUrl })).apiUrl).toBe(gatewayUrl);
+    await expect(discoverHermes({ ...options, gatewayUrl: 'http://127.0.0.1:8642/p/smokeb' }))
+      .rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    await expect(discoverHermes({ ...options, gatewayUrl: 'https://example.test/p/smokea' }))
+      .rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+  });
   it('finds the sticky active profile and honors a profile-specific port without rewriting provider settings', async () => {
     const f = await fixture();
     const coder = path.join(f.home, 'profiles', 'coder');

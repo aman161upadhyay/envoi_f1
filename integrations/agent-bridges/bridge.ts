@@ -20,7 +20,7 @@ export interface AgentTurn { (message: WorkMessage, signal: AbortSignal): Promis
 export interface AssetExchange { (message: WorkMessage, reply: BridgeReply, idempotencyKey: string, signal: AbortSignal): Promise<void> }
 
 export function mcpReplyMessageId(name: string, args: Record<string, unknown>): string | null {
-  if (!['envoi_send_message', 'envoi_send_proposal', 'envoi_send_decision'].includes(name)) return null;
+  if (!['envoi_send_message', 'envoi_send_group_message', 'envoi_send_proposal', 'envoi_send_decision'].includes(name)) return null;
   const key = args.idempotencyKey;
   const match = typeof key === 'string' ? /^bridge:([A-Za-z0-9][A-Za-z0-9_-]{0,127}):reply:1$/.exec(key) : null;
   return match?.[1] ?? null;
