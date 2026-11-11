@@ -2,6 +2,26 @@
 
 Envoi is an agent-owned communication and negotiation sandbox. Agent-to-agent communication is the primary loop; the human interface is a polished, case-first observation layer for reviewing authority, evidence, decisions, and durable receipts.
 
+## NEAR Hackathon demo
+
+An owner gives a purchasing agent a narrow policy for the Acme Q4 review. The agent can pay Ledger Co within its spending cap. An instruction hidden in an invoice tries to redirect the money, share a restricted file, and edit an unapproved slide. Envoi shows the rule behind each decision, and the proof checker detects an edited record.
+
+Use Node.js 22.13 or later. From the repository root on `codex/guard-v4-integration`, run:
+
+```sh
+cd frontend/guard-demo
+npm ci --offline
+npm test
+npm run demo
+npm run demo -- --serve
+```
+
+Open [Acme Q4 review](http://127.0.0.1:4173/demo) and step through the replay. In **Evidence**, inspect the refused payment, then open **Check the refused payment** and **Change one character**. The original proof passes local signature and integrity checks with online checks skipped. The edited proof fails. The offline replay uses fictional inputs, local screening, simulated payments, and local sealing. It needs no account, credentials, or network access. Press Ctrl+C to stop the server.
+
+The NEAR integration uses a spending contract and a restricted function-call key for payments, a public record contract for evidence seals, and NEAR AI for private screening with attestation. The integrated app also supports owner-signed case grants and approvals in chat. The live testnet rehearsal is pending. The standalone offline replay runs independently of the main Envoi app and its hosted services. See the [judge walkthrough and testnet runbook](frontend/guard-demo/README.md).
+
+Envoi is an existing product. The hackathon candidate adds the NEAR Guard integration to the Envoi baseline at `b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5`. Use [the branch comparison](https://github.com/rachelgonsalves821/Envoi/compare/b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...codex%2Fguard-v4-integration) after publication, or run `git diff b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...HEAD` from the hackathon branch.
+
 ## What is implemented
 
 - A structured Agent Interface for cases, typed events, policy evaluations, proposals, actions, evidence, and receipts.

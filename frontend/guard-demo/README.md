@@ -2,18 +2,18 @@
 
 A demo for signed agent permissions, payment limits, and verifiable evidence. Run commands from this directory with Node 22.13 or later.
 
-## Run locally
+## Run the offline demo
 
 The offline Acme Q4 review replay signs a case policy and shows the resulting allow, deny and owner-review decisions. It uses fictional files and simulated slide changes. Case grants cover actions mediated by Envoi and the spending contract's limited key covers NEAR calls. Isolation of the agent's own computer is outside that scope.
 
 ```sh
-npm install
+npm ci --offline
 npm test
 npm run demo
 npm run demo -- --serve
 ```
 
-Open http://127.0.0.1:4173/permissions for Settings and Evidence, or /check for the proof checker. The terminal demo screens a fictional invoice with local rules, refuses one payment, permits another, and checks an edited proof. Browser changes in offline mode are saved for the current tab. The offline records are generated separately against the demo’s original rules.
+The demo package has no npm dependencies. The install and replay work with an empty npm cache and require no credentials or network access. `npm run demo` prints the policy decisions and exits after checking the original and edited proofs. `npm run demo -- --serve` starts the browser replay on port 4173. Press Ctrl+C to stop it. Use the [judge walkthrough](#judge-walkthrough) for the expected results.
 
 ## Envoi case-policy integration
 
@@ -83,13 +83,13 @@ Contract unit tests live in `contracts/near/record/src/lib.rs`. To run them, add
 
 ## Judge walkthrough
 
-1. Run `npm ci --offline`, `npm test`, and `npm run demo -- --serve` from this directory. Open [Demo replay](http://127.0.0.1:4173/demo).
-2. Send Ledger Co’s invoice. The timeline shows the locally screened message, the refusal, the blocked share, and the allowed invoice as you advance. The replay displays demo events and leaves the network untouched.
-3. Open Evidence. Select **Money** to see both payment outcomes. Open the refused payment and download its proof or select **Check proof**. Select **Edited proof** to verify that the checker rejects a modified record.
-4. In Settings, edit Milo’s daily cap and choose **Save changes**. The confirmation sheet shows exactly what the browser signs. In offline mode the browser saves that policy in the current tab.
-5. After a credentialed testnet run, load its completed output using NEAR_EVIDENCE_RUN_FILE. Evidence offers individual proof downloads. The browser can check testnet transaction and contract data. Use the CLI for full inference-receipt verification.
+1. Run the commands under [Run the offline demo](#run-the-offline-demo) from this directory. Open [Demo replay](http://127.0.0.1:4173/demo).
+2. Select **Open the Acme Q4 review** to see the 0.5 NEAR payment to Ledger Co and the local screening result. Select **Let Milo read the full message** to see the refused 20 NEAR payment, blocked share, and denied slide edit. Select **Review the deck update** to see the permitted slides and the action that requires owner review.
+3. Select **Open evidence**, then **Money**, to inspect both simulated payment outcomes. The replay opens these links in new tabs and advances in the original tab.
+4. Return to the replay and select **Check the refused payment**. Expect local checks to pass and online checks to be skipped. Return again and select **Change one character**. Expect the checker to reject the edited proof. The [original sample](http://127.0.0.1:4173/check?sample=genuine) and [edited sample](http://127.0.0.1:4173/check?sample=edited) can also be opened directly.
+5. In [Settings](http://127.0.0.1:4173/permissions), edit Milo’s daily cap and choose **Save changes**. The confirmation sheet shows what the browser signs. The browser saves the offline policy for the current tab. Replay evidence represents the original fictional scenario.
 
-For a fresh-clone dry run, start with Node 22.13+ and Git on a clean machine. Time the commands above and confirm the replay, refusal and modified-proof failure before reviewing the online artifacts.
+After a credentialed testnet run, use `NEAR_EVIDENCE_RUN_FILE` to load the completed output. Evidence offers proof downloads. Use the CLI for full inference-receipt verification. The offline replay verifies the local flow and proof integrity. Testnet receipts and hardware attestation are separate acceptance checks.
 
 ## Sign permissions with a passkey
 
