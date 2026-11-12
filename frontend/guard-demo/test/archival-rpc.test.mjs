@@ -78,3 +78,57 @@ test('NEAR readers look transactions up without waiting, through archival nodes 
   await custom.publicRecord.status('GhmaBHFUYE6nojGAApmUiAT5tEjfqz3Aq1hNHNN8Po28').catch(() => {});
   assert.deepEqual(seen.map(([url]) => url), ['https://my-node.example'], 'NEAR_RPC_URL pins one endpoint');
 });
+
+// End to end through the checker: the same genuine proof, with NEAR either unreachable or
+// denying the seal transaction exists, must give two different verdicts.
+test('checker: an unreachable NEAR and a missing seal transaction give distinct verdicts', async () => {
+  const { hashJson, publicHex, sign } = await import('../packages/core/crypto.mjs');
+  const { displayPermission } = await import('../packages/core/policy.mjs');
+  const { buildTree, ZERO_ROOT } = await import('../packages/core/tree.mjs');
+  const { makeEvidence } = await import('../packages/core/evidence.mjs');
+  const { checkProof } = await import('../packages/check/index.mjs');
+  const { createLocalAdapters } = await import('../adapters/local/store.mjs');
+  const owner = 'dana.northwind.near';
+  const agent = 'milo.northwind.near';
+  const adapters = createLocalAdapters(':memory:', () => 100);
+  try {
+    const ownerKeys = await crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']);
+    const envoiKeys = await crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']);
+    const ownerKey = await publicHex(ownerKeys.publicKey);
+    await adapters.ownerRegistry.register(owner, { type: 'demo_device', label: 'Demo device', publicKey: ownerKey });
+    const payees = [{ account: 'ledger.northwind.near', label: 'Ledger Co', maxPerPayment: '1' }];
+    const document = { schema: 'envoi.permissions/v1', owner, agent, version: 1, previousHash: ZERO_ROOT, issuedAtMs: 101,
+      rules: { spend_money: { payees, dailyCap: '2', unit: 'yoctoNEAR' }, share_files: { default: 'off', allow: [] }, send_messages: 'allowed' } };
+    document.display = displayPermission(document);
+    const permissionHash = await hashJson(document);
+    await adapters.spendGuard.registerAgent(owner, agent, 'ab'.repeat(32));
+    await adapters.spendGuard.setPolicy(owner, agent, { payees, dailyCap: '2', paused: false }, permissionHash);
+    const evidence = await makeEvidence({ seq: 1, type: 'share_blocked', agent, counterparty: 'x.near', caseRef: 'c', summary: 's',
+      previousHash: ZERO_ROOT, permissionHash, createdAtMs: 103, details: {} }, envoiKeys);
+    const tree = await buildTree([evidence.recordHash]);
+    const batch = { batchId: 4, root: tree.root, previousRoot: ZERO_ROOT, count: 1, leafIndex: 0, siblings: tree.path(0) };
+    const proof = { format: 'envoi.proof/v1', ...evidence, batch,
+      permission: { document, ownerKey, signature: await sign(ownerKeys.privateKey, permissionHash), registry: { network: 'local', contract: 'record.testnet' } },
+      seal: { network: 'near-testnet', contract: 'record.testnet', txRef: '6X5bHczCKB6Fn6U4jtAEHH9JS6WLGnrdAf5abNdEAy4F' } };
+    const rootBytes = Array.from(new TextEncoder().encode(JSON.stringify({ root: batch.root, previous_root: ZERO_ROOT, count: 1, sealed_at_ms: 104 })));
+    const verdictWith = async txReply => {
+      const fetcher = async (_url, init) => {
+        const { method, params } = JSON.parse(init.body);
+        if (method === 'query' && params.request_type === 'view_account') return json({ result: { code_hash: 'CodeHash1111' } });
+        if (method === 'query' && params.request_type === 'view_access_key_list') return json({ result: { keys: [] } });
+        if (method === 'query') return json({ result: { result: rootBytes } });
+        return txReply();
+      };
+      const near = nearReaders({ recordContract: 'record.testnet', spendContract: 'spend.testnet', publisher: 'pub.testnet', fetcher });
+      return checkProof(proof, { evidenceKeys: { 'ev-1': evidence.envoi.publicKey }, ...adapters, publicRecord: near.publicRecord,
+        recordContract: 'record.testnet', recordCodeHash: 'CodeHash1111', spendContract: 'local-spend' });
+    };
+    const down = await verdictWith(async () => { throw new TypeError('fetch failed'); });
+    if (down.verdict !== 'partial') console.log('DEBUG', JSON.stringify(down.checks.map(c => [c.id, c.status, c.reason])));
+    assert.equal(down.verdict, 'partial');
+    assert.equal(down.reason, 'unavailable');
+    const missing = await verdictWith(unknownTx);
+    assert.equal(missing.verdict, 'failed');
+    assert.equal(missing.checks.find(row => row.id === 'sealed').status, 'FAIL');
+  } finally { adapters.db.close(); }
+});
