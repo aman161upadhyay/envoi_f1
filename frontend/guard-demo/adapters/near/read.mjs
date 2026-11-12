@@ -1,4 +1,4 @@
-import { createRpc, DEFAULT_RPC } from './rpc.mjs';
+import { createRpc, DEFAULT_ARCHIVAL_RPC, DEFAULT_RPC } from './rpc.mjs';
 
 const TX_HASH = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const decode = value => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value), char => char.charCodeAt(0))));
@@ -6,7 +6,10 @@ const decode = value => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob
 export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, recordCodeHash, network = 'near-testnet', fetcher = fetch }) {
   if (!['near-testnet', 'near-mainnet'].includes(network)) throw new TypeError('Unsupported NEAR network');
   // Outages throw NearUnavailable, which the checker reports as "not checked" instead of a failure.
-  const rpc = createRpc(rpcUrl || DEFAULT_RPC[network], fetcher, { timeoutMs: 15000 });
+  // Transaction lookups use archival nodes on the default endpoints, so old seals still verify.
+  const usesDefaults = !rpcUrl || rpcUrl === DEFAULT_RPC[network];
+  const rpc = createRpc(rpcUrl || DEFAULT_RPC[network], fetcher,
+    { timeoutMs: 15000, archivalUrls: usesDefaults ? DEFAULT_ARCHIVAL_RPC[network] : [] });
   const query = (request_type, account_id, fields = {}) =>
     rpc('query', { request_type, account_id, finality: 'final', ...fields });
 
@@ -19,7 +22,10 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
 
   async function transaction(txRef, sender, contract, method) {
     if (!TX_HASH.test(txRef) || !sender) return null;
-    const result = await rpc('tx', { tx_hash: txRef, sender_account_id: sender, wait_until: 'FINAL' });
+    // NONE answers at once: a known transaction reports its status, an unknown one returns
+    // UNKNOWN_TRANSACTION. Waiting for FINAL would instead time out on a made-up hash, and a
+    // forged proof would read "not checked" instead of failing. Only FINAL outcomes count below.
+    const result = await rpc('tx', { tx_hash: txRef, sender_account_id: sender, wait_until: 'NONE' });
     const { transaction: tx, status } = result;
     const call = tx?.actions?.[0]?.FunctionCall;
     if (result.final_execution_status !== 'FINAL' || tx?.hash !== txRef || tx.signer_id !== sender ||
