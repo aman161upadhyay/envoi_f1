@@ -22,7 +22,7 @@ Open http://127.0.0.1:4173/permissions for Settings and Evidence, or /check for 
 5. Install the verifier dependencies in an isolated Python environment with `python -m pip install -r adapters/nearai/requirements.txt`. Set NEAR_AI_PYTHON if needed, set the API key locally, and select a TEE model that returns provider signatures. Configure the scoped Milo and publisher credentials in the live runner environment and set NEAR_ENABLE_DEMO_PAYMENTS=yes.
 6. Run `npm run demo:live`. The script requires a fully verified, flagged message before broadcasting. It reads each finalized outcome from testnet and then seals the evidence. It reserves a fresh output file before broadcasting. If execution stops partway, inspect the existing file and transaction hashes before deciding whether to retry. Set NEAR_EVIDENCE_RUN_FILE to the completed rehearsal file and restart the browser demo to inspect the testnet evidence and attestation rows.
 
-The testnet proof CLI accepts an independently trusted evidence key map and checks contract state with `npm run check -- proof.json trusted-evidence-keys.json --testnet`. Use `--mainnet` for mainnet contracts and `--json` for machine-readable output. For this rehearsal, use the evidence key map from the trusted runner’s output. Keep the record account’s code hash in trusted configuration. A record contract with remaining access keys fails the locked-contract check. Offline CLI checks show skipped online checks.
+The testnet proof CLI accepts an independently trusted evidence key map and checks contract state with `npm run check -- proof.json trusted-evidence-keys.json --testnet`. Use `--mainnet` for mainnet contracts and `--json` for machine-readable output. For this rehearsal, use the evidence key map from the trusted runner’s output. Keep the record account’s code hash in trusted configuration. A record contract with remaining access keys fails the locked-contract check. Offline CLI checks show skipped online checks. With no `.env`, `--testnet` uses the published PR302 testnet deployment, and envoi's key comes from its evidence list, so `npm run check -- proof.json --testnet` works from a fresh clone. If the NEAR AI hardware verifier (step 5's Python packages) isn't installed, the private check reads "Not checked on this machine" instead of failing.
 
 The CLI prints one plain line per check and exits with **0** when every check passed, **1** when the record can't be trusted, **2** when signatures check out but some checks were skipped or NEAR couldn't be reached, and **3** for a usage error or a file that isn't an envoi proof. A NEAR outage is reported as "Couldn't reach the public record" and never counts as passed or failed. RPC calls use FastNEAR first and fall back to the near.org endpoint; set `NEAR_RPC_URL` to use one endpoint only. Transaction lookups go to archival nodes first, because regular nodes drop transactions after a few days; without them a genuine proof would stop verifying before judging. A transaction no node knows fails the check.
 
@@ -39,13 +39,16 @@ The verifier requires a provider TEE signature, the exact request and response h
 
 Both commands only read NEAR, need no `.env` and no keys, and default to the disposable PR302 testnet deployment.
 
-- `npm run verify:deployment -- --seal <tx> --refusal <tx>` checks:
+- `npm run verify:deployment -- --seal <tx> --refusal <tx> --payment <tx>` checks:
   - the accounts and the record and spending code hashes against the published hash;
   - that the agent key can only `pay` and the publisher key can only `seal` and `register_evidence_key`;
   - every sealed batch on the record contract, each linked to the one before;
   - the contract lock and its storage headroom;
   - each seal receipt against `root_of`;
-  - for each refused payment, the owner vault read from archival state just before and after it, to show it did not move.
+  - for each refused payment, the owner vault read from archival state just before and after it, to show it did not move;
+  - for each allowed payment, that it was paid and the vault went down by exactly its amount.
+
+  Each receipt line ends with its testnet explorer link, ready for the video labels. The vault is read 5 blocks after the payment, so keep other payments out of that window when recording.
 
   `--owner <account>` checks another deployment. `--require-locked` turns "not locked yet" into a failure. Exits 0 verified, 1 mismatch, 2 not finished (for example not locked yet), 3 usage.
 - `npm run check:run -- testnet-run.json` checks every proof in a rehearsal output, then appends "(edited)" to each proof's summary and confirms the checker rejects that copy. envoi's key comes from the record contract; `--keys <file>` pins a key map instead. `--attestation` also re-runs the NEAR AI receipt verifier, and `--offline` checks signatures and batch paths only. Exits 0 when every genuine proof is verified and every edited copy is rejected, 1 on any failure, 2 when genuine proofs are only partly checked, 3 for usage or an unreadable file.

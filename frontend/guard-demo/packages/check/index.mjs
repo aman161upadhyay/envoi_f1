@@ -6,7 +6,10 @@ import { messageFor, VERDICT_MESSAGES } from './messages.mjs';
 
 // An outage is "not checked", never a failure and never a pass. Only errors explicitly marked
 // as unavailability (see adapters/near/rpc.mjs) qualify; every other error still fails the check.
-const isUnavailable = error => error?.code === 'NEAR_UNAVAILABLE';
+// The hardware-attestation verifier can be missing on the checking machine (VERIFIER_UNAVAILABLE);
+// that is also "not checked".
+const SKIP_REASONS = { NEAR_UNAVAILABLE: 'unavailable', VERIFIER_UNAVAILABLE: 'verifier_unavailable' };
+const isUnavailable = error => Boolean(SKIP_REASONS[error?.code]);
 
 const looksLikeProof = proof => Boolean(proof && typeof proof === 'object' && !Array.isArray(proof) &&
   proof.format === 'envoi.proof/v1' && proof.record && typeof proof.record === 'object' &&
@@ -25,7 +28,7 @@ export async function checkProof(proof, trust = {}) {
       const result = await verifyCheck();
       row = result === undefined ? { id, status: 'SKIP', reason: 'not_configured' } : { id, status: result ? 'PASS' : 'FAIL' };
     } catch (error) {
-      row = isUnavailable(error) ? { id, status: 'SKIP', reason: 'unavailable' } : { id, status: 'FAIL' };
+      row = isUnavailable(error) ? { id, status: 'SKIP', reason: SKIP_REASONS[error.code] } : { id, status: 'FAIL' };
     }
     checks.push({ ...row, message: messageFor(row) });
   };
