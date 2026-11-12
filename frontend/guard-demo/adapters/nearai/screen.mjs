@@ -9,19 +9,29 @@ export const checkIds = ['signed_text', 'signature', 'signer_attested', 'report_
 export function verifyReceipt(evidence, python = process.env.NEAR_AI_PYTHON || 'python', { signal } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(python, [fileURLToPath(new URL('./verify.py', import.meta.url))], {
-      windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'], timeout: 90000, signal,
+      windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'], signal,
       env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^NEAR_/i.test(name)))
     });
+    // Our own timer, cleared when the process ends: spawn's `timeout` option kept the event loop
+    // alive for the full 90 s when Python was missing, so the CLI hung after printing its result.
+    const timer = setTimeout(() => child.kill(), 90000);
+    child.once('exit', () => clearTimeout(timer));
+    child.once('error', () => clearTimeout(timer));
     let output = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       output += chunk;
       if (output.length > 16384) child.kill();
     });
-    child.on('error', reject);
-    child.stdin.on('error', reject);
+    // A verifier that can't run (no Python, missing packages, Intel or NVIDIA services down)
+    // is tagged VERIFIER_UNAVAILABLE: the checker reports "not checked", never a failure. A
+    // receipt that ran and didn't verify comes back as false values and fails the check.
+    const unavailable = cause => Object.assign(new Error('Hardware verifier failed or its Python dependencies are unavailable.', { cause }),
+      { code: 'VERIFIER_UNAVAILABLE' });
+    child.on('error', error => reject(unavailable(error)));
+    child.stdin.on('error', error => reject(unavailable(error)));
     child.on('close', code => {
-      if (code !== 0) return reject(new Error('Hardware verifier failed or its Python dependencies are unavailable.'));
+      if (code !== 0) return reject(unavailable());
       try { resolve(JSON.parse(output)); } catch { reject(new Error('Invalid hardware verifier output')); }
     });
     child.stdin.end(JSON.stringify(evidence));

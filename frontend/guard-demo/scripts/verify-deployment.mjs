@@ -1,5 +1,5 @@
 // npm run verify:deployment -- [--owner <owner.testnet>] [--code-hash <hash>] [--spend-code-hash <hash>]
-//                                [--seal <tx>]... [--refusal <tx>]... [--require-locked] [--mainnet] [--json]
+//                                [--seal <tx>]... [--refusal <tx>]... [--payment <tx>]... [--require-locked] [--mainnet] [--json]
 //
 // Read-only and key-free: anyone can check the public deployment. Without flags it checks the
 // disposable PR302 testnet deployment against its published record code hash.
@@ -10,12 +10,12 @@ import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { deploymentAccounts, PR302_OWNER, PR302_RECORD_CODE_HASH, verifyDeployment } from '../packages/check/deployment.mjs';
 
 const USAGE = 'Usage: npm run verify:deployment -- [--owner <account>] [--code-hash <hash>] [--spend-code-hash <hash>] ' +
-  '[--seal <tx>]... [--refusal <tx>]... [--require-locked] [--mainnet] [--json]';
-const VALUE_FLAGS = new Set(['--owner', '--record', '--spend', '--agent', '--publisher', '--code-hash', '--spend-code-hash', '--seal', '--refusal']);
+  '[--seal <tx>]... [--refusal <tx>]... [--payment <tx>]... [--require-locked] [--mainnet] [--json]';
+const VALUE_FLAGS = new Set(['--owner', '--record', '--spend', '--agent', '--publisher', '--code-hash', '--spend-code-hash', '--seal', '--refusal', '--payment']);
 const BOOL_FLAGS = new Set(['--require-locked', '--mainnet', '--json']);
 
 function parse(argv) {
-  const options = { seals: [], refusals: [] };
+  const options = { seals: [], refusals: [], payments: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (BOOL_FLAGS.has(flag)) { options[flag.slice(2)] = true; continue; }
@@ -23,6 +23,7 @@ function parse(argv) {
     const value = argv[++i];
     if (flag === '--seal') options.seals.push(value);
     else if (flag === '--refusal') options.refusals.push(value);
+    else if (flag === '--payment') options.payments.push(value);
     else options[flag.slice(2)] = value;
   }
   return options;
@@ -40,10 +41,13 @@ try {
     recordContract: accounts.record, spendContract: accounts.spend, publisher: accounts.publisher });
   const result = await verifyDeployment({ network, accounts, rpc, readers, expectedRecordHash,
     expectedSpendHash: options['spend-code-hash'], requireLocked: Boolean(options['require-locked']),
-    seals: options.seals, refusals: options.refusals });
+    seals: options.seals, refusals: options.refusals, payments: options.payments });
   if (options.json) console.log(JSON.stringify({ network, accounts, ...result }, null, 2));
   else {
-    for (const row of result.rows) console.log(`${row.status.padEnd(4)} ${row.id}${row.detail ? ': ' + row.detail : ''}`);
+    for (const row of result.rows) {
+      console.log(`${row.status.padEnd(4)} ${row.id}${row.detail ? ': ' + row.detail : ''}`);
+      if (row.link) console.log(`     ${row.link}`);
+    }
     console.log({ verified: 'Deployment verified.', partial: 'Deployment checks out so far; some steps are not finished.', failed: 'Deployment does not match.' }[result.verdict]);
   }
   process.exitCode = { verified: 0, failed: 1, partial: 2 }[result.verdict];

@@ -9,6 +9,7 @@ export const PR302_OWNER = 'envoi-pr302-20261106.testnet';
 export const PR302_RECORD_CODE_HASH = 'FDvRgQSwfbocdwNRgdu53WhkXB39rYutZvohTd83ZK7s';
 const PUBLISHER_METHODS = ['register_evidence_key', 'seal'];
 const NO_CODE = '11111111111111111111111111111111';
+export const EXPLORER_TX = Object.freeze({ 'near-testnet': 'https://testnet.nearblocks.io/txns/', 'near-mainnet': 'https://nearblocks.io/txns/' });
 export const MIN_FREE_STORAGE_YOCTO = 2n * 10n ** 23n; // 0.2 NEAR, about 100 seals
 
 /** Account IDs for a deployment made by `npm run testnet:prepare -- <owner>`. */
@@ -22,7 +23,7 @@ const b64 = value => btoa(JSON.stringify(value));
 const decodeBytes = bytes => JSON.parse(new TextDecoder().decode(Uint8Array.from(bytes)));
 
 export async function verifyDeployment({ network = 'near-testnet', accounts, rpc, archivalRpc, readers,
-  expectedRecordHash, expectedSpendHash, requireLocked = false, seals = [], refusals = [] }) {
+  expectedRecordHash, expectedSpendHash, requireLocked = false, seals = [], refusals = [], payments = [] }) {
   archivalRpc ??= createRpc(DEFAULT_ARCHIVAL_RPC[network]);
   const rows = [];
   const step = async (id, fn) => {
@@ -122,8 +123,23 @@ export async function verifyDeployment({ network = 'near-testnet', accounts, rpc
     return free >= MIN_FREE_STORAGE_YOCTO ? detail : { status: 'WAIT', detail: detail + '; top up before locking' };
   });
 
+  const link = txRef => EXPLORER_TX[network] + txRef;
+  const receipt = async (id, txRef, fn) => {
+    await step(id, fn);
+    rows.at(-1).link = link(txRef);
+  };
+  // The owner's vault read from archival state just before a payment and a few blocks after it.
+  const vaultAround = async txRef => {
+    const tx = await rpc('tx', { tx_hash: txRef, sender_account_id: accounts.agent, wait_until: 'NONE' });
+    const block = await archivalRpc('block', { block_id: tx.transaction_outcome.block_hash });
+    const height = block.header.height;
+    const owner = accounts.owner;
+    return { before: BigInt(await view(accounts.spend, 'vault_of', { owner }, height - 1)),
+      after: BigInt(await view(accounts.spend, 'vault_of', { owner }, height + 5)) };
+  };
+
   for (const txRef of seals) {
-    await step(`seal ${txRef.slice(0, 8)}…`, async () => {
+    await receipt(`seal ${txRef.slice(0, 8)}…`, txRef, async () => {
       const tx = await rpc('tx', { tx_hash: txRef, sender_account_id: accounts.publisher, wait_until: 'NONE' });
       const call = tx.transaction.actions?.[0]?.FunctionCall;
       must(tx.final_execution_status === 'FINAL' && Object.hasOwn(tx.status, 'SuccessValue'), 'Not a final, successful transaction');
@@ -137,19 +153,25 @@ export async function verifyDeployment({ network = 'near-testnet', accounts, rpc
   }
 
   for (const txRef of refusals) {
-    await step(`refusal ${txRef.slice(0, 8)}…`, async () => {
+    await receipt(`refusal ${txRef.slice(0, 8)}…`, txRef, async () => {
       const outcome = await readers.spendGuard.readOutcome(txRef, accounts.agent);
       must(outcome, 'Not a final pay transaction from the agent');
       must(outcome.status === 'refused', `The spending contract ${outcome.status} this payment`);
-      const tx = await rpc('tx', { tx_hash: txRef, sender_account_id: accounts.agent, wait_until: 'NONE' });
-      const block = await archivalRpc('block', { block_id: tx.transaction_outcome.block_hash });
-      const height = block.header.height;
-      const owner = accounts.owner;
-      // Read the vault from archival state just before the payment and a few blocks after it.
-      const before = await view(accounts.spend, 'vault_of', { owner }, height - 1);
-      const after = await view(accounts.spend, 'vault_of', { owner }, height + 5);
-      must(String(before) === String(after), `The vault changed from ${near(before)} to ${near(after)}`);
+      const { before, after } = await vaultAround(txRef);
+      must(before === after, `The vault changed from ${near(before)} to ${near(after)}`);
       return `${outcome.reason}: ${near(outcome.amount)} to ${outcome.to}, vault ${near(before)} before and after`;
+    });
+  }
+
+  for (const txRef of payments) {
+    await receipt(`payment ${txRef.slice(0, 8)}…`, txRef, async () => {
+      const outcome = await readers.spendGuard.readOutcome(txRef, accounts.agent);
+      must(outcome, 'Not a final pay transaction from the agent');
+      must(outcome.status === 'paid', `The spending contract ${outcome.status} this payment`);
+      const { before, after } = await vaultAround(txRef);
+      must(before - after === BigInt(outcome.amount),
+        `The vault went from ${near(before)} to ${near(after)}, not down by exactly ${near(outcome.amount)}`);
+      return `${near(outcome.amount)} to ${outcome.to}, vault ${near(before)} → ${near(after)}`;
     });
   }
   const failed = rows.some(row => row.status === 'FAIL');

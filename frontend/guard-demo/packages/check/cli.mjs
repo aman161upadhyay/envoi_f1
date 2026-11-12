@@ -13,6 +13,7 @@ import { nearReaders } from '../../adapters/near/read.mjs';
 import { DEFAULT_RPC } from '../../adapters/near/rpc.mjs';
 import { checkIds, verifyReceipt } from '../../adapters/nearai/screen.mjs';
 import { validAccount } from '../core/policy.mjs';
+import { deploymentAccounts, PR302_RECORD_CODE_HASH } from './deployment.mjs';
 
 const USAGE = 'Usage: npm run check -- proof.json trusted-evidence-keys.json [--json]\n' +
   '   or: npm run check -- proof.json [trusted-evidence-keys.json] --testnet|--mainnet [--json]';
@@ -53,7 +54,15 @@ async function main(argv) {
   let trust = evidenceKeys ? { evidenceKeys } : {};
   if (network) {
     try { process.loadEnvFile(); } catch { /* .env is optional when the variables are already set */ }
-    const env = process.env;
+    let env = process.env;
+    // A fresh clone has no .env: on testnet, fall back to the published PR302 deployment, so a
+    // judge can run `npm run check -- proof.json --testnet` as is.
+    if (network === 'near-testnet' && !env.NEAR_RECORD_CONTRACT && !env.NEAR_SPEND_CONTRACT && !env.NEAR_PUBLISHER_ACCOUNT && !env.NEAR_RECORD_CODE_HASH) {
+      const pr302 = deploymentAccounts();
+      env = { ...env, NEAR_RECORD_CONTRACT: pr302.record, NEAR_SPEND_CONTRACT: pr302.spend,
+        NEAR_PUBLISHER_ACCOUNT: pr302.publisher, NEAR_RECORD_CODE_HASH: PR302_RECORD_CODE_HASH };
+      if (!json) console.error(`Using the published testnet deployment ${pr302.record}.`);
+    }
     const accounts = [env.NEAR_RECORD_CONTRACT, env.NEAR_SPEND_CONTRACT, env.NEAR_PUBLISHER_ACCOUNT];
     if (!accounts.every(account => onNetwork(network, account)) || !env.NEAR_RECORD_CODE_HASH) {
       throw new UsageError(`Configure the trusted ${network} record contract, spending contract, publisher and published record code hash.`);

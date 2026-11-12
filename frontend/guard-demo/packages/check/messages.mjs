@@ -17,7 +17,8 @@ export const CHECK_LABELS = Object.freeze({
 
 export const SKIP_MESSAGES = Object.freeze({
   not_configured: 'Not checked',
-  unavailable: "Couldn't reach the public record. Try again later."
+  unavailable: "Couldn't reach the public record. Try again later.",
+  verifier_unavailable: "Not checked on this machine: the hardware verifier isn't set up (see the README)."
 });
 
 export const VERDICT_MESSAGES = Object.freeze({

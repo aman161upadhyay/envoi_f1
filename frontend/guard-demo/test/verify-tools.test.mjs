@@ -190,3 +190,45 @@ test('check:run CLI exit codes', async () => {
   assert.equal((await exec([join(dir, 'missing.json'), '--offline'])).code, 3);
   assert.equal((await exec([])).code, 3);
 });
+
+test('allowed payments must be paid and move the vault by exactly their amount', async () => {
+  const paid = fakeChain({ vault: height => (height < 1000 ? '2000000000000000000000000' : '1999999999999999999999999') });
+  const ok = await verify(paid, { payments: ['PAID'] });
+  assert.equal(statusOf(ok, 'payment PAID…'), 'PASS', JSON.stringify(ok.rows.at(-1)));
+  assert.match(ok.rows.at(-1).link, /^https:\/\/testnet\.nearblocks\.io\/txns\/PAID$/);
+  const wrongAmount = fakeChain({ vault: height => (height < 1000 ? '2000000000000000000000000' : '1000000000000000000000000') });
+  assert.equal(statusOf(await verify(wrongAmount, { payments: ['PAID'] }), 'payment PAID…'), 'FAIL', 'vault moved by more than the payment');
+  assert.equal(statusOf(await verify(fakeChain(), { payments: ['REFUSED'] }), 'payment REFUSED…'), 'FAIL', 'a refusal is not a payment');
+});
+
+test('a hardware verifier that cannot run is "not checked"; one that says no is a failure', async () => {
+  const { checkProof } = await import('../packages/check/index.mjs');
+  const { verifyReceipt } = await import('../adapters/nearai/screen.mjs');
+  await assert.rejects(verifyReceipt({}, 'envoi-no-such-python-binary'), error => error.code === 'VERIFIER_UNAVAILABLE');
+  const { adapters, trust } = await localRun();
+  try {
+    // One sealed screening record carrying a private check, signed like the runner does.
+    const envoiKeys = await crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']);
+    const base = (await localRun());
+    base.adapters.db.close();
+    const permission = base.run.proofs[0].permission;
+    const privateCheck = { provider: 'near-ai-cloud', model: 'fixture/model', nonce: 'ab'.repeat(32) };
+    const entry = await makeEvidence({ seq: 1, type: 'screen_flagged', agent: permission.document.agent, counterparty: 'x.near', caseRef: 'c',
+      summary: 'Hidden instructions found.', previousHash: ZERO_ROOT, permissionHash: await hashJson(permission.document),
+      createdAtMs: 105, details: {}, privateCheck }, envoiKeys);
+    const tree = await buildTree([entry.recordHash]);
+    const batch = { batchId: 2, root: tree.root, previousRoot: (await adapters.publicRecord.readRoot(1)).root, count: 1 };
+    const { txRef } = await adapters.publicRecord.seal(batch);
+    await adapters.ownerRegistry.register(permission.document.owner, { type: 'demo_device', label: 'Same device', publicKey: permission.ownerKey }).catch(() => {});
+    const proof = { format: 'envoi.proof/v1', ...entry, permission, batch: { ...batch, leafIndex: 0, siblings: tree.path(0) },
+      seal: { network: 'local', contract: 'local-record', txRef } };
+    const rowWith = async verifyScreen => (await checkProof(proof, { ...trust, evidenceKeys: { 'ev-1': entry.envoi.publicKey }, verifyScreen }))
+      .checks.find(row => row.id === 'private_check');
+    const missing = await rowWith(async () => { throw Object.assign(new Error('no python'), { code: 'VERIFIER_UNAVAILABLE' }); });
+    assert.deepEqual([missing.status, missing.reason], ['SKIP', 'verifier_unavailable']);
+    assert.match(missing.message, /hardware verifier isn't set up/);
+    assert.equal((await rowWith(async () => false)).status, 'FAIL', 'the verifier ran and said no');
+    assert.equal((await rowWith(async () => { throw new Error('bad evidence'); })).status, 'FAIL', 'an untagged error still fails');
+    assert.equal((await rowWith(async () => true)).status, 'PASS');
+  } finally { adapters.db.close(); }
+});
