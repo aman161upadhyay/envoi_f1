@@ -61,6 +61,21 @@ The verifier requires a provider TEE signature, the exact request and response h
 - `npm run testnet:smoke` sends a deliberately refused testnet payment and seals a smoke record. It checks that the vault balance stays the same. This is a contract test. It does not call inference, transfer funds from the vault, or produce an attested demo proof.
 - `npm run demo:live` is the full rehearsal. It holds both demo payments until a real inference receipt passes all checks. Use a fresh output filename after any partial run and inspect its recorded transaction IDs before retrying.
 
+### Check the deployment and a rehearsal without keys
+
+Both commands only read NEAR, need no `.env` and no keys, and default to the disposable PR302 testnet deployment.
+
+- `npm run verify:deployment -- --seal <tx> --refusal <tx>` checks:
+  - the accounts and the record and spending code hashes against the published hash;
+  - that the agent key can only `pay` and the publisher key can only `seal` and `register_evidence_key`;
+  - every sealed batch on the record contract, each linked to the one before;
+  - the contract lock and its storage headroom;
+  - each seal receipt against `root_of`;
+  - for each refused payment, the owner vault read from archival state just before and after it, to show it did not move.
+
+  `--owner <account>` checks another deployment. `--require-locked` turns "not locked yet" into a failure. Exits 0 verified, 1 mismatch, 2 not finished (for example not locked yet), 3 usage.
+- `npm run check:run -- testnet-run.json` checks every proof in a rehearsal output, then appends "(edited)" to each proof's summary and confirms the checker rejects that copy. envoi's key comes from the record contract; `--keys <file>` pins a key map instead. `--attestation` also re-runs the NEAR AI receipt verifier, and `--offline` checks signatures and batch paths only. Exits 0 when every genuine proof is verified and every edited copy is rejected, 1 on any failure, 2 when genuine proofs are only partly checked, 3 for usage or an unreadable file.
+
 ### Record contract: passkeys and envoi's evidence key
 
 The record contract (`contracts/near/record`) lists two kinds of signing key, so a proof can be checked against NEAR without trusting a file from envoi:
