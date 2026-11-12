@@ -31,17 +31,12 @@ if (!policy || policy.paused || policy.version < 1 || policy.payees.some(payee =
 }
 const caseRef = 'smoke-' + crypto.randomUUID();
 const amount = '20000000000000000000000000';
-const vault = async () => {
-  const result = await rpc('query', { request_type: 'call_function', account_id: spendContract, method_name: 'vault_of',
-    args_base64: Buffer.from(JSON.stringify({ owner })).toString('base64'), finality: 'final' });
-  return JSON.parse(Buffer.from(result.result));
-};
-const before = await vault();
+const before = await spendGuard.vaultOf(owner);
 const txRef = await callWithScopedKey({ rpc, keys: agentKey, sender: agent, receiver: spendContract, method: 'pay',
   args: { to: attacker, amount, case_ref: caseRef, expected_policy_hash: policy.policyHash } });
 const outcome = await spendGuard.readOutcome(txRef, agent);
 if (outcome?.status !== 'refused' || outcome.reason !== 'not_payee' || outcome.policyHash !== policy.policyHash ||
-    outcome.caseRef !== caseRef || await vault() !== before) throw new Error('Refusal was not verified: ' + txRef);
+    outcome.caseRef !== caseRef || await spendGuard.vaultOf(owner) !== before) throw new Error('Refusal was not verified: ' + txRef);
 console.log('Verified refusal and unchanged vault:', txRef);
 
 const result = await rpc('query', { request_type: 'call_function', account_id: recordContract, finality: 'final',

@@ -12,7 +12,7 @@ import { createRpc, DEFAULT_RPC } from '../adapters/near/rpc.mjs';
 import { callWithScopedKey } from '../adapters/near/sign.mjs';
 import { loadScopedKey } from '../adapters/near/key-file.mjs';
 import { publicHex } from '../packages/core/crypto.mjs';
-import { validAccount } from '../packages/core/policy.mjs';
+import { formatNear, validAccount } from '../packages/core/policy.mjs';
 
 
 const env = process.env;
@@ -68,9 +68,10 @@ async function main() {
   const records = [];
   const out = env.NEAR_RUN_OUTPUT || 'testnet-run.json';
   let evidenceRegistration;
+  let refusalVault;
   const output = extra => JSON.stringify({
     network, permission: { ...ownerPermission, registry: { network, contract: recordContract } },
-    evidenceKeys: { [keyId]: evidencePublicKey }, evidenceRegistration, records, ...extra
+    evidenceKeys: { [keyId]: evidencePublicKey }, evidenceRegistration, records, refusalVault, ...extra
   }, null, 2);
   // Reserve output before registration or payment broadcasts.
   await writeFile(out, output({ status: 'started' }), { flag: 'wx' });
@@ -115,9 +116,17 @@ async function main() {
     }
     return outcome;
   }
+  refusalVault = { unit: 'yoctoNEAR', before: await readers.spendGuard.vaultOf(owner) };
   const refused = await pay(attacker, String(20n * oneNear), 'refused');
-  await record('pay_refused', 'Milo tried to pay 20 NEAR. The testnet spending contract refused it.',
-    { to: refused.to, amount: refused.amount, reason: refused.reason }, { network, txRef: refused.txRef });
+  refusalVault.after = await readers.spendGuard.vaultOf(owner);
+  if (refusalVault.before !== refusalVault.after) {
+    await progress({ status: 'refusal-vault-mismatch', transactionRefs, evidenceDatabase: dbPath });
+    throw new Error('The owner vault changed during the refusal. The allowed payment was held: ' + refused.txRef);
+  }
+  await record('pay_refused', 'Milo tried to pay 20 NEAR. The testnet spending contract refused it. The vault balance stayed the same.',
+    { to: refused.to, amount: refused.amount, reason: refused.reason, vault: refusalVault }, { network, txRef: refused.txRef });
+  await progress({ status: 'refusal-verified', transactionRefs, evidenceDatabase: dbPath });
+  console.log('Refusal vault balance before and after:', formatNear(refusalVault.before), refused.txRef);
   await record('share_blocked', 'Sharing files is Off, so envoi blocked it.', { file: 'budget.xlsx' });
   const paid = await pay(payee, String(oneNear / 2n), 'paid');
   await record('paid', 'Milo paid 0.5 NEAR to Ledger Co on testnet.',

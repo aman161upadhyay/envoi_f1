@@ -73,9 +73,8 @@ if (rpcReady && configured) {
     });
   }
   await check('Owner vault', async () => {
-    const response = await rpc('query', { request_type: 'call_function', account_id: spendContract,
-      method_name: 'vault_of', args_base64: Buffer.from(JSON.stringify({ owner })).toString('base64'), finality: 'final' });
-    requireThat(BigInt(JSON.parse(Buffer.from(response.result))) >= 5n * 10n ** 23n, 'Fund the owner vault with at least 0.5 testnet NEAR.');
+    requireThat(BigInt(await readers.spendGuard.vaultOf(owner)) >= 5n * 10n ** 23n,
+      'Fund the owner vault with at least 0.5 testnet NEAR.');
   });
   await check('Signed policy', async () => {
     const signed = JSON.parse(await readFile(env.NEAR_SIGNED_POLICY_FILE || 'signed-policy.json', 'utf8'));

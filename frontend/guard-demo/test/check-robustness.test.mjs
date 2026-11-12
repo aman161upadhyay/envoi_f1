@@ -174,6 +174,24 @@ test('NEAR readers report an unreachable network as unavailable', async () => {
   await assert.rejects(readers.publicRecord.readRoot(1), error => isNearUnavailable(error));
 });
 
+test('vault reads use finalized contract state and preserve exact yoctoNEAR amounts', async () => {
+  const amount = '2500000000000000000000000';
+  const balances = [amount, amount, null];
+  const readers = nearReaders({ rpcUrl: 'https://rpc.example', spendContract: 'spend.testnet',
+    fetcher: async (_url, options) => {
+      const { method, params } = JSON.parse(options.body);
+      assert.equal(method, 'query');
+      assert.deepEqual(params, {
+        request_type: 'call_function', account_id: 'spend.testnet', finality: 'final',
+        method_name: 'vault_of', args_base64: Buffer.from('{"owner":"owner.testnet"}').toString('base64')
+      });
+      return jsonResponse({ result: { result: [...Buffer.from(JSON.stringify(balances.shift()))] } });
+    } });
+  assert.equal(await readers.spendGuard.vaultOf('owner.testnet'), amount);
+  assert.equal(await readers.spendGuard.vaultOf('owner.testnet'), amount);
+  await assert.rejects(readers.spendGuard.vaultOf('owner.testnet'), /Invalid amount/);
+});
+
 test('CLI exit codes separate verified, failed, partial and bad files', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'envoi-check-'));
   await withFixture({}, async ({ proof, trust }) => {

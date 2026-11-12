@@ -1,4 +1,5 @@
 import { createRpc, DEFAULT_RPC } from './rpc.mjs';
+import { parseAmount } from '../../packages/core/policy.mjs';
 
 const TX_HASH = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const decode = value => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value), char => char.charCodeAt(0))));
@@ -64,6 +65,11 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
   };
   const spendGuard = {
     network, unit: 'yoctoNEAR',
+    async vaultOf(owner) {
+      const balance = await view(spendContract, 'vault_of', { owner });
+      parseAmount(balance);
+      return balance;
+    },
     async getPolicy(agent) {
       const policy = await view(spendContract, 'get_policy', { agent });
       return policy && { policyHash: policy.policy_hash, version: policy.version, paused: policy.paused, dailyCap: policy.daily_cap,
