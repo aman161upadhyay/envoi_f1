@@ -57,6 +57,13 @@ This can't be undone: the contract has no upgrade or key-adding method. A fix af
 ## Checker commands
 
 ```bash
+npm run verify:deployment -- --seal 6X5bHczCKB6Fn6U4jtAEHH9JS6WLGnrdAf5abNdEAy4F --refusal 2h2wQZSp1zag8885oNvgdu7TphDaDkxtdtFgv7852nP9 --refusal DCAMevY3PQbpf4tXegKKuwo41RpMcDd2fKrWq499eAow
+npm run check:run -- testnet-run.json   # every proof, plus an edited copy of each
+```
+
+On November 11 the first command passed every check except the lock ("not locked yet", exit 2).
+
+```bash
 npm run check -- genuine-proof.json --testnet          # envoi's key from the record contract
 npm run check -- edited-proof.json --testnet           # expect exit 1, "This record can't be trusted."
 npm run check -- genuine-proof.json trusted-evidence-keys.json --testnet   # optional pinned key map
