@@ -18,7 +18,13 @@ npm run demo -- --serve
 
 Open [Acme Q4 review](http://127.0.0.1:4173/demo) and step through the replay. In **Evidence**, inspect the refused payment, then open **Check the refused payment** and **Change one character**. The original proof passes local signature and integrity checks with online checks skipped. The edited proof fails. The offline replay uses fictional inputs, local screening, simulated payments, and local sealing. It needs no account, credentials, or network access. Press Ctrl+C to stop the server.
 
-The NEAR integration uses a spending contract and a restricted function-call key for payments, a public record contract for evidence seals, and NEAR AI for private screening with attestation. The integrated app also supports owner-signed case grants and approvals in chat. The live testnet rehearsal is pending. The standalone offline replay runs independently of the main Envoi app and its hosted services. See the [judge walkthrough and testnet runbook](frontend/guard-demo/README.md).
+The standalone replay runs independently of the main Envoi app and its hosted services. The integrated app supports owner-signed case grants and approvals in chat. See the [judge walkthrough and testnet runbook](frontend/guard-demo/README.md) for the live setup, which requires configured testnet accounts, scoped keys, and NEAR AI credentials.
+
+In the November 13 live rehearsal, NEAR AI Cloud flagged a hidden payment instruction and all six attestation checks passed. A NEAR testnet spending contract enforced the owner's limits and approved recipients through a payment-only function-call key.
+
+- The contract refused an attempted 20 NEAR transfer to an unapproved account and the vault balance stayed the same. [Refused transfer](https://testnet.nearblocks.io/txns/CJENrFVzbAJmmWF7RPwWSVNFEShc3hYzg5bVZxiEKfv6)
+- The contract paid 0.5 NEAR to the approved market-data vendor. [Finalized payment](https://testnet.nearblocks.io/txns/HZDzuTTHn1TsBBe8Zq4fnmTBuQMjZesp2aHzhSPceA1H)
+- The record contract anchored a batch covering five evidence records. The originals passed local integrity checks and edited copies were rejected. The online checker still flagged the record contract's unlocked status at rehearsal time. [Finalized seal](https://testnet.nearblocks.io/txns/FdotSXv4W4DxazJiUf4o3VeCmjtDQ3Ag2vEWLaWALoro)
 
 Envoi is an existing product. The hackathon candidate adds the NEAR Guard integration to the Envoi baseline at `b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5`. Use [the branch comparison](https://github.com/rachelgonsalves821/Envoi/compare/b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...codex%2Fguard-v4-integration) after publication, or run `git diff b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...HEAD` from the hackathon branch.
 

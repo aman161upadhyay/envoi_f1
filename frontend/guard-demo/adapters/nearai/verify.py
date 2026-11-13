@@ -51,11 +51,22 @@ async def verify(evidence):
 
     matches = [row for row in report["model_attestations"]
                if row.get("signing_address", "").lower() == address and row.get("signing_algo", "ecdsa").lower() == "ecdsa"]
-    if len(matches) != 1:
-        return checks
-    attestation = matches[0]
-    checks.update(await verify_hardware(attestation, nonce, address))
-    return checks
+    best = checks
+    unavailable = None
+    for attestation in matches:
+        try:
+            hardware = await verify_hardware(attestation, nonce, address)
+        except Exception as error:
+            unavailable = error
+            continue
+        if all(hardware.values()):
+            return {**checks, **hardware}
+        candidate = {**checks, **hardware}
+        if sum(candidate.values()) > sum(best.values()):
+            best = candidate
+    if unavailable is not None:
+        raise unavailable
+    return best
 
 async def verify_hardware(attestation, nonce, address):
     checks = dict.fromkeys(("signer_attested", "report_data", "tdx_quote", "gpu"), False)
