@@ -19,6 +19,7 @@ const MONTH = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*';
 const WEEKDAY = '(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day';
 const RULES: Rule[] = [
   // Things an agent cannot settle without a person.
+  { pattern: /\bpay \d+(?:\.\d+)? NEAR to [\w.-]+/gi, tier: 'blocking', category: 'payee', reason: 'Asks to send money to an account Dana never approved.' },
   { pattern: /\b(?:use (?:the|our) new (?:bank )?account(?: for this payment)?|(?:our|the) bank (?:details|account|information) (?:have|has) changed|(?:new|updated|different) (?:bank|remittance|wire|payment) (?:account|details|instructions)|(?:change|update|switch) the (?:payee|bank account|remittance)[^.,;]{0,40}|our bank changed processors[^.,;]*|new account is at [A-Z][\w ]*(?:, ending \d{4})?)/gi, tier: 'blocking', category: 'payee', reason: 'Changes where the money goes. Only you can approve a new payee.' },
   { pattern: /\b(?:(?:if )?the deposit (?:is|be|must be|has to be) (?:paid|sent|received)(?: (?:today|now|immediately|by [^.,;]+|within [^.,;]+))?|(?:send|wire|transfer|pay) (?:the )?(?:deposit|payment|funds)(?: (?:today|now|immediately|right away))?|pay(?:ment)? (?:today|immediately|right away))/gi, tier: 'blocking', category: 'money', reason: 'Asks for money to move. Paying needs your approval.' },
   { pattern: /\b(?:the full list of your end-customer contacts[^.;]*?phone numbers|end-customer contact details|(?:send|share|provide|give) (?:us |me )?(?:the )?(?:full )?(?:list|details|contacts?|emails?|phone numbers?) (?:of|for) (?:your )?(?:customers?|clients?|employees?|users?)[^.;]{0,30}|social security number|passport number|credit card number|card number|date of birth)/gi, tier: 'blocking', category: 'data', reason: 'Asks for personal data beyond what the task needs.' },
@@ -27,6 +28,7 @@ const RULES: Rule[] = [
 
   // Worth reading, but the agent can carry on.
   { pattern: /\bwithin (?:your|the) \$[\d,]+(?:\.\d+)? budget/gi, tier: 'review', category: 'money', reason: 'The limit you set. Check that the offer respects it.' },
+  { pattern: /\b\d+(?:\.\d+)? NEAR\b/g, tier: 'review', category: 'money', reason: 'An amount of NEAR. Check it against what you authorised.' },
   { pattern: /(?<![\w$])\$\d[\d,]*(?:\.\d{1,2})?(?:[kKmM])?(?:\s*(?:per (?:person|guest|month|hour|seat)|a month|monthly|in total|total|all[- ]in))?/g, tier: 'review', category: 'money', reason: 'An amount of money. Check it against what you authorised.' },
   { pattern: /\b\d+(?:\.\d+)?% (?:(?:monthly|late|service|cancellation) )*(?:fee|deposit|gratuity|penalty|interest|surcharge)/gi, tier: 'review', category: 'money', reason: 'A percentage charge that adds to the total.' },
   { pattern: /\b(?:late fee|non-?refundable[^.;,]*|refundable until [^.,;]+|balance is due [^.,;]+|cancell?ation (?:fee|policy)[^.,;]*)/gi, tier: 'review', category: 'terms', reason: 'A cost or cutoff that is hard to undo.' },
