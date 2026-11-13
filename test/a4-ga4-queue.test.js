@@ -8,7 +8,9 @@ import assert from 'node:assert/strict';
 import { api, claim, launch, owner, ownerMessages, send, sleep, waitForMessageStatus } from './a3-harness.js';
 
 const backends = [{ name: 'FileStore', env: {}, suffix: '46' }, ...(process.env.DATABASE_URL ? [{ name: 'PostgreSQL', env: { DATABASE_URL: process.env.DATABASE_URL }, suffix: '47' }] : [])];
-const RETRY_BASE_MS = 3000;
+// Keep the retry pending while the test delivers and completes the offline work.
+// Match the GA4 connector harness so slow test hosts can still observe the idle hint.
+const RETRY_BASE_MS = 20_000;
 
 for (const backend of backends) {
   test(`[${backend.name}] retry-delayed and offline work each settle exactly once without any event`, { timeout: 60000 }, async t => {
