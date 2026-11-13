@@ -1,6 +1,14 @@
 import { nearAiScreen, checkIds } from '../frontend/guard-demo/adapters/nearai/screen.mjs';
 import { valueDigest } from './policy-engine.js';
 
+export function screeningTraceDetails({ outcome, receiptDigest, provider, checks }) {
+  return { outcome, receiptDigest, ...(provider === 'near-ai-cloud' && Array.isArray(checks) && {
+    attestation: { source: provider, checks: checkIds.map(id => ({
+      id, passed: checks.some(check => check.id === id && check.status === 'passed')
+    })) }
+  }) };
+}
+
 export function createNativePrivateScreening({ enabled, apiKey, model } = {}) {
   if (!enabled) return null;
   const provider = nearAiScreen({ apiKey, model, checkTimeoutMs: 40_000 });

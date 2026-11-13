@@ -7,7 +7,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY --chown=node:node src ./src
-COPY --chown=node:node frontend/guard-demo/packages/core/crypto.mjs frontend/guard-demo/packages/core/webauthn.mjs ./frontend/guard-demo/packages/core/
+COPY --chown=node:node frontend/guard-demo/packages/core/crypto.mjs frontend/guard-demo/packages/core/webauthn.mjs frontend/guard-demo/packages/core/policy.mjs frontend/guard-demo/packages/core/case-grants.mjs ./frontend/guard-demo/packages/core/
 COPY --chown=node:node frontend/guard-demo/adapters/near/read.mjs frontend/guard-demo/adapters/near/rpc.mjs ./frontend/guard-demo/adapters/near/
 COPY --chown=node:node frontend/guard-demo/adapters/nearai ./frontend/guard-demo/adapters/nearai/
 COPY --chown=node:node scripts/verify-office-edit.py ./scripts/verify-office-edit.py

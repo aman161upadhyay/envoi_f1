@@ -109,7 +109,7 @@ export function appendEvent(caseInput, event) {
   return caseInput;
 }
 
-export function addPolicyEvaluation(caseInput, evaluation, { eventId, at } = {}) {
+export function addPolicyEvaluation(caseInput, evaluation, { eventId, at, target } = {}) {
   const value = clone(caseInput);
   if (!value.policyEvaluations.some(item => item.id === evaluation.id)) value.policyEvaluations.push(evaluation);
   if (!value.authorityRefs.includes(evaluation.id)) value.authorityRefs.push(evaluation.id);
@@ -118,7 +118,7 @@ export function addPolicyEvaluation(caseInput, evaluation, { eventId, at } = {})
     type: 'policyEvaluation',
     actor: evaluation.actor,
     createdAt: at || evaluation.effectiveAt,
-    payload: { requestedAction: evaluation.requestedAction, decision: evaluation.decision, reasonCode: evaluation.reasonCode },
+    payload: { requestedAction: evaluation.requestedAction, decision: evaluation.decision, reasonCode: evaluation.reasonCode, ...target },
     linkedPolicyEvaluation: evaluation.id,
     precedingEventRef: value.events.at(-1)?.id || null
   });

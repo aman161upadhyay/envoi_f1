@@ -31,7 +31,7 @@ const ATTESTATION_CHECKS: Array<[string, string]> = [
   ['gpu', 'GPU attested']
 ];
 
-const OUTCOME_WORDS: Record<string, string> = { confirmed: 'Paid', refused: 'Refused by contract', flagged: 'Flagged' };
+const OUTCOME_WORDS: Record<string, string> = { confirmed: 'Paid', paid: 'Paid', refused: 'Refused by contract', flagged: 'Flagged' };
 
 function downloadStep(step: CaseTraceStep) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(step, null, 2)], { type: 'application/json' }));
@@ -50,10 +50,11 @@ export function traceSource(step: CaseTraceStep): string {
 /** The only place "Sealed on NEAR" is written. It needs a final seal on a near-* network. */
 export function sealStatus(step: CaseTraceStep): { text: string; href?: string } | null {
   const seal = step.seal;
-  if (seal?.status === 'final' && seal.network.startsWith('near-')) {
-    return { text: 'Sealed on NEAR', href: seal.txRef ? `https://testnet.nearblocks.io/txns/${encodeURIComponent(seal.txRef)}` : undefined };
+  if (seal?.status === 'final' && ['near-testnet', 'near-mainnet'].includes(seal.network) && seal.txRef) {
+    const explorer = seal.network === 'near-testnet' ? 'testnet.nearblocks.io' : 'nearblocks.io';
+    return { text: 'Sealed on NEAR', href: `https://${explorer}/txns/${encodeURIComponent(seal.txRef)}` };
   }
-  if (seal?.status === 'final') return { text: 'Sealed locally' };
+  if (seal?.status === 'final' && !seal.network.startsWith('near-')) return { text: 'Sealed locally' };
   return step.record.sensitive ? { text: 'Awaiting seal' } : null;
 }
 
@@ -66,7 +67,7 @@ function Attestation({ step }: { step: CaseTraceStep }) {
       return <li key={id} className={passed ? 'passed' : 'failed'}>{passed ? 'Passed' : 'Failed'}: {text}</li>;
     })}</ul>;
   }
-  return <p className="trace-note">{attestation?.source === 'offline-replay' ? 'Private screening: local screening (Offline replay)' : 'Screened on NEAR AI Cloud. Attestation receipt not available yet.'}</p>;
+  return <p className="trace-note">{attestation?.source === 'offline-replay' ? 'Private screening: local screening (Offline replay)' : 'Attestation results are unavailable for this record.'}</p>;
 }
 
 function ProofCheck({ step, previous }: { step: CaseTraceStep; previous?: CaseTraceStep }) {
@@ -91,7 +92,7 @@ function ProofCheck({ step, previous }: { step: CaseTraceStep; previous?: CaseTr
     {result && <div className="trace-verdicts" role="status">
       <p className={`trace-verdict ${result.original.status === 'genuine' ? 'passed' : 'failed'}`}><strong>Original:</strong> {result.original.status === 'genuine' ? 'genuine' : result.original.message}</p>
       {result.edited && <p className={`trace-verdict ${result.edited.status === 'genuine' ? 'passed' : 'failed'}`}><strong>Edited:</strong> {result.edited.status === 'changed' ? 'changed after it was recorded' : result.edited.message}</p>}
-      {result.original.status === 'genuine' && <p className="trace-note">{result.original.message}</p>}
+      {result.original.status === 'genuine' && <p className="trace-note">The browser checked the record’s digest and signature. Use the exported proof and checker to verify the NEAR seal.</p>}
       {result.edited && result.edited.status !== 'genuine' && <p className="trace-note">{result.edited.message}</p>}
     </div>}
   </div>;
@@ -112,15 +113,21 @@ function stepSummary(step: CaseTraceStep, assets: Asset[], directory?: Record<st
   return { sentence: null, outcome: details.outcome ? OUTCOME_WORDS[String(details.outcome)] || label(String(details.outcome)).replace(/^./, c => c.toUpperCase()) : null, rule: null };
 }
 
+const focusKey = (step: CaseTraceStep) => step.record.type === 'payment.confirmed' && step.record.details.actionId
+  ? `evt_${step.record.details.actionId}`
+  : step.record.details.policyEvaluationId || step.record.id;
+
 export function CaseTracePanel({ inboxId, caseId, focusId, assets = [], directory, ownerName }: { inboxId: string; caseId: string; focusId?: string; assets?: Asset[]; directory?: Record<string, ParticipantIdentity> | ParticipantIdentity[]; ownerName?: string }) {
   const [steps, setSteps] = useState<CaseTraceStep[] | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
+    setFailed(false);
+    setSteps(null);
     void request<{ steps: CaseTraceStep[] }>(
       `/api/inboxes/${encodeURIComponent(inboxId)}/cases/${encodeURIComponent(caseId)}/signed-trace`,
       { signal: controller.signal }
-    ).then(result => setSteps(result.steps)).catch(() => {
+    ).then(result => { if (!controller.signal.aborted) setSteps(result.steps); }).catch(() => {
       if (!controller.signal.aborted) setFailed(true);
     });
     return () => controller.abort();
@@ -135,10 +142,10 @@ export function CaseTracePanel({ inboxId, caseId, focusId, assets = [], director
   if (!ordered) return <p role="status">Loading signed evidence…</p>;
   if (!ordered.length) return <p>No signed evidence has been recorded for this case.</p>;
   return <ol className="trace-timeline">{ordered.map((step, position) => {
-    const focused = Boolean(focusId && (step.record.details.policyEvaluationId === focusId || step.record.id === focusId));
+    const focused = focusId === focusKey(step);
     const summary = stepSummary(step, assets, directory, ownerName);
     const seal = sealStatus(step);
-    return <li key={step.record.id} data-trace-focus={step.record.details.policyEvaluationId || step.record.id} className={`trace-step${focused ? ' trace-focused' : ''}`}>
+    return <li key={step.record.id} data-trace-focus={focusKey(step)} className={`trace-step${focused ? ' trace-focused' : ''}`}>
       <div className="trace-head">
         <strong>{TYPE_WORDS[step.record.type] || label(step.record.type)}</strong>
         <span className="source-chip">{traceSource(step)}</span>

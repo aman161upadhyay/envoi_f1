@@ -17,7 +17,7 @@ import { DeliveryWorker } from './delivery-worker.js';
 import { createConsumerIdentity, consumerLogger } from './consumer-identity.js';
 import { createEmailTransport } from './email-transport.js';
 import { createProtocolMessage } from './protocol-v1.js';
-import { createNativePrivateScreening } from './native-private-screening.js';
+import { createNativePrivateScreening, screeningTraceDetails } from './native-private-screening.js';
 import { createObjectStorageAdapter, DocumentObjectMetadataStore, FailClosedScanner, HttpMalwareScanner, ObjectStorageService, PersistentQuotaLedger } from './object-storage.js';
 import { officeRevisionFormat, readOfficeComments, verifyOfficeRevision } from './office-edit.js';
 import { PostgresMalwareScanJobStore } from './object-scan-lifecycle.js';
@@ -1923,8 +1923,7 @@ async function writeGroupMessage(binding, identity, input, messageId, writeAudit
   }
   await store.putJsonBatch(documents);
   if (screened) {
-    const { outcome, receiptDigest } = message.privateScreening;
-    await writeAudit('message.private_screened', { caseId, messageId, outcome, receiptDigest,
+    await writeAudit('message.private_screened', { caseId, messageId, ...screeningTraceDetails(message.privateScreening),
       groupCase: true, memberAgentIds: binding.agentIds }, at);
   }
   for (const inboxId of binding.inboxIds) {
@@ -2432,8 +2431,7 @@ async function recordPrivateScreening(screened, { id, caseId, senderInboxId }, a
   const receipt = screeningReceiptDocument({ id, caseId, senderInboxId, privateScreening }, screened.evidence, at);
   await store.putJson(receipt.path, receipt.value);
   if (writeAudit) {
-    const { outcome, receiptDigest } = privateScreening;
-    await writeAudit('message.private_screened', { caseId, messageId: id, outcome, receiptDigest }, at);
+    await writeAudit('message.private_screened', { caseId, messageId: id, ...screeningTraceDetails(privateScreening) }, at);
   }
 }
 
@@ -2513,8 +2511,7 @@ async function enqueueNativeMessage(message, senderInbox, recipientInboxId, even
   if (delivery.requestHash && delivery.requestHash !== queued.requestHash) throw nativeIdempotencyConflict();
   await writeAudit(eventType, auditData, queuedAt);
   if (screened) {
-    const { outcome, receiptDigest } = queued.privateScreening;
-    await writeAudit('message.private_screened', { messageId: queued.id, caseId: queued.caseId, outcome, receiptDigest }, queuedAt);
+    await writeAudit('message.private_screened', { messageId: queued.id, caseId: queued.caseId, ...screeningTraceDetails(queued.privateScreening) }, queuedAt);
   }
   return delivery.enqueueCreated ? queued : await store.getJson(messagePath(senderInbox.id, queued.id), queued);
 }
@@ -6699,10 +6696,14 @@ async function route(req, res) {
         }
         const outcome = await nearCasePayment.confirm(payment.instruction, input.txRef);
         const confirmed = { ...payment, outcome, confirmedAt: store.now() };
+        const receipt = { actionId: payment.id, txRef: outcome.txRef, outcome: outcome.status, reasonCode: outcome.reason ?? null,
+          payee: outcome.to, amount: outcome.amount, network: payment.instruction.network };
+        appendEvent(value, { id: `evt_${payment.id}`, type: 'receipt', actor: principal.id, createdAt: confirmed.confirmedAt,
+          linkedPolicyEvaluation: payment.policyEvaluationId, payload: receipt });
+        await saveCase(inboxId, value);
         await store.putJson(location, confirmed);
         await writeAudit('payment.confirmed', { caseId, agentId: principal.id, policyEvaluationId: payment.policyEvaluationId,
-          actionId: payment.id, txRef: outcome.txRef, outcome: outcome.status, reasonCode: outcome.reason ?? null,
-          payee: outcome.to, amount: outcome.amount, network: payment.instruction.network });
+          ...receipt }, confirmed.confirmedAt);
         return { status: 200, payment: confirmed };
       }
       const evaluationId = assertSafeIdentifier(input.policyEvaluationId, 'policyEvaluationId');
@@ -6764,8 +6765,8 @@ async function route(req, res) {
     return json(res, 200, result);
   }
 
-  const signedPolicyRoute = suffix.match(/^cases\/([^/]+)\/(signed-policy(?:\/preview)?|signed-approval\/([^/]+))$/);
-  if (signedPolicyRoute && ['GET', 'POST'].includes(req.method)) {
+  const signedPolicyRoute = suffix.match(/^cases\/([^/]+)\/(signed-policy(?:\/preview)?|signed-approval\/([^/]+)|spend-scope)$/);
+  if (signedPolicyRoute && (req.method === 'GET' || (req.method === 'POST' && signedPolicyRoute[2] !== 'spend-scope'))) {
     const [, rawCaseId, operation, rawEvaluationId] = signedPolicyRoute;
     const caseId = assertSafeIdentifier(rawCaseId, 'caseId');
     const human = await auth.getHuman(req);
@@ -6781,6 +6782,10 @@ async function route(req, res) {
       await store.getJson(caseBindingPath(caseId)), { inboxId, agent: { id: currentInbox.ownerAgentId } }
     );
     if (!value?.schemaVersion || !await isGroupPolicyMember(value, inbox)) return fail(res, 404, 'Supported structured case not found.');
+    if (operation === 'spend-scope') {
+      const scope = await nearCasePayment?.readScope({ agentId: inbox.ownerAgentId, ownerAccount });
+      return scope ? json(res, 200, scope) : fail(res, 404, 'NEAR spending scope is unavailable for this case.');
+    }
     const context = signedCasePolicyContext(inbox, caseId);
     const signing = { ownerAccount, recordContract: signedPolicyRecordContract, network: signedPolicyNetwork, rpId: signedPolicyRpId,
       passkey: signedPolicyRpId && signedPolicyOrigins.length ? { rpId: signedPolicyRpId, origins: signedPolicyOrigins } : null };
@@ -6915,10 +6920,23 @@ async function route(req, res) {
       const evaluationId = store.id('policy_eval');
       const evaluated = await evaluateServerPolicy(inboxId, currentPrincipal, value, { ...input, id: evaluationId }, { id: evaluationId });
       const created = policyEvaluationFromInput({ id: evaluationId, requestedAction: input.requestedAction, decision: evaluated.decision, matchedPolicyId: evaluated.matchedPolicyId, grantType: 'oneTime', expiresAt: evaluated.expiresAt, reasonCode: evaluated.reasonCode, signedPolicy: evaluated.signedPolicy }, currentPrincipal.id, now);
-      const updated = addPolicyEvaluation(value, created, { at: now });
+      const { payee, amount, assetId, recipientAgentId, parts } = evaluated.binding.actionPayload ?? {};
+      const target = {
+        ...(created.requestedAction === 'payment.near' && typeof payee === 'string'
+          && /^[a-z0-9]+(?:[._-][a-z0-9]+)*\.testnet$/.test(payee) && payee.length <= 64 && { payee }),
+        ...(created.requestedAction === 'payment.near' && amount?.network === 'near-testnet' && amount.unit === 'yoctoNEAR'
+          && typeof amount.units === 'string' && /^[0-9]{1,39}$/.test(amount.units) && { amount: amount.units, network: amount.network }),
+        ...(['asset.read', 'asset.edit', 'asset.share', 'message.send'].includes(created.requestedAction)
+          && typeof assetId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(assetId) && { assetId }),
+        ...(['asset.share', 'message.send'].includes(created.requestedAction) && typeof recipientAgentId === 'string'
+          && /^[A-Za-z0-9_-]{1,128}$/.test(recipientAgentId) && { recipientAgentId }),
+        ...(created.requestedAction === 'asset.edit' && Array.isArray(parts) && parts.length <= 100 && parts.every(Number.isSafeInteger) && { parts })
+      };
+      const updated = addPolicyEvaluation(value, created, { at: now, target });
       await saveCase(inboxId, updated);
       await store.putJson(policyBindingPath(inboxId, created.id), evaluated.binding);
-      await writeAudit('policy.evaluated', { caseId: value.id, policyEvaluationId: created.id, requestedAction: created.requestedAction, decision: created.decision, reasonCode: created.reasonCode });
+      await writeAudit('policy.evaluated', { caseId: value.id, policyEvaluationId: created.id, requestedAction: created.requestedAction,
+        decision: created.decision, reasonCode: created.reasonCode, ...target });
       return created;
     });
     return json(res, 201, evaluation);
@@ -7651,8 +7669,8 @@ async function route(req, res) {
     });
     await audit(inboxId, `asset.scan_${scanned.state}`, { assetId: scanned.id, caseId: scanned.caseId, createdByAgentId: scanned.createdByAgentId, scan: scanned.scan });
     if (scanned.contentScreening?.receiptDigest) {
-      const { outcome, receiptDigest } = scanned.contentScreening;
-      await audit(inboxId, 'message.private_screened', { assetId: scanned.id, caseId: scanned.caseId, outcome, receiptDigest });
+      await audit(inboxId, 'message.private_screened', { assetId: scanned.id, caseId: scanned.caseId,
+        ...screeningTraceDetails(scanned.contentScreening) });
     }
     return json(res, 200, scanned);
   }

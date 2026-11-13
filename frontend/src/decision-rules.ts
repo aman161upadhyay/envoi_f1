@@ -31,8 +31,7 @@ export function formatNear(units: unknown): string | null {
   try { value = BigInt(String(units)); } catch { return null; }
   if (value < 0n) return null;
   const whole = value / YOCTO_PER_NEAR;
-  const thousandths = ((value % YOCTO_PER_NEAR) * 1000n) / YOCTO_PER_NEAR;
-  const fraction = thousandths.toString().padStart(3, '0').replace(/0+$/, '');
+  const fraction = (value % YOCTO_PER_NEAR).toString().padStart(24, '0').replace(/0+$/, '');
   return `${whole}${fraction ? `.${fraction}` : ''} NEAR`;
 }
 
@@ -65,7 +64,7 @@ export function describeAction(action: string, target: Record<string, unknown> |
   })();
   const recipient = nameFor(details.recipientAgentId ?? details.recipient, directory, scope);
   if (action === 'payment.near') {
-    const money = formatNear((details.amount as { units?: unknown } | undefined)?.units);
+    const money = formatNear(typeof details.amount === 'string' ? details.amount : (details.amount as { units?: unknown } | undefined)?.units);
     const payee = payeeName(details.payee, scope);
     return `Pay ${money ?? 'an amount'}${payee ? ` to ${payee}` : ''}`;
   }
@@ -99,7 +98,10 @@ export function ruleFor(reasonCode: string | null | undefined, decision: 'allow'
   if (code === 'ownerSignedGrantDenied') return { outcome: base, rule: `${possessive[0].toUpperCase()}${possessive.slice(1)} signed policy turns this off.` };
   if (code === 'ownerSignedGrantMissing') return { outcome: base, rule: `No signed grant covers this. Everything ${context.ownerName || 'the owner'} didn't list is off.` };
   if (lower.includes('payee')) return { outcome: 'Refused by contract', rule: `The spending contract only pays payees on ${possessive} signed list.` };
-  if (lower.includes('per_payment') || lower.includes('perpayment')) return { outcome: 'Refused by contract', rule: 'Over the per-payment limit.' };
+  if (lower === 'over_max' || lower.includes('per_payment') || lower.includes('perpayment')) return { outcome: 'Refused by contract', rule: 'Over the per-payment limit.' };
   if (lower.includes('daily')) return { outcome: 'Refused by contract', rule: 'Over the daily limit.' };
+  if (lower === 'vault_low') return { outcome: 'Refused by contract', rule: 'The vault balance was too low.' };
+  if (lower === 'paused') return { outcome: 'Refused by contract', rule: 'The spending policy was paused.' };
+  if (lower === 'not_registered') return { outcome: 'Refused by contract', rule: 'The agent was not registered with the spending contract.' };
   return { outcome: base, rule: code ? `${humanize(code)}.` : 'No reason was recorded.' };
 }

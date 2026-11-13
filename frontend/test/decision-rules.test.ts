@@ -13,10 +13,11 @@ const directory: Record<string, ParticipantIdentity> = {
 };
 
 describe('formatNear', () => {
-  it('converts yoctoNEAR to NEAR with up to three decimals', () => {
+  it('converts yoctoNEAR without dropping digits', () => {
     expect(formatNear('500000000000000000000000')).toBe('0.5 NEAR');
     expect(formatNear('20000000000000000000000000')).toBe('20 NEAR');
-    expect(formatNear('1234567000000000000000000')).toBe('1.234 NEAR');
+    expect(formatNear('1234567000000000000000000')).toBe('1.234567 NEAR');
+    expect(formatNear('1')).toBe('0.000000000000000000000001 NEAR');
     expect(formatNear('0')).toBe('0 NEAR');
     expect(formatNear('nope')).toBeNull();
   });
@@ -35,6 +36,7 @@ describe('describeAction', () => {
   it('describes each action in plain words', () => {
     const amount = { units: '500000000000000000000000', unit: 'yoctoNEAR', network: 'offline-replay' };
     expect(describeAction('payment.near', { payee: 'ledger-payee.northwind.near', amount }, assets, directory)).toBe('Pay 0.5 NEAR to ledger-payee.northwind.near');
+    expect(describeAction('payment.near', { payee: 'ledger.testnet', amount: amount.units })).toBe('Pay 0.5 NEAR to ledger.testnet');
     expect(describeAction('payment.near', { payee: 'ledger-payee.northwind.near', amount }, assets, directory, { payees: [{ label: 'Ledger Co', account: 'ledger-payee.northwind.near' }] })).toBe('Pay 0.5 NEAR to Ledger Co');
     setPayeeLabels({ 'ledger-payee.northwind.near': 'Ledger Co' });
     expect(describeAction('payment.near', { payee: 'ledger-payee.northwind.near', amount }, assets, directory)).toBe('Pay 0.5 NEAR to Ledger Co');
@@ -67,6 +69,7 @@ describe('ruleFor', () => {
   it('handles spending contract refusals generically', () => {
     expect(ruleFor('payee_not_allowed', 'deny', null, context)).toEqual({ outcome: 'Refused by contract', rule: "The spending contract only pays payees on Dana's signed list." });
     expect(ruleFor('over_per_payment_limit', 'deny', null, context).rule).toBe('Over the per-payment limit.');
+    expect(ruleFor('over_max', 'deny', null, context).rule).toBe('Over the per-payment limit.');
     expect(ruleFor('dailyCapExceeded', 'deny', null, context).rule).toBe('Over the daily limit.');
     expect(ruleFor('somethingNew', 'deny', null, context).rule).toBe('Something New.');
   });

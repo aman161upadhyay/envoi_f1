@@ -71,6 +71,7 @@ test('verified screening runs before native pair and group messages enter shared
   const dataDir = await mkdtemp(path.join(tmpdir(), 'envoi-private-screening-'));
   const server = await launch(dataDir, {
     ENVOI_ENABLE_PRIVATE_MESSAGE_SCREENING: 'true',
+    ENVOI_CASE_TRACE_SIGNING_KEY: generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
     ENVOI_INSTALLATIONS_V2: 'true', ENVOI_CASE_SESSIONS_V1: 'true',
     NODE_OPTIONS: `--import=${new URL('./private-screening-loader.mjs', import.meta.url).href}`
   });
@@ -111,6 +112,14 @@ test('verified screening runs before native pair and group messages enter shared
   assert.ok(!JSON.stringify(senderView).includes(quote));
   assert.ok(senderView.payload.recentEvents.some(event => event.type === 'message.private_screened'
     && event.messageId === received.id && event.receiptDigest === received.privateScreening.receiptDigest));
+  const trace = await api(baseUrl, `/api/inboxes/${alice.inbox.id}/cases/${caseId}/signed-trace`, { session: alice.session });
+  assert.equal(trace.status, 200);
+  const step = trace.payload.steps.find(item => item.record.type === 'message.private_screened' && item.record.details.messageId === received.id);
+  assert.deepEqual(step.record.details.attestation, {
+    source: 'near-ai-cloud', checks: received.privateScreening.checks.map(({ id }) => ({ id, passed: true }))
+  });
+  assert.equal(step.digest, valueDigest(step.record));
+  assert.ok(!JSON.stringify(step).includes('requestBase64'));
   const receipt = JSON.parse(await readFile(path.join(dataDir, 'private-message-screening', alice.inbox.id, `${received.id}.json`), 'utf8'));
   assert.equal(receipt.receiptDigest, received.privateScreening.receiptDigest);
   assert.ok(receipt.encrypted.ciphertext);

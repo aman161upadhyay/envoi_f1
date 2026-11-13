@@ -12,7 +12,7 @@ const publicFields = [
   'actor', 'agentId', 'actorAgentId', 'recipientAgentId', 'requestedAction', 'actionKey',
   'policyEvaluationId', 'policyExecutionId', 'digest', 'version', 'grantId', 'reasonCode',
   'decision', 'outcome', 'requestId', 'actionId', 'assetId', 'createdByAgentId', 'messageId',
-  'receiptDigest', 'txRef', 'payee', 'amount', 'network'
+  'receiptDigest', 'txRef', 'payee', 'amount', 'network', 'attestation', 'parts'
 ];
 const root = 'case-trace';
 export const traceQueue = path.join(root, 'queue');

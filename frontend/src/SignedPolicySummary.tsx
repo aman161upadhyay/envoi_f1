@@ -4,13 +4,13 @@ import { describeAction, formatNear, sourceLabel } from './decision-rules';
 import type { OwnerSigningMethod, SignedPolicyDraft } from './signed-case-policy';
 import type { Asset, ParticipantIdentity } from './types';
 
-// The proposed read-only spend-scope response. The server does not return it yet; when it is absent
-// the limits and key sections are replaced by one plain line.
+// The read-only scope reports the mapped agent's current spending policy and verified key restrictions.
 export interface SpendScope {
   source: string;
   payees: Array<{ label: string; account: string; maxPerPayment: string }>;
   dailyCap?: string;
   unit?: string;
+  paused?: boolean;
   agentKey?: { account: string; receiver: string; methods: string[]; allowance?: string };
 }
 
@@ -45,19 +45,20 @@ export function SignedPolicySummary({ inboxId, caseId, draft, assets, directory,
 
     {scope ? <>
       <h3>Spending limits <span className="source-chip">{sourceLabel(scope.source)}</span></h3>
+      {scope.paused && <p className="dialog-copy">Payments are paused.</p>}
       <ul className="policy-facts">
         {scope.payees.map(payee => <li key={payee.account}><strong>{payee.label}</strong> <code>{payee.account}</code><span>Up to {unit(payee.maxPerPayment)} per payment</span></li>)}
         {scope.dailyCap && <li><strong>Daily cap</strong><span>{unit(scope.dailyCap)} per day</span></li>}
       </ul>
       {scope.agentKey && <>
-        <h3>Milo’s key <span className="source-chip">{sourceLabel(scope.source)}</span></h3>
+        <h3>Agent spending key <span className="source-chip">{sourceLabel(scope.source)}</span></h3>
         <ul className="policy-facts">
           <li>Can only call {scope.agentKey.methods.map(name => <code key={name}>{name}</code>)} on <code>{scope.agentKey.receiver}</code></li>
           {scope.agentKey.allowance && <li>Fee allowance <strong>{unit(scope.agentKey.allowance)}</strong></li>}
           <li>Account <code>{scope.agentKey.account}</code></li>
         </ul>
       </>}
-    </> : scope === null ? <p className="dialog-copy">Spending limits come from the NEAR spending contract. Not available on this server yet.</p> : null}
+    </> : scope === null ? <p className="dialog-copy">The NEAR spending scope could not be verified for this case.</p> : null}
 
     <h3>Signature</h3>
     <ul className="policy-facts">

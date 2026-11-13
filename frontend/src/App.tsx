@@ -1516,7 +1516,7 @@ function DecisionRow({ event, workCase, view, policyEvaluation, onOpenEvidence }
     const word = String(payload.outcome);
     outcome = PAYMENT_OUTCOMES[word] || humanize(word);
     tone = outcome === 'Allowed' ? 'allowed' : 'denied';
-    sentence = eventSummary(event);
+    sentence = payload.payee ? `${describeAction('payment.near', target, assets, directory)}.` : eventSummary(event);
     rule = payload.reasonCode ? ruleFor(String(payload.reasonCode), 'deny', null, context).rule : null;
   }
   return <div className={`conversation-event decision-row outcome-${tone}${tone === 'needs' ? ' needs-you' : ''}`}>
@@ -1525,7 +1525,7 @@ function DecisionRow({ event, workCase, view, policyEvaluation, onOpenEvidence }
       {policyEvaluation?.signedPolicy && <span className="sr-only">{signedPolicyReason(policyEvaluation)} · Policy version {policyEvaluation.signedPolicy.version}</span>}
       {rule && <div className="decision-rule">Rule: {rule}</div>}
     </div>
-    <div className="decision-side"><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>{onOpenEvidence && <button type="button" className="decision-evidence" onClick={() => onOpenEvidence(event.linkedPolicyEvaluation || event.id)}>Evidence</button>}</div>
+    <div className="decision-side"><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>{onOpenEvidence && <button type="button" className="decision-evidence" onClick={() => onOpenEvidence(payload.actionId ? event.id : event.linkedPolicyEvaluation || event.id)}>Evidence</button>}</div>
   </div>;
 }
 
