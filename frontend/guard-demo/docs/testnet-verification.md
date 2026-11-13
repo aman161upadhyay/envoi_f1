@@ -43,14 +43,18 @@ Regular testnet nodes keep only a few days of transactions. On November 11 they 
 
 ## Proposed lock (needs Rachel's approval)
 
+Decision (Nov 12): lock the deployed build as it is. It was compiled locally from source commit `be92054` (see `docs/contracts.md`). A reproducible container build would produce a different hash and need a redeploy before the lock, so it is out of scope for the hackathon. Judges can confirm the code can never change and matches the published hash. They can't rebuild it bit for bit.
+
 Lock only `record.envoi-pr302-20261106.testnet`, after a successful dry run:
 
-1. Confirm the code hash is still `FDvRgQSw…` (or the reproducible rebuild's hash, if it replaces it) and record it in `NEAR_RECORD_CODE_HASH`.
+1. Confirm the code hash is still `FDvRgQSwfbocdwNRgdu53WhkXB39rYutZvohTd83ZK7s`. That is `PR302_RECORD_CODE_HASH` in `packages/check/deployment.mjs`, and `NEAR_RECORD_CODE_HASH` if a runner sets it.
 2. Confirm the contract can pay for storage on its own: today 2.404 NEAR balance, 1.948 NEAR locked by 194,812 bytes, **0.456 NEAR free**. A seal or evidence key listing costs about 0.002 NEAR, and the publisher's key can't attach a deposit. Top up to about 1 NEAR free first, because after the lock nobody can add a method to recover funds.
 3. Confirm `publisher()` is `publisher.envoi-pr302-20261106.testnet` and that its limited key allows exactly `seal` and `register_evidence_key`.
-4. Delete the record account's only full-access key, signed by that key:
+4. Dry run: the same command as step 5 ending in `display` instead of `send`. It signs the transaction and prints it without submitting. Check it shows a single `DeleteKey` action for `ed25519:81WnVeLpc7YenV6PMrDWkgUgFMhs6BaHtF9rgVzqd3Mo` on the record account.
+5. Delete the record account's only full-access key, signed by that key:
    `near account delete-keys record.envoi-pr302-20261106.testnet public-keys ed25519:81WnVeLpc7YenV6PMrDWkgUgFMhs6BaHtF9rgVzqd3Mo network-config testnet sign-with-keychain send`
-5. Verify: `view_access_key_list` is empty, the code hash is unchanged, and `npm run check -- <proof> --testnet` shows the locked-contract check passing.
+6. Verify, then post the lock transaction hash on the handoff PR:
+   `npm run verify:deployment -- --require-locked` must end "Deployment verified." (exit 0), and `npm run check -- <proof> --testnet` must show the locked-contract check passing.
 
 This can't be undone: the contract has no upgrade or key-adding method. A fix after the lock means a new record account. Leave the spending contract unlocked for the rehearsal.
 
@@ -75,5 +79,5 @@ Exit codes: 0 verified, 1 can't be trusted, 2 not fully checked, 3 usage or not 
 
 - NEAR AI billing (HTTP 402) blocks the live rehearsal. This is an account and payment step for the team.
 - The fresh genuine and edited proof verdicts follow once the rehearsal produces a proof.
-- The reproducible Wasm hash needs a machine with Rust, `cargo-near` and Docker.
-- The lock receipt comes after Rachel approves the sequence above.
+- The lock receipt comes after Rachel approves the sequence above. Lock before recording the checker shot: until then every genuine proof fails the locked-contract check.
+- After the hackathon: a reproducible container build (Rust, `cargo-near`, Docker) for a new record account.
