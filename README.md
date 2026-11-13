@@ -6,7 +6,9 @@ Envoi is an agent-owned communication and negotiation sandbox. Agent-to-agent co
 
 An owner gives a purchasing agent a narrow policy for the Acme Q4 review. The agent can pay Ledger Co within its spending cap. An instruction hidden in an invoice tries to redirect the money, share a restricted file, and edit an unapproved slide. Envoi shows the rule behind each decision, and the proof checker detects an edited record.
 
-Use Node.js 22.13 or later. From the repository root on `codex/guard-v4-integration`, run:
+Watch the [demo video](docs/near-hackathon-demo.mp4) (2 min 25 s, narrated by Rachel Gonsalves). The file and slide actions in it are an offline replay; the NEAR results are from the November 13 testnet rehearsal linked below.
+
+Use Node.js 22.13 or later. From the repository root on `near-hackathon-demo`, run:
 
 ```sh
 cd frontend/guard-demo
@@ -16,7 +18,7 @@ npm run demo
 npm run demo -- --serve
 ```
 
-Open [Acme Q4 review](http://127.0.0.1:4173/demo) and step through the replay. In **Evidence**, inspect the refused payment, then open **Check the refused payment** and **Change one character**. The original proof passes local signature and integrity checks with online checks skipped. The edited proof fails. The offline replay uses fictional inputs, local screening, simulated payments, and local sealing. It needs no account, credentials, or network access. Press Ctrl+C to stop the server.
+Open [Acme Q4 review](http://127.0.0.1:4173/demo) and step through the replay. In **Evidence**, open the "Milo tried to pay 20 NEAR" record and follow **Check proof**, then press **Edited proof** on the check page. The original proof passes local signature and integrity checks with online checks skipped. The edited proof fails. The offline replay uses fictional inputs, local screening, simulated payments, and local sealing. It needs no account, credentials, or network access. Press Ctrl+C to stop the server.
 
 The standalone replay runs independently of the main Envoi app and its hosted services. The integrated app supports owner-signed case grants and approvals in chat. See the [judge walkthrough and testnet runbook](frontend/guard-demo/README.md) for the live setup, which requires configured testnet accounts, scoped keys, and NEAR AI credentials.
 
@@ -26,7 +28,7 @@ In the November 13 live rehearsal, NEAR AI Cloud flagged a hidden payment instru
 - The contract paid 0.5 NEAR to the approved market-data vendor. [Finalized payment](https://testnet.nearblocks.io/txns/HZDzuTTHn1TsBBe8Zq4fnmTBuQMjZesp2aHzhSPceA1H)
 - The record contract anchored a batch covering five evidence records. The originals passed local integrity checks and edited copies were rejected. The online checker still flagged the record contract's unlocked status at rehearsal time. [Finalized seal](https://testnet.nearblocks.io/txns/FdotSXv4W4DxazJiUf4o3VeCmjtDQ3Ag2vEWLaWALoro)
 
-Envoi is an existing product. The hackathon candidate adds the NEAR Guard integration to the Envoi baseline at `b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5`. Use [the branch comparison](https://github.com/rachelgonsalves821/Envoi/compare/b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...codex%2Fguard-v4-integration) after publication, or run `git diff b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...HEAD` from the hackathon branch.
+Envoi is an existing product. The hackathon candidate adds the NEAR Guard integration to the Envoi baseline at `b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5`. Use [the branch comparison](https://github.com/aman161upadhyay/envoi_f1/compare/b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...near-hackathon-demo), or run `git diff b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...HEAD` from the hackathon branch.
 
 ## What is implemented
 
