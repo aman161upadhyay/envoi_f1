@@ -33,7 +33,7 @@ export function SignedPolicySummary({ inboxId, caseId, draft, assets, directory,
   const ownerName = entries.find(item => item.id === draft.ownerId)?.displayName || 'the owner';
   const document = draft.active;
   const unit = (value?: string) => (value ? formatNear(value) ?? value : null);
-  return <section className="policy-summary" aria-label="What is signed">
+  return <section className="signed-summary" aria-label="What is signed">
     <h3>What {ownerName} signs</h3>
     {document ? <ul className="policy-grants">
       {document.grants.map(grant => {
