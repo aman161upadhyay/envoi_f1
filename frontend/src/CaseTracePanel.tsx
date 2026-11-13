@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { request } from './api';
 
 interface CaseTraceStep {
-  record: { id: string; type: string; at: string; sensitive: boolean; details: { reasonCode?: string | null; outcome?: string } };
+  record: { id: string; type: string; at: string; sensitive: boolean; details: { reasonCode?: string | null; outcome?: string; policyEvaluationId?: string } };
   seal: { status: 'final'; network: string; txRef: string } | null;
 }
 
@@ -17,7 +17,7 @@ function downloadStep(step: CaseTraceStep) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function CaseTracePanel({ inboxId, caseId }: { inboxId: string; caseId: string }) {
+export function CaseTracePanel({ inboxId, caseId, focusId }: { inboxId: string; caseId: string; focusId?: string }) {
   const [steps, setSteps] = useState<CaseTraceStep[] | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -30,10 +30,14 @@ export function CaseTracePanel({ inboxId, caseId }: { inboxId: string; caseId: s
     });
     return () => controller.abort();
   }, [inboxId, caseId]);
+  useEffect(() => {
+    if (!focusId || !steps) return;
+    document.querySelector(`[data-trace-focus="${CSS.escape(focusId)}"]`)?.scrollIntoView({ block: 'center' });
+  }, [focusId, steps]);
   if (failed) return <p role="alert">Case evidence could not be loaded.</p>;
   if (!steps) return <p role="status">Loading signed evidence…</p>;
   if (!steps.length) return <p>No signed evidence has been recorded for this case.</p>;
-  return <ul className="signed-policy-display">{steps.map(step => <li key={step.record.id}>
+  return <ul className="signed-policy-display">{steps.map(step => <li key={step.record.id} data-trace-focus={step.record.details.policyEvaluationId || step.record.id} className={focusId && (step.record.details.policyEvaluationId === focusId || step.record.id === focusId) ? 'trace-focused' : undefined}>
     <strong>{label(step.record.type)}</strong>
     <p>{step.record.details.outcome ? label(step.record.details.outcome) + ' · ' : ''}
       {step.record.details.reasonCode ? label(step.record.details.reasonCode) + ' · ' : ''}

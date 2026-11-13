@@ -1,4 +1,5 @@
 import { CaseTracePanel } from './CaseTracePanel';
+import { describeAction, ruleFor } from './decision-rules';
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type InputHTMLAttributes, type ReactNode } from 'react';
@@ -1229,6 +1230,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
   const [moreOpen, setMoreOpen] = useState(false);
   const [sensitiveOpen, setSensitiveOpen] = useState(false);
   const [traceOpen, setTraceOpen] = useState(false);
+  const [traceFocus, setTraceFocus] = useState<string | undefined>(undefined);
   const [sensitiveBusy, setSensitiveBusy] = useState(false);
   const [sensitiveError, setSensitiveError] = useState('');
   const [permissionsOpen, setPermissionsOpen] = useState(false);
@@ -1376,7 +1378,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
           {workCase.decision && hasOpenDecision && <div ref={decisionRef} className="decision-anchor"><DecisionCard workCase={workCase} view={view} events={events} policy={policy} canManageInbox={canManageInbox} busy={busy} onAction={key => key === 'decline' ? setConfirm(key) : void act(key)} onPolicy={() => policy && setDrawer({ type: 'policy', item: policy })} /></div>}
           {state === 'unknownExternalResult' && <InlineNotice title="Result unknown" body="The external service did not confirm the result. Do not retry with a new key." tone="unknown" />}
           {state === 'revoked' && <InlineNotice title="Authority revoked" body="New agent work for this case is blocked." tone="danger" />}
-          {events.some(event => isExchangeEvent(event) && findHighlights(eventSummary(event)).length > 0) && <HighlightLegend />}<div className="conversation" aria-label="Conversation">{events.length ? events.map((event, index) => <ConversationEntry key={event.id} event={event} previous={events[index - 1]} workCase={workCase} view={view} replyTarget={messageEvents.get(event.payload.inReplyTo)} />) : <div className="empty-list"><Inbox size={20} /><strong>No messages yet</strong></div>}</div>
+          {events.some(event => isExchangeEvent(event) && findHighlights(eventSummary(event)).length > 0) && <HighlightLegend />}<div className="conversation" aria-label="Conversation">{events.length ? events.map((event, index) => <ConversationEntry key={event.id} event={event} previous={events[index - 1]} workCase={workCase} view={view} replyTarget={messageEvents.get(event.payload.inReplyTo)} onOpenEvidence={workCase.canReadSignedTrace ? eventId => { setTraceFocus(eventId); setTraceOpen(true); } : undefined} />) : <div className="empty-list"><Inbox size={20} /><strong>No messages yet</strong></div>}</div>
           {workCase.receipt && <ReceiptCard workCase={workCase} />}
           {isGroup && <FormError message={preferenceError} />}
         </div></div>
@@ -1385,8 +1387,8 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
       {moveOpen && <Modal title="Move conversation" dismissible={!preferenceBusy} onClose={() => setMoveOpen(false)}><MoveInboxCaseContent folders={view.folders || []} currentFolderId={workCase.inboxPreference?.folderId || null} busy={preferenceBusy} error={preferenceError} onClose={() => setMoveOpen(false)} onMove={folderId => void updatePreference({ folderId })} /></Modal>}
       {railOpen && <aside className="case-details" aria-label="Case details"><div className="details-heading"><strong>Details</strong><button className="icon-button" aria-label="Close details" onClick={onRailToggle}><X size={16} /></button></div><h2>{ownAgent ? `${local.displayName} can` : 'Local permissions unavailable'}</h2>{ownAgent?.permissions.map(permission => <div className="details-row" key={permission}><Check size={14} />{humanize(permission)}</div>) || <p>No permissions listed</p>}{ownAgent && <><h2>{local.displayName} asks you before</h2><p>Actions outside its permissions</p></>}<h2>Files</h2>{view.assets.filter(item => item.caseId === workCase.id).map(asset => <AssetRow key={asset.id} asset={asset} inboxId={view.inbox.id} notify={notify} />)}<h2>Case</h2><dl><dt>Deadline</dt><dd>{workCase.deadline ? formatDate(workCase.deadline) : 'None'}</dd><dt>ID</dt><dd className="case-id">{workCase.id}</dd></dl></aside>}
       {drawer && <DetailDrawer drawer={drawer} onClose={() => setDrawer(null)} />}
-      {traceOpen && <Modal title="Case evidence" onClose={() => setTraceOpen(false)}>
-        <CaseTracePanel inboxId={view.inbox.id} caseId={workCase.id} />
+      {traceOpen && <Modal title="Case evidence" onClose={() => { setTraceOpen(false); setTraceFocus(undefined); }}>
+        <CaseTracePanel inboxId={view.inbox.id} caseId={workCase.id} focusId={traceFocus} />
       </Modal>}
       {sensitiveOpen && <Modal title="Mark case sensitive?" dismissible={!sensitiveBusy} onClose={() => setSensitiveOpen(false)}>
         <p className="dialog-copy">Add the Sensitive label to this case. This setting is permanent.</p>
@@ -1429,7 +1431,7 @@ function groupParticipant(workCase: WorkCase, view: HumanView, agentId: string) 
   return participant.address || !member ? participant : { ...participant, displayName: member.address, address: member.address };
 }
 
-export function ConversationEntry({ event, previous, workCase, view, replyTarget }: { event: CaseEvent; previous?: CaseEvent; workCase: WorkCase; view: HumanView; replyTarget?: CaseEvent}) {
+export function ConversationEntry({ event, previous, workCase, view, replyTarget, onOpenEvidence }: { event: CaseEvent; previous?: CaseEvent; workCase: WorkCase; view: HumanView; replyTarget?: CaseEvent; onOpenEvidence?: (eventId: string) => void }) {
   view = caseSourceView(workCase, view);
   const ownHuman = Boolean(event.payload.senderHumanId && event.payload.senderHumanId === view.requester?.id);
   const ownerInstruction = String(event.payload.messageType || '').toLowerCase() === 'instruction' && Boolean(event.payload.senderHumanId || event.payload.senderType === 'human');
@@ -1466,8 +1468,53 @@ export function ConversationEntry({ event, previous, workCase, view, replyTarget
         })}</ul>}
         {mine && !isGroup && <div className={`message-delivery ${deliveryLabel === 'Not sent' || deliveryLabel === 'Unknown' ? 'warning' : ''}`}>{deliveryLabel}</div>}
       </div>
-    </div> : <div className={`conversation-event${event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? ' needs-you' : ''}`}>{event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? <Hand size={13} /> : <Sparkles size={13} />}<span>{policyEvaluation?.signedPolicy ? `${signedPolicyReason(policyEvaluation)} · Policy version ${policyEvaluation.signedPolicy.version}` : eventSummary(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>}
+    </div> : isDecisionEvent(event) ? <DecisionRow event={event} workCase={workCase} view={view} policyEvaluation={policyEvaluation} onOpenEvidence={onOpenEvidence} /> : <div className={`conversation-event${event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? ' needs-you' : ''}`}>{event.type === 'policyEvaluation' && event.payload.decision === 'needsHuman' ? <Hand size={13} /> : <Sparkles size={13} />}<span>{policyEvaluation?.signedPolicy ? `${signedPolicyReason(policyEvaluation)} · Policy version ${policyEvaluation.signedPolicy.version}` : eventSummary(event)}</span><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time></div>}
   </>;
+}
+
+const PAYMENT_OUTCOMES: Record<string, string> = { confirmed: 'Allowed', paid: 'Allowed', refused: 'Refused by contract', rejected: 'Refused by contract', failed: 'Denied' };
+
+function isDecisionEvent(event: CaseEvent) {
+  if (isExchangeEvent(event)) return false;
+  if (event.type === 'policyEvaluation') return true;
+  return typeof event.payload.outcome === 'string' && Boolean(event.payload.payee || event.payload.requestedAction);
+}
+
+function DecisionRow({ event, workCase, view, policyEvaluation, onOpenEvidence }: { event: CaseEvent; workCase: WorkCase; view: HumanView; policyEvaluation?: PolicyEvaluation; onOpenEvidence?: (eventId: string) => void }) {
+  const payload = event.payload;
+  const directory = view.participantDirectory || workCase.participantDirectory;
+  const assets = (view.assets || []).filter(asset => asset.caseId === workCase.id || asset.caseId === null);
+  const directoryEntries = Array.isArray(directory) ? directory : Object.entries(directory || {}).map(([key, value]) => ({ ...value, id: value.id || key }));
+  const ownerName = directoryEntries.find(item => item.id === workCase.principal)?.displayName;
+  const action = String(payload.requestedAction || policyEvaluation?.requestedAction || '');
+  const target = { payee: payload.payee, amount: payload.amount, assetId: payload.assetId, parts: payload.parts, recipientAgentId: payload.recipient ?? payload.recipientAgentId };
+  const context = { ownerName, assets, directory };
+  let outcome: string;
+  let tone: 'allowed' | 'denied' | 'needs';
+  let sentence: string;
+  let rule: string | null;
+  if (event.type === 'policyEvaluation') {
+    const decision = String(payload.decision || policyEvaluation?.decision || 'deny');
+    const reasonCode = String(payload.reasonCode || policyEvaluation?.reasonCode || '');
+    const result = ruleFor(reasonCode, decision, { action, target }, context);
+    outcome = result.outcome; rule = result.rule;
+    tone = decision === 'allow' ? 'allowed' : decision === 'needsHuman' ? 'needs' : 'denied';
+    sentence = `${describeAction(action, target, assets, directory)}.`;
+  } else {
+    const word = String(payload.outcome);
+    outcome = PAYMENT_OUTCOMES[word] || humanize(word);
+    tone = outcome === 'Allowed' ? 'allowed' : 'denied';
+    sentence = eventSummary(event);
+    rule = payload.reasonCode ? ruleFor(String(payload.reasonCode), 'deny', null, context).rule : null;
+  }
+  return <div className={`conversation-event decision-row outcome-${tone}${tone === 'needs' ? ' needs-you' : ''}`}>
+    <div className="decision-main">
+      <div className="decision-line"><span className={`decision-chip outcome-${tone}`}>{outcome}</span><span className="decision-action">{sentence}</span></div>
+      {policyEvaluation?.signedPolicy && <span className="sr-only">{signedPolicyReason(policyEvaluation)} · Policy version {policyEvaluation.signedPolicy.version}</span>}
+      {rule && <div className="decision-rule">Rule: {rule}</div>}
+    </div>
+    <div className="decision-side"><time dateTime={event.createdAt}>{formatTime(event.createdAt)}</time>{onOpenEvidence && <button type="button" className="decision-evidence" onClick={() => onOpenEvidence(event.linkedPolicyEvaluation || event.id)}>Evidence</button>}</div>
+  </div>;
 }
 
 const screeningCheckLabels: Record<string, string> = {
