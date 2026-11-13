@@ -85,7 +85,15 @@ export interface PhaseDDiscovery { agentId: string; address: string; trust: stri
 export interface PhaseDRelationship { id: string; inboxId: string; actorAgentId: string; targetAgentId: string; status: 'active' | 'revoked'; grants: PhaseDGrant[] }
 export interface PhaseDInvitation { id: string; invitation: string; expiresAt: string }
 
+// Dev preview only: lets recorded data answer a few read-only paths without a server.
+let previewResponder: ((path: string, init?: RequestInit) => unknown | undefined) | null = null;
+export function setPreviewResponder(responder: ((path: string, init?: RequestInit) => unknown | undefined) | null) { previewResponder = responder; }
+
 export async function request<T>(pathname: string, options: RequestInit = {}, notifySessionExpired = true): Promise<T> {
+  if (previewResponder) {
+    const recorded = previewResponder(pathname, options);
+    if (recorded !== undefined) return structuredClone(await recorded) as T;
+  }
   const requestHumanId = expectedHumanId;
   const session = trackSessionRequest();
   try {

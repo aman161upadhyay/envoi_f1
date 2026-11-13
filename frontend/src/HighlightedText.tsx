@@ -1,30 +1,7 @@
-import type { ReactNode } from 'react';
 import { CATEGORY_LABEL, TIER_LABEL, findHighlights, splitByHighlights } from './highlights';
-import { FLAG_CATEGORY_LABEL, SEVERITY_LABEL, type ResolvedFlag } from './suggestions';
 
-export function HighlightedText({ text, suggested, onDismiss }: { text: string; suggested?: ResolvedFlag[]; onDismiss?: (flag: ResolvedFlag) => void }) {
-  const marks = findHighlights(text);
-  if (!suggested?.length) return <Pieces text={text} marks={marks} />;
-  // Suggested spans were already checked not to overlap a rule mark, so the two lists interleave cleanly.
-  const all: (typeof marks[number] | (ResolvedFlag & { tier: 'suggested' }))[] = [...marks, ...suggested.map(flag => ({ ...flag, tier: 'suggested' as const }))].sort((a, b) => a.start - b.start);
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-  all.forEach((mark, index) => {
-    if (mark.start > cursor) nodes.push(<span key={`t${index}`}>{text.slice(cursor, mark.start)}</span>);
-    const piece = text.slice(mark.start, mark.end);
-    if (mark.tier === 'suggested') {
-      const flag = mark as ResolvedFlag;
-      const label = `Suggested: ${FLAG_CATEGORY_LABEL[flag.category]} (${SEVERITY_LABEL[flag.severity]}). ${flag.reason}`;
-      nodes.push(<span key={`s${index}`} className="hl-suggest-wrap"><mark className="hl hl-suggested" tabIndex={0} title={label}>{piece}<span className="sr-only"> ({label})</span></mark>{onDismiss && <button type="button" className="hl-dismiss" title="Dismiss this suggestion" aria-label={`Dismiss suggestion: ${flag.reason}`} onClick={() => onDismiss(flag)}>Suggested ×</button>}</span>);
-    } else {
-      const rule = mark as typeof marks[number];
-      const label = `${TIER_LABEL[rule.tier]}: ${CATEGORY_LABEL[rule.category]}. ${rule.reason}`;
-      nodes.push(<mark key={`m${index}`} className={`hl hl-${rule.tier}`} tabIndex={0} title={label}>{piece}<span className="sr-only"> ({label})</span></mark>);
-    }
-    cursor = mark.end;
-  });
-  if (cursor < text.length) nodes.push(<span key="tail">{text.slice(cursor)}</span>);
-  return <>{nodes}</>;
+export function HighlightedText({ text }: { text: string }) {
+  return <Pieces text={text} marks={findHighlights(text)} />;
 }
 
 function Pieces({ text, marks }: { text: string; marks: ReturnType<typeof findHighlights> }) {
