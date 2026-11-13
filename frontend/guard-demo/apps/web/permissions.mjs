@@ -216,7 +216,7 @@ evidence.hidden = !onEvidence;
 document.querySelector('nav a[href="' + (onEvidence ? '/permissions/evidence' : '/permissions') + '"]').setAttribute('aria-current', 'page');
 populate();
 if (!testnet && state.vaultBalance) {
-  $('#vault').textContent = 'Balance for agents � ' + formatNear(state.vaultBalance);
+  $('#vault').textContent = 'Balance for agents · ' + formatNear(state.vaultBalance);
   $('#vault').hidden = false;
 }
 for (const input of [$('#send'), $('#share'), $('#limits')]) input.addEventListener('input', markDirty);
