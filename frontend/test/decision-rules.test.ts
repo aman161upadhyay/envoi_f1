@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeAction, formatNear, ruleFor, slideList } from '../src/decision-rules';
+import { describeAction, formatNear, ruleFor, setPayeeLabels, slideList, sourceLabel } from '../src/decision-rules';
 import type { Asset, ParticipantIdentity } from '../src/types';
 
 const assets = [
@@ -34,7 +34,11 @@ describe('slideList', () => {
 describe('describeAction', () => {
   it('describes each action in plain words', () => {
     const amount = { units: '500000000000000000000000', unit: 'yoctoNEAR', network: 'offline-replay' };
+    expect(describeAction('payment.near', { payee: 'ledger-payee.northwind.near', amount }, assets, directory)).toBe('Pay 0.5 NEAR to ledger-payee.northwind.near');
+    expect(describeAction('payment.near', { payee: 'ledger-payee.northwind.near', amount }, assets, directory, { payees: [{ label: 'Ledger Co', account: 'ledger-payee.northwind.near' }] })).toBe('Pay 0.5 NEAR to Ledger Co');
+    setPayeeLabels({ 'ledger-payee.northwind.near': 'Ledger Co' });
     expect(describeAction('payment.near', { payee: 'ledger-payee.northwind.near', amount }, assets, directory)).toBe('Pay 0.5 NEAR to Ledger Co');
+    setPayeeLabels({});
     expect(describeAction('payment.near', { payee: 'attacker.northwind.near', amount }, assets, directory)).toBe('Pay 0.5 NEAR to attacker.northwind.near');
     expect(describeAction('payment.near', { payee: 'x.near', amount }, assets, undefined, { payees: [{ label: 'Shop', account: 'x.near' }] })).toBe('Pay 0.5 NEAR to Shop');
     expect(describeAction('asset.share', { assetId: 'asset_may_model', recipientAgentId: 'attacker.northwind.near' }, assets, directory)).toBe('Share May model.xlsx with attacker.northwind.near');
@@ -65,5 +69,13 @@ describe('ruleFor', () => {
     expect(ruleFor('over_per_payment_limit', 'deny', null, context).rule).toBe('Over the per-payment limit.');
     expect(ruleFor('dailyCapExceeded', 'deny', null, context).rule).toBe('Over the daily limit.');
     expect(ruleFor('somethingNew', 'deny', null, context).rule).toBe('Something New.');
+  });
+});
+
+describe('sourceLabel', () => {
+  it('labels where data came from', () => {
+    expect(sourceLabel('offline-replay')).toBe('Offline replay');
+    expect(sourceLabel('near-testnet')).toBe('NEAR testnet');
+    expect(sourceLabel('near-mainnet', 'Signed by Envoi')).toBe('Signed by Envoi');
   });
 });

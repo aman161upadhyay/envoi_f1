@@ -2,7 +2,8 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { api } from './api';
 import { preferredOwnerSigningMethod, readOwnerPasskey, setupOwnerDevice, setupOwnerPasskey, signOwnerDocument, supportsOwnerPasskey,
   type OwnerSigningMethod, type SignedCaseGrant, type SignedPolicyDocument, type SignedPolicyDraft } from './signed-case-policy';
-import type { Asset, WorkCase } from './types';
+import { SignedPolicySummary } from './SignedPolicySummary';
+import type { Asset, ParticipantIdentity, WorkCase } from './types';
 
 type DraftGrant = Omit<SignedCaseGrant, 'target'> & { targetText: string };
 
@@ -17,8 +18,8 @@ function parseTarget(text: string): Record<string, unknown> {
   throw new Error('Enter the exact action target as a JSON object.');
 }
 
-export function SignedCasePolicyForm({ inboxId, caseId, assets, groupMembers, onClose, onSaved, onBusy }: {
-  inboxId: string; caseId: string; assets: Asset[]; groupMembers?: WorkCase['members']; onClose: () => void; onSaved: () => void; onBusy: (busy: boolean) => void;
+export function SignedCasePolicyForm({ inboxId, caseId, assets, directory, groupMembers, onClose, onSaved, onBusy }: {
+  inboxId: string; caseId: string; assets: Asset[]; directory?: Record<string, ParticipantIdentity> | ParticipantIdentity[]; groupMembers?: WorkCase['members']; onClose: () => void; onSaved: () => void; onBusy: (busy: boolean) => void;
 }) {
   const [draft, setDraft] = useState<SignedPolicyDraft | null>(null);
   const [grants, setGrants] = useState<DraftGrant[]>([]);
@@ -117,7 +118,10 @@ export function SignedCasePolicyForm({ inboxId, caseId, assets, groupMembers, on
           <button type="button" className="button secondary" disabled={busy} onClick={() => { setReview(null); setError(''); }}>Edit</button>
           <button type="button" className="button primary" disabled={busy || (method === 'passkey' && !passkeyPublicKey)} onClick={() => void save()}>{busy ? 'Saving…' : 'Sign and save'}</button>
         </div>
-      </> : <form onSubmit={preview}>
+      </> : <>
+      <SignedPolicySummary inboxId={inboxId} caseId={caseId} draft={draft} assets={assets} directory={directory} method={method} />
+      <details className="policy-edit"><summary>Edit grants</summary>
+      <form onSubmit={preview}>
         {grants.map((grant, index) => <fieldset key={grant.id} disabled={busy}>
           <legend>Grant {index + 1}</legend>
           <label>Action
@@ -167,7 +171,8 @@ export function SignedCasePolicyForm({ inboxId, caseId, assets, groupMembers, on
           </select>
         </label>
         <div className="dialog-actions"><button type="button" className="button secondary" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" className="button primary" disabled={busy}>{busy ? 'Preparing…' : 'Review policy'}</button></div>
-      </form>}
+      </form>
+      </details></>}
     </>}
   </div>;
 }

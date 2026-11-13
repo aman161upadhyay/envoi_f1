@@ -7,6 +7,23 @@ import type { Asset, ParticipantIdentity } from './types';
 type Directory = Record<string, ParticipantIdentity> | ParticipantIdentity[] | undefined;
 export type SpendScopeLabels = { payees?: Array<{ label: string; account: string }> } | null | undefined;
 
+// Known payee accounts and their labels. The spend scope supplies these when the server exposes it;
+// the dev preview registers its own. A payee is an account, so the agent directory is never used for it.
+let knownPayeeLabels: Record<string, string> = {};
+export function setPayeeLabels(labels: Record<string, string>) { knownPayeeLabels = { ...labels }; }
+
+function payeeName(account: unknown, scope?: SpendScopeLabels): string | null {
+  if (typeof account !== 'string' || !account) return null;
+  return scope?.payees?.find(payee => payee.account === account)?.label || knownPayeeLabels[account] || account;
+}
+
+export function sourceLabel(value: string | null | undefined, fallback = 'Source not stated'): string {
+  if (!value) return fallback;
+  if (value === 'offline-replay') return 'Offline replay';
+  if (value.startsWith('near-testnet')) return 'NEAR testnet';
+  return fallback;
+}
+
 const YOCTO_PER_NEAR = 10n ** 24n;
 
 export function formatNear(units: unknown): string | null {
@@ -49,7 +66,7 @@ export function describeAction(action: string, target: Record<string, unknown> |
   const recipient = nameFor(details.recipientAgentId ?? details.recipient, directory, scope);
   if (action === 'payment.near') {
     const money = formatNear((details.amount as { units?: unknown } | undefined)?.units);
-    const payee = nameFor(details.payee, directory, scope);
+    const payee = payeeName(details.payee, scope);
     return `Pay ${money ?? 'an amount'}${payee ? ` to ${payee}` : ''}`;
   }
   if (action === 'asset.share') return `Share ${file}${recipient ? ` with ${recipient}` : ''}`;

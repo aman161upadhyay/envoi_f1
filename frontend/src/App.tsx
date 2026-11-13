@@ -1318,7 +1318,12 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
     return () => { observer.disconnect(); setDecisionHidden(false); };
   }, [workCase.id, hasOpenDecision]);
   const barOption = workCase.proposals?.find(item => ['open', 'countered'].includes(item.status))?.options.find(item => !item.expired);
-  const barText = workCase.decision?.question || (barOption?.value.title ? humanize(barOption.value.title) : decisionQuestion(workCase, barOption));
+  const pendingPolicy = canonicalDecisionPolicy(workCase) || decisionPolicy(workCase);
+  const pendingEvent = pendingPolicy ? events.find(item => item.linkedPolicyEvaluation === pendingPolicy.id && item.payload.requestedAction) : undefined;
+  const pendingSentence = !barOption && pendingPolicy && pendingEvent
+    ? describeAction(pendingPolicy.requestedAction, { payee: pendingEvent.payload.payee, amount: pendingEvent.payload.amount, assetId: pendingEvent.payload.assetId, parts: pendingEvent.payload.parts, recipientAgentId: pendingEvent.payload.recipient ?? pendingEvent.payload.recipientAgentId }, view.assets || [], view.participantDirectory || workCase.participantDirectory)
+    : null;
+  const barText = pendingSentence || workCase.decision?.question || (barOption?.value.title ? humanize(barOption.value.title) : decisionQuestion(workCase, barOption));
   function reviewDecision() {
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     decisionRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
@@ -1364,7 +1369,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
         </div>
         <div className="thread-scroll" ref={scrollRef}><div className="thread-inner">
           <h1 className="thread-subject">{caseSubject(workCase, view.messages)}</h1>
-          <div className="thread-meta"><StatusBadge workCase={workCase} />{workCase.sensitive && <SensitiveBadge />}<button className="add-folder" disabled={!canOrganize || preferenceBusy} onClick={() => { setPreferenceError(''); setMoveOpen(true); }}><Folder size={13} />{view.folders?.find(folder => folder.id === workCase.inboxPreference?.folderId)?.name || 'Folder'}</button></div>
+          <div className="thread-meta"><StatusBadge workCase={workCase} />{workCase.sensitive && <SensitiveBadge />}{workCase.dataSource === 'offline-replay' && <span className="source-chip">Offline replay</span>}<button className="add-folder" disabled={!canOrganize || preferenceBusy} onClick={() => { setPreferenceError(''); setMoveOpen(true); }}><Folder size={13} />{view.folders?.find(folder => folder.id === workCase.inboxPreference?.folderId)?.name || 'Folder'}</button></div>
           {isGroup ? <section aria-label="Group members" className="participant-duo participant-group">
             {workCase.participants?.map(id => {
               const member = groupParticipant(workCase, view, id);
@@ -1396,7 +1401,7 @@ export function CaseWorkspace({ workCase, view, canManageInbox, railOpen, onRail
         <div className="dialog-actions"><button className="button secondary" disabled={sensitiveBusy} onClick={() => setSensitiveOpen(false)}>Cancel</button><button className="button primary" disabled={sensitiveBusy} onClick={() => void markSensitive()}>{sensitiveBusy ? 'Saving…' : 'Mark sensitive'}</button></div>
       </Modal>}
       {permissionsOpen && <Modal title="Case permissions" dismissible={!permissionsBusy} onClose={() => setPermissionsOpen(false)}>
-        <SignedCasePolicyForm inboxId={view.inbox.id} caseId={workCase.id} assets={view.assets} groupMembers={workCase.members} onBusy={setPermissionsBusy}
+        <SignedCasePolicyForm inboxId={view.inbox.id} caseId={workCase.id} assets={view.assets} directory={view.participantDirectory || workCase.participantDirectory} groupMembers={workCase.members} onBusy={setPermissionsBusy}
           onClose={() => setPermissionsOpen(false)} onSaved={() => {
             setPermissionsOpen(false);
             notify('Signed case policy saved');

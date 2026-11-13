@@ -260,3 +260,18 @@
 }
 .message-screening summary { cursor: pointer; }
 .message-screening ul { padding-inline-start: 1.25rem; }
+
+/* Case permissions summary and source chips */
+.source-chip { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border: 1px solid var(--lx-line-2); border-radius: var(--lx-radius-pill); background: var(--lx-paper); color: var(--lx-ink-2); font: 600 11.5px/1 var(--lx-sans); letter-spacing: .02em; vertical-align: middle; }
+.policy-summary h3 { margin: 18px 0 8px; font-size: 14px; }
+.policy-summary h3:first-child { margin-top: 4px; }
+.policy-grants, .policy-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.policy-grants li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13.5px; }
+.policy-facts li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13.5px; overflow-wrap: anywhere; }
+.policy-facts code { font-size: 12.5px; }
+.policy-edit { margin: 18px 0 0; padding-top: 12px; border-top: 1px solid var(--lx-line); }
+.policy-edit > summary { cursor: pointer; font-weight: 600; font-size: 13.5px; margin-bottom: 10px; }
+.policy-summary .decision-chip.outcome-allowed { background: var(--lx-green-soft); color: var(--lx-green-ink); border: 1px solid var(--lx-green-line); }
+.policy-summary .decision-chip.outcome-denied { background: #fff; color: var(--lx-red); border: 1px solid var(--lx-red); }
+.policy-summary .decision-chip.outcome-needs { background: var(--lx-gold-soft); color: var(--lx-gold-ink); border: 1px solid var(--lx-gold-line); }
+.policy-summary .decision-chip { padding: 1px 8px; border-radius: var(--lx-radius-pill); font-size: 11.5px; font-weight: 600; }
