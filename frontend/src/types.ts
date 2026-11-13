@@ -148,6 +148,8 @@ export interface InboxFolder { id: string; name: string }
 export interface InboxPreference { folderId: string | null; read: boolean; archived: boolean; readThrough: string | null; revision: string }
 
 export interface WorkCase {
+  /** Set only on recorded preview cases. The case header shows it as a chip. */
+  dataSource?: 'offline-replay';
   caseMode?: 'group';
   sensitive?: boolean;
   canMarkSensitive?: boolean;

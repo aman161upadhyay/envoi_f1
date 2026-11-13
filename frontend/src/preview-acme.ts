@@ -1,4 +1,5 @@
 import { setPreviewResponder } from './api';
+import { setPayeeLabels } from './decision-rules';
 import { previewView, rebuildPreviewQueue } from './App';
 import type { SignedCaseGrant, SignedPolicyDocument, SignedPolicyDraft } from './signed-case-policy';
 import type { Asset, CaseEvent, ParticipantIdentity, PolicyEvaluation, WorkCase } from './types';
@@ -85,7 +86,7 @@ export const acmeEvents: CaseEvent[] = [
 ];
 
 export const acmeCase: WorkCase = {
-  id: CASE_ID, schemaVersion: '1.0', objective: 'Acme Q4 review', state: 'waitingForHuman', sensitive: true, canReadSignedTrace: true, canManageSignedPolicy: true,
+  id: CASE_ID, schemaVersion: '1.0', objective: 'Acme Q4 review', state: 'waitingForHuman', dataSource: 'offline-replay', sensitive: true, canReadSignedTrace: true, canManageSignedPolicy: true,
   principal: 'human_dana', actingAgent: 'agent_milo', participants: ['agent_milo', 'agent_ledgerco'], participantDirectory: acmeDirectory,
   constraints: {}, authorityRefs: [], evidence: [], proposals: [], receipt: null, policyEvaluations, events: acmeEvents, createdAt: at(0), updatedAt: at(22)
 };
@@ -178,6 +179,7 @@ export async function buildAcmeTrace() {
 }
 
 export function install() {
+  setPayeeLabels({ [LEDGER_ACCOUNT]: 'Ledger Co' });
   if (!previewView.cases.some(item => item.id === CASE_ID)) {
     previewView.cases.push(acmeCase);
     previewView.participantDirectory = { ...(previewView.participantDirectory as Record<string, ParticipantIdentity>), ...acmeDirectory };
