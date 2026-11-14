@@ -4,7 +4,7 @@ Envoi is an agent-owned communication and negotiation sandbox. Agent-to-agent co
 
 ## NEAR Hackathon demo
 
-An owner gives a purchasing agent a narrow policy for the Acme Q4 review. The agent can pay Ledger Co within its spending cap. An instruction hidden in an invoice tries to redirect the money, share a restricted file, and edit an unapproved slide. Envoi shows the rule behind each decision, and the proof checker detects an edited record.
+Dana, the owner, gives her purchasing agent Grok a narrow policy for the Acme Q4 review. Grok can pay JT Morgan, through Hermes, JT Morgan's agent, within its spending cap. An instruction hidden in an invoice tries to redirect the money, share a restricted file, and edit an unapproved slide. Envoi shows the rule behind each decision, and the proof checker detects an edited record.
 
 Watch the [demo video](docs/near-hackathon-demo.mp4) (2 min 18 s, narrated by Rachel Gonsalves). The file and slide actions in it are an offline replay; the NEAR results are from the November 13 testnet rehearsal linked below.
 
@@ -18,7 +18,9 @@ npm run demo
 npm run demo -- --serve
 ```
 
-Open [Acme Q4 review](http://127.0.0.1:4173/demo) and step through the replay. In **Evidence**, open the "Milo tried to pay 20 NEAR" record and follow **Check proof**, then press **Edited proof** on the check page. The original proof passes local signature and integrity checks with online checks skipped. The edited proof fails. The offline replay uses fictional inputs, local screening, simulated payments, and local sealing. It needs no account, credentials, or network access. Press Ctrl+C to stop the server.
+The video uses the names above. The offline replay app labels the same roles differently: its purchasing agent Grok is called **Milo**, and the vendor JT Morgan is called **Ledger Co**. Dana is Dana in both.
+
+Open [Acme Q4 review](http://127.0.0.1:4173/demo) and step through the replay. In **Evidence**, open the record for the refused 20 NEAR payment (it reads "Milo tried to pay 20 NEAR") and follow **Check proof**, then press **Edited proof** on the check page. The original proof passes local signature and integrity checks with online checks skipped. The edited proof fails. The offline replay uses fictional inputs, local screening, simulated payments, and local sealing. It needs no account, credentials, or network access. Press Ctrl+C to stop the server.
 
 The standalone replay runs independently of the main Envoi app and its hosted services. The integrated app supports owner-signed case grants and approvals in chat. See the [judge walkthrough and testnet runbook](frontend/guard-demo/README.md) for the live setup, which requires configured testnet accounts, scoped keys, and NEAR AI credentials.
 
