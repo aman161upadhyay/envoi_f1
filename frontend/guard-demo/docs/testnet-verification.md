@@ -8,7 +8,7 @@ Checked on November 11, 2026, from a separate machine with read-only RPC calls o
 |---|---|---|---|
 | Owner | `envoi-pr302-20261106.testnet` | none | 1 full access, 5 function-call keys for `set_policy` on the spending contract (browser devices) |
 | Record contract | `record.envoi-pr302-20261106.testnet` | `FDvRgQSwfbocdwNRgdu53WhkXB39rYutZvohTd83ZK7s` | **1 full access** (`ed25519:81WnVeLpc7YenV6PMrDWkgUgFMhs6BaHtF9rgVzqd3Mo`), so verification warns that the contract can still be upgraded |
-| Spending contract | `spend.envoi-pr302-20261106.testnet` | `Fj1uYQrgGs6eCFUq53GEA9SaW6WNzsMR3Qz9dEkaKpa6` | 1 full access |
+| Spending contract | `spend.envoi-pr302-20261106.testnet` | `3S3tJG9yJNZZMqo3PGbW5nfhubLy771mgnyHDRamWk3M` | 1 full access |
 | Agent (Milo) | `milo.envoi-pr302-20261106.testnet` | none | **only** a function-call key for `pay` on the spending contract |
 | Publisher | `publisher.envoi-pr302-20261106.testnet` | none | 1 full access (custodian) and a function-call key for exactly `seal` and `register_evidence_key` on the record contract |
 | Payee / attacker | `ledger.` / `attacker.envoi-pr302-20261106.testnet` | none | full access (test payees) |
@@ -17,7 +17,9 @@ The record code hash matches `docs/contracts.md` (source commit `be92054`). It i
 
 The November 14 [spending contract upgrade](https://testnet.nearblocks.io/txns/83Qb7oZKJtntf4HSGxuswTCwhGkApy85c62VuKftP3b2) requires agent consent for enrollment and rejects duplicate payment references. A [one-yoctoNEAR payment](https://testnet.nearblocks.io/txns/3qh51CBB1s3rsiUKd62Y8VoXxLwVTqdz4oeQkW8CzbMn) settled once. The [duplicate](https://testnet.nearblocks.io/txns/GZPTBz7jtrbw3KxB6vwineybjHUcD4zkZB9n3nNVEWSZ) left the vault unchanged at finalized blocks 277702008 and 277702009.
 
-The submission branch also contains the exact signed payment and expiry check. To activate it on an existing account, deploy the updated spending code without initialization, then have each vault owner register the approval signer's public key for their agent. Reconcile transactions and retire instructions issued under the earlier build before switching clients.
+The [signed-approval upgrade](https://testnet.nearblocks.io/txns/5sUu7S53tfVZwmwamDStTyYrBFys2Mkq3p4FWuweHAtG) preserved the existing vault and spending policy. The owner [registered the approval public key](https://testnet.nearblocks.io/txns/EEaALVWsonMzXMqUjpY8QWJukWaAt7PQiUoQgvTux4D5). The [expired approval](https://testnet.nearblocks.io/txns/DVo88XvNcDg3RHtaABxMnYUsL8CumosaJavkpnqgfYXp) and [replay](https://testnet.nearblocks.io/txns/FER4QRiZ26TjgqdgWwn4twfPi3CHwWdVRu3oBj5RRHGy) left the vault unchanged. The [valid approval](https://testnet.nearblocks.io/txns/9kbqQ1kaSkzPz6M3b6ggRTPHzP636qnfWgTMrchKAxi6) settled one yoctoNEAR.
+
+To enable cancellation on an existing account, deploy the current spending code without initialization and configure the [cancellation relay](../README.md#envoi-case-policy-integration).
 
 Use a unique `case_ref` for each payment. The spending contract reserves it for the paying agent before scheduling a transfer. A confirmed transfer permanently consumes the reference. A failed transfer restores the vault and releases the reference for retry. If a result is uncertain, look up the original transaction before retrying.
 

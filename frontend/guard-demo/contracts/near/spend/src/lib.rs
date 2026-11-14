@@ -57,6 +57,8 @@ fn registration_approvals() -> LookupMap<AccountId, AccountId> {
 enum PaymentStatus {
     Pending,
     Paid,
+    Cancelled,
+    PendingCancelled,
 }
 
 fn payment_references() -> LookupMap<[u8; 32], PaymentStatus> {
@@ -192,6 +194,29 @@ impl Spend {
         approval_keys().get(&agent).map(|key| key.iter().map(|byte| format!("{byte:02x}")).collect())
     }
 
+    pub fn payment_cancellation_supported(&self) -> bool { true }
+
+    pub fn cancel_payments(&mut self, agent: AccountId, case_refs: Vec<String>, signature: String) {
+        require!(!case_refs.is_empty() && case_refs.len() <= 32 &&
+            case_refs.iter().all(|reference| !reference.is_empty() && reference.len() <= 128), "invalid payment references");
+        let owner = self.get_policy(agent.clone()).unwrap_or_else(|| env::panic_str("unknown agent")).owner;
+        let approval_key = approval_keys().get(&agent).copied()
+            .unwrap_or_else(|| env::panic_str("payment approval key missing"));
+        let signature = decode_hex(&signature).unwrap_or_else(|| env::panic_str("invalid cancellation signature"));
+        let digest = cancellation_digest(&owner, &agent, &case_refs);
+        require!(env::ed25519_verify(&signature, &digest, &approval_key), "invalid cancellation signature");
+
+        let mut references = payment_references();
+        for case_ref in case_refs {
+            let reference = payment_reference(&agent, &case_ref);
+            match references.get(&reference) {
+                None => { references.insert(reference, PaymentStatus::Cancelled); }
+                Some(PaymentStatus::Pending) => { references.insert(reference, PaymentStatus::PendingCancelled); }
+                _ => {}
+            }
+        }
+    }
+
     pub fn pay(&mut self, to: AccountId, amount: U128, case_ref: String, expected_policy_hash: Option<String>,
         approval: Option<PaymentApproval>) -> PromiseOrValue<Value> {
         require!(amount.0 > 0 && !case_ref.is_empty() && case_ref.len() <= 128, "invalid payment");
@@ -209,7 +234,11 @@ impl Spend {
         let reference = payment_reference(&agent, &case_ref);
         let mut references = payment_references();
         // A duplicate transaction must not look like a final outcome for the original payment.
-        require!(!references.contains_key(&reference), "duplicate payment reference");
+        match references.get(&reference) {
+            Some(PaymentStatus::Cancelled | PaymentStatus::PendingCancelled) => env::panic_str("payment approval cancelled"),
+            Some(PaymentStatus::Pending | PaymentStatus::Paid) => env::panic_str("duplicate payment reference"),
+            None => {}
+        }
         if let Some(expected) = expected_policy_hash {
             require!(expected == policy_ref.policy_hash, "stale policy hash");
         }
@@ -241,9 +270,15 @@ impl Spend {
     pub fn on_reserved_payment(&mut self, payment: Payment, #[callback_result] result: Result<(), PromiseError>) -> Value {
         let reference = payment_reference(&payment.agent, &payment.case_ref);
         let mut references = payment_references();
-        require!(references.get(&reference) == Some(&PaymentStatus::Pending), "payment is not pending");
+        let cancelled = match references.get(&reference) {
+            Some(PaymentStatus::Pending) => false,
+            Some(PaymentStatus::PendingCancelled) => true,
+            _ => env::panic_str("payment is not pending"),
+        };
         if result.is_ok() {
             references.insert(reference, PaymentStatus::Paid);
+        } else if cancelled {
+            references.insert(reference, PaymentStatus::Cancelled);
         } else {
             references.remove(&reference);
         }
@@ -300,6 +335,11 @@ fn approval_digest(payment: &Payment, version: u32, expires_at_ms: u64) -> [u8; 
     env::sha256_array(json!(["envoi.near.payment/v1", env::current_account_id(), payment.owner,
         payment.agent, payment.to, payment.amount, payment.case_ref, payment.policy_hash,
         version, expires_at_ms]).to_string().as_bytes())
+}
+
+fn cancellation_digest(owner: &AccountId, agent: &AccountId, case_refs: &[String]) -> [u8; 32] {
+    env::sha256_array(json!(["envoi.near.payment.cancel/v1", env::current_account_id(),
+        owner, agent, case_refs]).to_string().as_bytes())
 }
 
 #[cfg(test)]
@@ -367,6 +407,52 @@ mod tests {
         let approval = approve(&payment, 1, day * 86_400_000 + 1000);
         assert!(matches!(contract.pay(accounts(3), U128(3), "payment-1".into(), Some("a".repeat(64)), Some(approval)),
             PromiseOrValue::Promise(_)));
+    }
+
+    fn cancel_reference(contract: &mut Spend) {
+        context(5, 0, 0);
+        let references = vec![payment().case_ref];
+        let signature = signer().sign(&cancellation_digest(&accounts(0), &accounts(1), &references));
+        contract.cancel_payments(accounts(1), references, as_hex(&signature.to_bytes()));
+    }
+
+    #[test]
+    #[should_panic(expected = "payment approval cancelled")]
+    fn cancelled_reference_cannot_debit_the_vault() {
+        let mut contract = funded_contract();
+        cancel_reference(&mut contract);
+        cancel_reference(&mut contract);
+        assert_eq!(contract.vault_of(accounts(0)).0, 10);
+        pay_once(&mut contract, 1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid cancellation signature")]
+    fn relay_cannot_change_the_signed_reference() {
+        let mut contract = funded_contract();
+        let signature = signer().sign(&cancellation_digest(&accounts(0), &accounts(1), &[payment().case_ref]));
+        contract.cancel_payments(accounts(1), vec!["another-payment".into()], as_hex(&signature.to_bytes()));
+    }
+
+    #[test]
+    fn payment_reserved_before_cancellation_can_settle_once() {
+        let mut contract = funded_contract();
+        pay_once(&mut contract, 1, 0);
+        cancel_reference(&mut contract);
+        assert_eq!(contract.on_reserved_payment(payment(), Ok(()))["status"], "paid");
+        cancel_reference(&mut contract);
+        assert_eq!(contract.vault_of(accounts(0)).0, 7);
+        assert!(payment_references().get(&payment_reference(&accounts(1), &payment().case_ref)) == Some(&PaymentStatus::Paid));
+    }
+
+    #[test]
+    fn cancellation_prevents_retry_if_the_pending_transfer_is_refunded() {
+        let mut contract = funded_contract();
+        pay_once(&mut contract, 1, 0);
+        cancel_reference(&mut contract);
+        assert_eq!(contract.on_reserved_payment(payment(), Err(PromiseError::Failed))["status"], "failed");
+        assert_eq!(contract.vault_of(accounts(0)).0, 10);
+        assert!(payment_references().get(&payment_reference(&accounts(1), &payment().case_ref)) == Some(&PaymentStatus::Cancelled));
     }
 
     #[test]

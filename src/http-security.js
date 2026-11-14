@@ -35,6 +35,9 @@ export function publicHttpError(error, requestId = crypto.randomUUID()) {
   if (status === 503 && error?.code === 'auth_unavailable') {
     return { status, body: errorBody('AUTH_UNAVAILABLE', 'Your session could not be checked right now. Please try again.', requestId) };
   }
+  if (status === 503 && error?.code === 'NEAR_PAYMENT_CANCELLATION_UNAVAILABLE') {
+    return { status, body: errorBody(error.code, 'NEAR payment cancellation could not be confirmed. Please try again.', requestId) };
+  }
   if (status >= 500) return { status, body: errorBody('INTERNAL_SERVER_ERROR', 'An internal error occurred', requestId) };
   return { status, body: errorBody(error?.code || 'REQUEST_FAILED', String(error?.message || 'Request failed'), requestId, error?.publicFields) };
 }

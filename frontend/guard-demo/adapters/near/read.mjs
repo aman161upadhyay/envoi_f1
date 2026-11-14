@@ -162,7 +162,8 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
       if (approval && (tx.args.approval?.expires_at_ms !== approval.expires_at_ms ||
           tx.args.approval?.signature !== approval.signature)) return null;
       const outcome = decode(tx.result.status.SuccessValue);
-      if (!['refused', 'paid'].includes(outcome.status) || outcome.agent !== agent || outcome.to !== tx.args.to ||
+      const statuses = approval ? ['refused', 'paid', 'failed'] : ['refused', 'paid'];
+      if (!statuses.includes(outcome.status) || outcome.agent !== agent || outcome.to !== tx.args.to ||
           outcome.amount !== tx.args.amount || outcome.case_ref !== tx.args.case_ref) return null;
       return { status: outcome.status, txRef, agent, to: outcome.to, amount: outcome.amount, caseRef: outcome.case_ref,
         policyHash: outcome.policy_hash, ...(outcome.reason ? { reason: outcome.reason } : {}) };

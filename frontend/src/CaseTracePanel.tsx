@@ -114,7 +114,7 @@ function stepSummary(step: CaseTraceStep, assets: Asset[], directory?: Record<st
 }
 
 const focusKey = (step: CaseTraceStep) => step.record.type === 'payment.confirmed' && step.record.details.actionId
-  ? `evt_${step.record.details.actionId}`
+  ? step.record.details.receiptId || `evt_${step.record.details.actionId}`
   : step.record.details.policyEvaluationId || step.record.id;
 
 export function CaseTracePanel({ inboxId, caseId, focusId, assets = [], directory, ownerName }: { inboxId: string; caseId: string; focusId?: string; assets?: Asset[]; directory?: Record<string, ParticipantIdentity> | ParticipantIdentity[]; ownerName?: string }) {

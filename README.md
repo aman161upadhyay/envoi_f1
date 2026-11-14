@@ -4,9 +4,16 @@ Envoi is an agent-owned communication and negotiation sandbox. Agent-to-agent co
 
 ## NEAR Hackathon demo
 
+- **[Watch the 2:18 demo](docs/near-hackathon-demo.mp4)** narrated by Rachel Gonsalves.
+- **[Try both proofs in your browser](https://envoi-near-proof-check.elven-lark-0181.chatgpt.site/)**. The original verifies against the public seal and warns that the record contract can still be upgraded. The edited copy fails integrity.
+- **[Run the offline Acme Q4 replay](#run-the-offline-replay)** with Node.js. No wallet or API key is required.
+- **[Inspect the live testnet receipts](#live-testnet-receipts)** for the Acme rehearsal and the follow-up signed approval tests.
+
 Dana, the owner, gives her purchasing agent Grok a narrow policy for the Acme Q4 review. Grok can pay JT Morgan, through Hermes, JT Morgan's agent, within its spending cap. An instruction hidden in an invoice tries to redirect the money, share a restricted file, and edit an unapproved slide. Envoi shows the rule behind each decision, and the proof checker detects an edited record.
 
-Watch the [demo video](docs/near-hackathon-demo.mp4) (2 min 18 s, narrated by Rachel Gonsalves). The file and slide actions in it are an offline replay; the NEAR results are from the November 13 testnet rehearsal linked below.
+The video combines the offline file and slide replay with NEAR results from the November 13 testnet rehearsal.
+
+### Run the offline replay
 
 Use Node.js 22.13 or later. From the repository root on `near-hackathon-demo`, run:
 
@@ -24,11 +31,17 @@ Open [Acme Q4 review](http://127.0.0.1:4173/demo) and step through the replay. I
 
 The standalone replay runs independently of the main Envoi app and its hosted services. The integrated app supports owner-signed case grants and approvals in chat. See the [judge walkthrough and testnet runbook](frontend/guard-demo/README.md) for the live setup, which requires configured testnet accounts, scoped keys, and NEAR AI credentials.
 
+### Live testnet receipts
+
 In the November 13 live rehearsal, NEAR AI Cloud flagged a hidden payment instruction and all six attestation checks passed. A NEAR testnet spending contract enforced the owner's limits and approved recipients through a payment-only function-call key.
 
 - The contract refused an attempted 20 NEAR transfer to an unapproved account and the vault balance stayed the same. [Refused transfer](https://testnet.nearblocks.io/txns/CJENrFVzbAJmmWF7RPwWSVNFEShc3hYzg5bVZxiEKfv6)
 - The contract paid 0.5 NEAR to the approved market-data vendor. [Finalized payment](https://testnet.nearblocks.io/txns/HZDzuTTHn1TsBBe8Zq4fnmTBuQMjZesp2aHzhSPceA1H)
 - The record contract anchored a batch covering five evidence records. The originals passed local integrity checks and edited copies were rejected. The online checker still flagged the record contract's unlocked status at rehearsal time. [Finalized seal](https://testnet.nearblocks.io/txns/FdotSXv4W4DxazJiUf4o3VeCmjtDQ3Ag2vEWLaWALoro)
+
+On November 14, a follow-up deployed exact signed approvals and expiry and registered the approval public key. The expired approval and replay each left the vault unchanged. The valid approval settled exactly one yoctoNEAR. [Deployment](https://testnet.nearblocks.io/txns/5sUu7S53tfVZwmwamDStTyYrBFys2Mkq3p4FWuweHAtG) · [Key registration](https://testnet.nearblocks.io/txns/EEaALVWsonMzXMqUjpY8QWJukWaAt7PQiUoQgvTux4D5) · [Expired approval](https://testnet.nearblocks.io/txns/DVo88XvNcDg3RHtaABxMnYUsL8CumosaJavkpnqgfYXp) · [Valid approval](https://testnet.nearblocks.io/txns/9kbqQ1kaSkzPz6M3b6ggRTPHzP636qnfWgTMrchKAxi6) · [Replay](https://testnet.nearblocks.io/txns/FER4QRiZ26TjgqdgWwn4twfPi3CHwWdVRu3oBj5RRHGy)
+
+The branch also includes finalized-attempt receipts and cancellation of outstanding approvals. The [payment setup](frontend/guard-demo/README.md#envoi-case-policy-integration) describes how to enable cancellation on a deployment.
 
 ### Verify the testnet refusal
 

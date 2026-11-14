@@ -142,6 +142,11 @@ const signedPolicyOrigins = (process.env.ENVOI_SIGNED_POLICY_ORIGINS || '').spli
 const nearCasePayment = createNearCasePayment({
   rpcUrl: process.env.ENVOI_NEAR_PAYMENT_RPC_URL, contract: process.env.ENVOI_NEAR_PAYMENT_CONTRACT,
   approvalSigningKey: process.env.ENVOI_NEAR_PAYMENT_APPROVAL_SIGNING_KEY,
+  cancellationRelay: process.env.ENVOI_NEAR_PAYMENT_CANCELLATION_RELAY_ACCOUNT ? {
+    account: process.env.ENVOI_NEAR_PAYMENT_CANCELLATION_RELAY_ACCOUNT,
+    publicKey: process.env.ENVOI_NEAR_PAYMENT_CANCELLATION_RELAY_PUBLIC_KEY,
+    privateKey: process.env.ENVOI_NEAR_PAYMENT_CANCELLATION_RELAY_PRIVATE_KEY
+  } : null,
   agentAccounts: process.env.ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS ? JSON.parse(process.env.ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS) : null
 });
 const emailTransport = createEmailTransport();
@@ -587,6 +592,7 @@ async function rotateAgentCredentials(rawRefreshToken, rotationId, { onRotated =
         // Two holders of one refresh token: revoke the family rather than let either keep it.
         // Returned, not thrown, so the revocation commits with the transaction.
         const revokedAt = store.now();
+        await revokeNearPaymentsAfterCredentialReplay(current.inboxId, current.agentId, current.familyId);
         await store.putJson(familyPath, { ...family, revokedAt, revokedReason: 'refresh_replay', updatedAt: revokedAt });
         await caseSessions.endForFamily(current.inboxId, current.agentId, current.familyId, 'credential_ended', revokedAt, writeReplayAudit);
         return { replayed: { inboxId: current.inboxId, agentId: current.agentId, familyId: current.familyId } };
@@ -1258,8 +1264,55 @@ async function assertCaseProgressAllowed(inboxId, caseId) {
   if (value?.state === 'paused' || value?.state === 'revoked') throw codedError(409, 'CASE_CONTROLLED', 'This case is paused or revoked by a human.', { caseId });
 }
 
+const nearCasePaymentDir = inboxId => path.join('inboxes', inboxId, 'near-case-payments');
+const nearCasePaymentPath = (inboxId, id) => path.join(nearCasePaymentDir(inboxId), `${id}.json`);
+const nearPaymentCancellationQueue = path.join('system', 'near-payment-cancellations');
+
+// Control changes and instruction issuance hold the same inbox lock. Cancel references
+// before persisting the new control state, so a retry can safely repeat a finalized cancellation.
+async function cancelNearCasePayments(inboxId, { agentId, caseId, familyId } = {}) {
+  if (!nearCasePayment) return;
+  const outstanding = (await store.listJson(nearCasePaymentDir(inboxId))).filter(payment =>
+    !payment.cancelledAt && !payment.expiryVerifiedAt && payment.outcome?.status !== 'paid' &&
+    (!caseId || payment.caseId === caseId) && (!agentId || payment.agentId === agentId) &&
+    (!familyId || !payment.credentialFamilyId || payment.credentialFamilyId === familyId));
+  const byAgent = new Map();
+  for (const payment of outstanding) {
+    if (!byAgent.has(payment.agentId)) byAgent.set(payment.agentId, []);
+    byAgent.get(payment.agentId).push(payment);
+  }
+  for (const [id, payments] of byAgent) {
+    const expired = await nearCasePayment.cancel(id, payments);
+    const at = store.now();
+    await store.putJsonBatch(payments.map(payment => document(nearCasePaymentPath(inboxId, payment.id), {
+      ...payment, ...(expired.has(payment.id) ? { expiryVerifiedAt: at } : { cancelledAt: at })
+    })));
+  }
+}
+
+async function revokeNearPaymentsAfterCredentialReplay(inboxId, agentId, familyId) {
+  try {
+    await cancelNearCasePayments(inboxId, { agentId, familyId });
+  } catch (error) {
+    if (error.code !== 'NEAR_PAYMENT_CANCELLATION_UNAVAILABLE') throw error;
+    // A replay must revoke the credential even if NEAR is temporarily unavailable.
+    const id = semanticDigest([inboxId, agentId, familyId]);
+    await store.putJson(path.join(nearPaymentCancellationQueue, `${id}.json`), { id, inboxId, agentId, familyId });
+  }
+}
+
+async function retryNearPaymentCancellations() {
+  for (const item of await store.listJson(nearPaymentCancellationQueue)) {
+    await withInboxMutation(item.inboxId, async () => {
+      await cancelNearCasePayments(item.inboxId, item);
+      await store.deleteJson(path.join(nearPaymentCancellationQueue, `${item.id}.json`));
+    }, [], [], true).catch(() => console.error('NEAR payment cancellation retry failed', { inboxId: item.inboxId }));
+  }
+}
+
 // `writeAudit` is the caller's transaction writer, so the session-end audits are published with it.
 async function revokeAgentCredentialFamilies(inboxId, agentId, humanId, revokedAt = store.now(), revokedReason = 'revoked', writeAudit = null) {
+  await cancelNearCasePayments(inboxId, { agentId });
   const families = await store.listJson(path.join('auth', 'agent-credential-families', inboxId, agentId));
   const active = families.filter(family => !family.revokedAt);
   await store.putJsonBatch(active.map(family => document(agentCredentialFamilyPath(inboxId, agentId, family.id), {
@@ -1280,6 +1333,7 @@ async function revokeCredentialFamily(inboxId, agentId, familyId, humanId, revok
   const familyPath = agentCredentialFamilyPath(inboxId, agentId, familyId);
   const family = await store.getJson(familyPath);
   if (!family || family.revokedAt) return null;
+  await cancelNearCasePayments(inboxId, { agentId, familyId });
   const revoked = { ...family, revokedAt, revokedReason, revokedByHumanId: humanId, updatedAt: revokedAt };
   await store.putJson(familyPath, revoked);
   if (family.audience) await deleteOAuthRecoveries(family.id).catch(() => {});
@@ -3591,6 +3645,7 @@ async function refreshOAuthToken(client, p) {
       }
       // Two holders of one refresh token: the family is revoked. Returned, not thrown, so the revocation commits.
       const revokedAt = store.now();
+      await revokeNearPaymentsAfterCredentialReplay(pending.inboxId, pending.agentId, family.id);
       await store.putJson(familyPath, { ...family, revokedAt, revokedReason: 'refresh_replay', updatedAt: revokedAt });
       await caseSessions.endForFamily(pending.inboxId, pending.agentId, family.id, 'credential_ended', revokedAt, writeReplayAudit);
       await deleteOAuthRecoveries(family.id);
@@ -6359,6 +6414,7 @@ async function route(req, res) {
       }
       const status = action === 'pause' ? 'paused' : 'active';
       if (agent.status !== status) {
+        if (action === 'pause') await cancelNearCasePayments(inboxId, { agentId });
         agent.status = status;
         agent.updatedAt = store.now();
         // a5-presence §4.2: the resume grace keeps the paused-time basis until the connector claims.
@@ -6558,6 +6614,9 @@ async function route(req, res) {
         try { await monadPermissions.ensurePermission(inboxId, updated); }
         catch { throw codedError(503, 'MONAD_PERMISSION_UNAVAILABLE', 'Could not verify the new permissions on Monad. Try again.'); }
       }
+      if (current.includes('execute_cases') && !updated.permissions.includes('execute_cases')) {
+        await cancelNearCasePayments(inboxId, { agentId });
+      }
       await store.putJson(path.join('inboxes', inboxId, 'agents', `${agentId}.json`), updated);
       await writeAudit('agent.permissions_updated', { agentId, humanId: human.id, previousPermissions: current, permissions: updated.permissions }, updatedAt);
       return updated;
@@ -6683,28 +6742,37 @@ async function route(req, res) {
     const result = await withCaseMutation(inboxId, caseId, async writeAudit => {
       const principal = await getAgentPrincipal(req, inboxId);
       const value = await getCase(inboxId, caseId);
-      if (!value?.schemaVersion || !principal || !canAct(principal, 'execute_cases') || !isCaseParticipant(value, principal.id)) {
+      const human = confirmationId && await auth.getHuman(req);
+      const ownerCanConfirm = human && await canManageInbox(human, inbox, { maxAgeMs: 0 });
+      if (!value?.schemaVersion || (!ownerCanConfirm &&
+          (!principal || !canAct(principal, 'execute_cases') || !isCaseParticipant(value, principal.id)))) {
         throw codedError(403, 'CASE_PARTICIPANT_REQUIRED', 'An agent case participant credential is required.');
       }
-      await requireV2Authorization(req, inboxId, principal.id, 'case.act', { caseRecord: value });
+      if (!ownerCanConfirm) await requireV2Authorization(req, inboxId, principal.id, 'case.act', { caseRecord: value });
       if (confirmationId) {
-        const location = path.join('inboxes', inboxId, 'near-case-payments', `${confirmationId}.json`);
+        const location = nearCasePaymentPath(inboxId, confirmationId);
         const payment = await store.getJson(location);
-        if (payment?.caseId !== caseId || payment.agentId !== principal.id) throw codedError(404, 'NEAR_PAYMENT_NOT_FOUND', 'Case payment not found.');
-        if (payment.outcome) {
-          if (payment.outcome.txRef !== input.txRef) throw codedError(409, 'NEAR_PAYMENT_ALREADY_CONFIRMED', 'This payment already has a finalized transaction.');
-          return { status: 200, payment };
+        if (payment?.caseId !== caseId || (!ownerCanConfirm && payment.agentId !== principal.id)) {
+          throw codedError(404, 'NEAR_PAYMENT_NOT_FOUND', 'Case payment not found.');
         }
+        const attempts = payment.attempts ?? (payment.outcome ? [{ ...payment.outcome, confirmedAt: payment.confirmedAt }] : []);
+        if (attempts.some(attempt => attempt.txRef === input.txRef)) return { status: 200, payment };
         const outcome = await nearCasePayment.confirm(payment.instruction, input.txRef);
-        const confirmed = { ...payment, outcome, confirmedAt: store.now() };
+        if (outcome.status === 'paid' && payment.outcome?.status === 'paid') {
+          throw codedError(409, 'NEAR_PAYMENT_ALREADY_CONFIRMED', 'This payment already has a paid transaction.');
+        }
+        const confirmedAt = store.now();
+        const confirmed = { ...payment, attempts: [...attempts, { ...outcome, confirmedAt }] };
+        if (payment.outcome?.status !== 'paid') Object.assign(confirmed, { outcome, confirmedAt });
+        const receiptId = `evt_${payment.id}_${outcome.txRef}`;
         const receipt = { actionId: payment.id, txRef: outcome.txRef, outcome: outcome.status, reasonCode: outcome.reason ?? null,
           payee: outcome.to, amount: outcome.amount, network: payment.instruction.network };
-        appendEvent(value, { id: `evt_${payment.id}`, type: 'receipt', actor: principal.id, createdAt: confirmed.confirmedAt,
+        appendEvent(value, { id: receiptId, type: 'receipt', actor: ownerCanConfirm ? human.id : principal.id, createdAt: confirmedAt,
           linkedPolicyEvaluation: payment.policyEvaluationId, payload: receipt });
         await saveCase(inboxId, value);
         await store.putJson(location, confirmed);
-        await writeAudit('payment.confirmed', { caseId, agentId: principal.id, policyEvaluationId: payment.policyEvaluationId,
-          ...receipt }, confirmed.confirmedAt);
+        await writeAudit('payment.confirmed', { caseId, agentId: payment.agentId, policyEvaluationId: payment.policyEvaluationId,
+          ...receipt, receiptId }, confirmedAt);
         return { status: 200, payment: confirmed };
       }
       const evaluationId = assertSafeIdentifier(input.policyEvaluationId, 'policyEvaluationId');
@@ -6713,7 +6781,7 @@ async function route(req, res) {
         throw codedError(403, 'SIGNED_PAYMENT_EVALUATION_REQUIRED', 'A signed case payment evaluation is required.');
       }
       const id = `near_payment_${semanticDigest([inboxId, caseId, evaluationId]).slice(0, 40)}`;
-      const location = path.join('inboxes', inboxId, 'near-case-payments', `${id}.json`);
+      const location = nearCasePaymentPath(inboxId, id);
       if (await store.getJson(location)) throw codedError(409, 'NEAR_PAYMENT_ALREADY_ISSUED', 'This payment instruction was already issued. Reconcile it before retrying.');
       const authorization = await validatedPolicyBinding(inboxId, value, principal, evaluationId, {
         requestedAction: 'payment.near', actionPayload: binding.actionPayload, executionId: id, writeAudit
@@ -6722,7 +6790,9 @@ async function route(req, res) {
       const expiresAt = new Date(Math.min(Date.parse(binding.expiresAt), Date.parse(authorization.refreshed.expiresAt))).toISOString();
       const instruction = await nearCasePayment.prepare({ agentId: principal.id, ownerAccount, payload: binding.actionPayload,
         paymentId: id, expiresAt });
-      const payment = { id, caseId, agentId: principal.id, policyEvaluationId: evaluationId, instruction, issuedAt: store.now() };
+      const identity = await getAgentWorkIdentity(req);
+      const payment = { id, caseId, agentId: principal.id, credentialFamilyId: identity?.familyId ?? null,
+        policyEvaluationId: evaluationId, instruction, issuedAt: store.now() };
       await store.putJson(location, payment);
       return { status: 201, payment };
     }, { allowPaused: Boolean(confirmationId) });
@@ -6849,6 +6919,7 @@ async function route(req, res) {
         if (envelope.document.version !== (previous?.document?.version ?? 0) + 1 || envelope.document.previousHash !== previousHash) {
           throw codedError(409, 'SIGNED_POLICY_VERSION_CONFLICT', 'The signed policy version changed. Reload the draft.');
         }
+        if (previous) await cancelNearCasePayments(inboxId, { caseId });
         await store.putJsonBatch([
           { path: signedCasePolicyVersionPath(inboxId, caseId, digest), value: envelope },
           { path: location, value: envelope }
@@ -7112,10 +7183,15 @@ async function route(req, res) {
         }
         result = applyAgentAction(value, { id: actionId, actionKey: input.actionKey, actor: currentPrincipal.id, idempotencyKey, outcome: input.outcome, externalRefs: policyExternalRefs, reasonCode: input.reasonCode || null }, { at: now, nextState: input.nextState || null });
       }
+      const controlled = !result.replay && !['paused', 'revoked'].includes(value.state) && ['paused', 'revoked'].includes(result.case.state);
+      if (controlled && nearCasePayment) {
+        const binding = await store.getJson(caseBindingPath(value.id));
+        for (const participantInboxId of binding?.inboxIds ?? [inboxId]) await cancelNearCasePayments(participantInboxId, { caseId: value.id });
+      }
       await saveCase(inboxId, result.case);
       if (!result.replay) await writeAudit('case.action_recorded', { caseId: value.id, actionId: result.action.id, actionKey: result.action.actionKey, actor: result.action.actor, outcome: result.action.outcome });
       // Whoever moved it there: a human pause, take-over, revoke or decline, or an agent's nextState.
-      if (!result.replay && !['paused', 'revoked'].includes(value.state) && ['paused', 'revoked'].includes(result.case.state)) await releaseCaseWork(inboxId, value.id, now, writeAudit);
+      if (controlled) await releaseCaseWork(inboxId, value.id, now, writeAudit);
       if (!result.replay && humanCanManage && input.actionKey === 'resume' && (value.state === 'paused' || value.state === 'revoked')) {
         // Every participant whose agent has work waiting in this case is woken; no human identity is shared.
         const binding = await store.getJson(caseBindingPath(value.id));
@@ -7944,6 +8020,12 @@ const humanRequestCleanup = setInterval(() => {
   humanRequestCleanupRun ||= cleanupCaseHumanRequests().catch(() => console.error(JSON.stringify({ event: 'envoi.human_decision_cleanup_failed' }))).finally(() => { humanRequestCleanupRun = null; });
 }, humanRequestCleanupMs);
 humanRequestCleanup.unref();
+let nearPaymentCancellationRun = null;
+const nearPaymentCancellationTimer = nearCasePayment ? setInterval(() => {
+  nearPaymentCancellationRun ||= retryNearPaymentCancellations().catch(() => console.error('NEAR payment cancellation queue could not be read'))
+    .finally(() => { nearPaymentCancellationRun = null; });
+}, 5000) : null;
+nearPaymentCancellationTimer?.unref();
 caseSessionsHeartbeat?.unref?.();
 await synchronizePublicEmailDirectory();
 deliveryWorker.start();
@@ -8040,6 +8122,7 @@ const shutdown = () => {
   clearInterval(registrationCleanup);
   clearInterval(caseSessionCleanup);
   clearInterval(humanRequestCleanup);
+  if (nearPaymentCancellationTimer) clearInterval(nearPaymentCancellationTimer);
   if (wakeDispatch) clearInterval(wakeDispatch);
   if (wakeMaintenanceTimer) clearInterval(wakeMaintenanceTimer);
   if (caseSessionsHeartbeat) clearInterval(caseSessionsHeartbeat);
