@@ -6,9 +6,9 @@ Checked on November 11, 2026, from a separate machine with read-only RPC calls o
 
 | Role | Account | Code hash | Access keys |
 |---|---|---|---|
-| Owner | `envoi-pr302-20261106.testnet` | none | 1 full access, 5 function-call keys for `set_policy` on the spending contract (browser devices) |
+| Owner | `envoi-pr302-20261106.testnet` | none | 1 full access, 5 function-call keys for `set_policy` on the spending contract (browser devices), and 1 cancellation-only relay key |
 | Record contract | `record.envoi-pr302-20261106.testnet` | `FDvRgQSwfbocdwNRgdu53WhkXB39rYutZvohTd83ZK7s` | **1 full access** (`ed25519:81WnVeLpc7YenV6PMrDWkgUgFMhs6BaHtF9rgVzqd3Mo`), so verification warns that the contract can still be upgraded |
-| Spending contract | `spend.envoi-pr302-20261106.testnet` | `3S3tJG9yJNZZMqo3PGbW5nfhubLy771mgnyHDRamWk3M` | 1 full access |
+| Spending contract | `spend.envoi-pr302-20261106.testnet` | `yAxEL1aB5cVW52VX1Fp2hzZppEfuQZKEu3rA8ArSm69` | 1 full access |
 | Agent (Milo) | `milo.envoi-pr302-20261106.testnet` | none | **only** a function-call key for `pay` on the spending contract |
 | Publisher | `publisher.envoi-pr302-20261106.testnet` | none | 1 full access (custodian) and a function-call key for exactly `seal` and `register_evidence_key` on the record contract |
 | Payee / attacker | `ledger.` / `attacker.envoi-pr302-20261106.testnet` | none | full access (test payees) |
@@ -19,9 +19,26 @@ The November 14 [spending contract upgrade](https://testnet.nearblocks.io/txns/8
 
 The [signed-approval upgrade](https://testnet.nearblocks.io/txns/5sUu7S53tfVZwmwamDStTyYrBFys2Mkq3p4FWuweHAtG) preserved the existing vault and spending policy. The owner [registered the approval public key](https://testnet.nearblocks.io/txns/EEaALVWsonMzXMqUjpY8QWJukWaAt7PQiUoQgvTux4D5). The [expired approval](https://testnet.nearblocks.io/txns/DVo88XvNcDg3RHtaABxMnYUsL8CumosaJavkpnqgfYXp) and [replay](https://testnet.nearblocks.io/txns/FER4QRiZ26TjgqdgWwn4twfPi3CHwWdVRu3oBj5RRHGy) left the vault unchanged. The [valid approval](https://testnet.nearblocks.io/txns/9kbqQ1kaSkzPz6M3b6ggRTPHzP636qnfWgTMrchKAxi6) settled one yoctoNEAR.
 
-To enable cancellation on an existing account, deploy the current spending code without initialization and configure the [cancellation relay](../README.md#envoi-case-policy-integration).
+Use a unique `case_ref` for each payment. The spending contract reserves it for the paying agent before scheduling a transfer. A confirmed transfer permanently consumes the reference. A failed transfer restores the vault and releases the reference for retry unless it was cancelled. If a result is uncertain, look up the original transaction before retrying.
 
-Use a unique `case_ref` for each payment. The spending contract reserves it for the paying agent before scheduling a transfer. A confirmed transfer permanently consumes the reference. A failed transfer restores the vault and releases the reference for retry. If a result is uncertain, look up the original transaction before retrying.
+## Cancelled approval on shared testnet
+
+The November 14 deployment from `b90dee589a51fe6ee142ecafcc7366b03f163079` preserved the spending policy, vault balance, and approval public key. A function-call key limited to `cancel_payments` submitted a signed cancellation for a one-yoctoNEAR approval. The agent's pay-only key then submitted that same approval before it expired. The spending contract returned `payment approval cancelled`. This regression exercised the public contract directly with the repository's signing code. The app replay and outage behavior is covered by the server regression tests.
+
+| Action | Finalized transaction |
+|---|---|
+| Deploy cancellation contract | [DkajDALg…](https://testnet.nearblocks.io/txns/DkajDALgzgjwaiU9VHDNJzo7K5RbiZrdTBfHEmHoPM5M) |
+| Add cancellation-only relay key | [Ai7uvYRH…](https://testnet.nearblocks.io/txns/Ai7uvYRHN5TFgH7cScj1QKaoiuWMffKyFbqM7X5XCtTA) |
+| Cancel the signed approval | [FaNMA4nQ…](https://testnet.nearblocks.io/txns/FaNMA4nQyk5odYDWQHVPBRXtPTUee5hB2uMyka3gTxU8) |
+| Submit the cancelled approval | [4KUv4Dyn…](https://testnet.nearblocks.io/txns/4KUv4DynGST4jrgbz6ToY2qtT5LP1QweV5rBwBiY1z45) |
+
+| Vault reading | Finalized block | Vault balance (yoctoNEAR) |
+|---|---|---:|
+| Before the rejected payment | `277712214` (`kV59y6JxDM9MQrxQNfUwEgHoYqbHVmR558BbEi8HNKv`) | 1499998999999999999999998 |
+| Block containing the contract rejection | `277712220` (`C2vXcEMRjKcaTttNpbsWshcGJvqvJn4BqZmsqhrB4rJu`) | 1499998999999999999999998 |
+| After the rejected payment | `277712221` (`6ruQwVjytViB5N6x1doG8Hmpcxgqu4sWc6AUa43EUgXp`) | 1499998999999999999999998 |
+
+Anyone can reproduce the vault readings using the read-only `vault_of` RPC example below with these block hashes. The rejected payment's function receipt is `BQwvG5tWLi4BPsK429uJvhhBiUqNNwufE7GCd2Qxmqct`. Its execution block precedes the approval's expiry at `2026-11-14T21:28:12.862Z`. The relay is configured separately for each Envoi server deployment. See [payment setup](../README.md#envoi-case-policy-integration).
 
 ## Receipts
 

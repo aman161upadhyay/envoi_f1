@@ -41,7 +41,7 @@ In the November 13 live rehearsal, NEAR AI Cloud flagged a hidden payment instru
 
 On November 14, a follow-up deployed exact signed approvals and expiry and registered the approval public key. The expired approval and replay each left the vault unchanged. The valid approval settled exactly one yoctoNEAR. [Deployment](https://testnet.nearblocks.io/txns/5sUu7S53tfVZwmwamDStTyYrBFys2Mkq3p4FWuweHAtG) · [Key registration](https://testnet.nearblocks.io/txns/EEaALVWsonMzXMqUjpY8QWJukWaAt7PQiUoQgvTux4D5) · [Expired approval](https://testnet.nearblocks.io/txns/DVo88XvNcDg3RHtaABxMnYUsL8CumosaJavkpnqgfYXp) · [Valid approval](https://testnet.nearblocks.io/txns/9kbqQ1kaSkzPz6M3b6ggRTPHzP636qnfWgTMrchKAxi6) · [Replay](https://testnet.nearblocks.io/txns/FER4QRiZ26TjgqdgWwn4twfPi3CHwWdVRu3oBj5RRHGy)
 
-The branch also includes finalized-attempt receipts and cancellation of outstanding approvals. The [payment setup](frontend/guard-demo/README.md#envoi-case-policy-integration) describes how to enable cancellation on a deployment.
+Shared testnet also ran the cancellation contract from `b90dee5`. Its cancellation-only relay cancelled an unexpired one-yoctoNEAR approval. The spending contract rejected the subsequent payment and the vault stayed at `1499998999999999999999998` yoctoNEAR. [Deployment](https://testnet.nearblocks.io/txns/DkajDALgzgjwaiU9VHDNJzo7K5RbiZrdTBfHEmHoPM5M) · [Cancellation](https://testnet.nearblocks.io/txns/FaNMA4nQyk5odYDWQHVPBRXtPTUee5hB2uMyka3gTxU8) · [Rejected payment](https://testnet.nearblocks.io/txns/4KUv4DynGST4jrgbz6ToY2qtT5LP1QweV5rBwBiY1z45) · [Vault readings and reproduction steps](frontend/guard-demo/docs/testnet-verification.md#cancelled-approval-on-shared-testnet)
 
 ### Verify the testnet refusal
 
