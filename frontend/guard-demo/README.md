@@ -150,6 +150,8 @@ The persistent batcher registered a new evidence key and sealed a record using t
 
 ## NEAR AI account readiness
 
-A successful configuration preflight confirms that a key and model are present. The workspace must also have usable credits and a spending limit. NEAR AI currently rejects inference for the supplied hackathon key with HTTP 402 and the message "No spending limit configured. Please contact support to set up credits." The live runner stops before registering a new evidence key or submitting either demo payment.
+A successful configuration preflight confirms that a key and model are present. Before a new live run, use `npm run testnet:readiness` to check whether the configured key can run private screening and verify its attestation. If inference returns HTTP 402, check the key's available credits and spending limit. The live runner stops before registering a new evidence key or submitting either demo payment in that case.
+
+The November 13, 2026 rehearsal completed. NEAR AI Cloud flagged the hidden payment instruction, and all six attestation checks passed. See the [submission README](../../README.md#near-hackathon-demo) for the testnet payment and seal receipts. The offline replay runs without a NEAR AI key.
 
 Use a canonical model ID while x-no-aliasing is enabled. The provider identified z-ai/glm-5.3-flash as the canonical replacement for the earlier GLM alias during the November 8 check; that value is pinned in the ignored local configuration.

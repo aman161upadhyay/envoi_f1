@@ -75,9 +75,13 @@ npm run check -- genuine-proof.json trusted-evidence-keys.json --testnet   # opt
 
 Exit codes: 0 verified, 1 can't be trusted, 2 not fully checked, 3 usage or not a proof.
 
+## November 13 rehearsal
+
+The live rehearsal completed on November 13, 2026. NEAR AI Cloud flagged the hidden payment instruction, and all six attestation checks passed. The spending contract refused the unapproved 20 NEAR transfer without changing the vault balance, paid 0.5 NEAR to the approved vendor, and the record contract anchored a batch of five evidence records. The [submission README](../../../README.md#near-hackathon-demo) links the three transactions.
+
+The checker rejected all five edited copies. The five original proofs passed every check except the record lock. The demo shows the local proof check, and the testnet record remains unlocked.
+
 ## Still open
 
-- NEAR AI billing (HTTP 402) blocks the live rehearsal. This is an account and payment step for the team.
-- The fresh genuine and edited proof verdicts follow once the rehearsal produces a proof.
-- The lock receipt comes after Rachel approves the sequence above. Lock before recording the checker shot: until then every genuine proof fails the locked-contract check.
+- A lock receipt remains pending Rachel's approval and the dry run above. After the lock, rerun the deployment and original-proof checks.
 - After the hackathon: a reproducible container build (Rust, `cargo-near`, Docker) for a new record account.
