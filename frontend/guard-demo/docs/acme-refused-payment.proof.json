@@ -1,0 +1,117 @@
+{
+  "format": "envoi.proof/v1",
+  "record": {
+    "schema": "envoi.evidence/v1",
+    "id": "b2f072c7-64f0-4f9d-8d36-0e0b9a55e385",
+    "seq": 3,
+    "type": "pay_refused",
+    "agent": "milo.envoi-pr302-20261106.testnet",
+    "counterparty": "ledger.envoi-pr302-20261106.testnet",
+    "caseRef": "invoice-1042",
+    "summary": "Milo tried to pay 20 NEAR. The testnet spending contract refused it. The vault balance stayed the same.",
+    "detailsHash": "2f1febf2c4dde45a35eaad2c4b4d91ede034323bc4499bc9787de74c00e62198",
+    "chainRef": {
+      "network": "near-testnet",
+      "txRef": "CJENrFVzbAJmmWF7RPwWSVNFEShc3hYzg5bVZxiEKfv6"
+    },
+    "permissionHash": "269ad3f3417c24202c41edc36436c786beed880a888264634c3403ea4671a25c",
+    "createdAtMs": 1794598047863,
+    "sensitive": true,
+    "salt": "f6b952b531208384c50b0f6784aabfdfa917940febf386cdecdfece08b74a56c",
+    "previousHash": "764ad61985eebc73821cb195af09d5128b09498dd7913327d2d04f3b5fbf15f2"
+  },
+  "recordHash": "9131f377665bd616a597085901b6aa5736c13c49a144e789824c0b3823fb8c7c",
+  "details": {
+    "to": "attacker.envoi-pr302-20261106.testnet",
+    "amount": "20000000000000000000000000",
+    "reason": "not_payee",
+    "vault": {
+      "unit": "yoctoNEAR",
+      "before": "1999999000000000000000000",
+      "after": "1999999000000000000000000"
+    }
+  },
+  "detailsSalt": "4a9abc73732377b6d1c244f81c2bdb180818d65a77fb133026d007fdae65a823",
+  "envoi": {
+    "keyId": "ev-45df89a44a884774b18b6e41",
+    "publicKey": "865ffad0c7c1f001c960d29e2287769fc518062306d36274c51b3900d733cad2",
+    "signature": "bec77e9765057c3b25d9bfe1fa83b9ad87c6bbfc49f2a3490689183fe481df05dbf0f157bdaa7966fe0f6c75edee639eb297537b4087343e5ed7722e4e14b70e"
+  },
+  "permission": {
+    "document": {
+      "schema": "envoi.permissions/v1",
+      "owner": "envoi-pr302-20261106.testnet",
+      "agent": "milo.envoi-pr302-20261106.testnet",
+      "version": 2,
+      "previousHash": "3987fa799468d8793f7ddb0d72966344536874cafcdf011d8580a7aa1c7e0a08",
+      "issuedAtMs": 1794065459659,
+      "rules": {
+        "send_messages": "allowed",
+        "share_files": {
+          "default": "off",
+          "allow": []
+        },
+        "spend_money": {
+          "payees": [
+            {
+              "label": "Ledger Co",
+              "account": "ledger.envoi-pr302-20261106.testnet",
+              "maxPerPayment": "1000000000000000000000000"
+            }
+          ],
+          "dailyCap": "2000000000000000000000000",
+          "unit": "yoctoNEAR"
+        }
+      },
+      "display": [
+        "Milo can pay Ledger Co (ledger.envoi-pr302-20261106.testnet) up to 1 NEAR per payment",
+        "Milo can spend up to 2 NEAR a day",
+        "Milo can't share files with anyone",
+        "Milo can send messages"
+      ]
+    },
+    "ownerKey": "04f54171a08f51db28601ba113aa509d565d8ac9f5d34d1f4e37cfc629944ee99fb36cf4fa3df05465dae3a178ff482708908326e24efc424cb6bb85033de49cdb",
+    "signature": {
+      "authenticatorData": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAg",
+      "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiSnByVDgwRjhKQ0FzUWUzRFpEYkhocjd0aUFxSWdtUmpURFFENmtaeG9sdyIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3Q6NDE3MyIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "signature": "MEQCIFJUI4_eM1COqy1CgT8vjyTdKORGYdxLvPhj-TnxLxITAiAk2KYK_dgRX4d2RloGxWjpje73O-w6DT1ZvA-T0tCRdg"
+    },
+    "keyType": "passkey",
+    "rpId": "localhost",
+    "registry": {
+      "network": "near-testnet",
+      "contract": "record.envoi-pr302-20261106.testnet"
+    }
+  },
+  "batch": {
+    "batchId": 5,
+    "root": "08c57515c78f76743408be34b7d0377ba819af889995ede818f4c00ae17ba9c3",
+    "previousRoot": "ed5f3cbe442f00c377db85c1f1cd1296e7e45f34b831b5ac9049814a6b9a2af1",
+    "count": 5,
+    "leafIndex": 2,
+    "siblings": [
+      {
+        "hash": "dc215aadf74c598e15711202024b4dc6a01ebc9af8c23c3de3bec593477462c3",
+        "side": "right"
+      },
+      {
+        "hash": "5e9c90d3afc125d137671dba4732328c05ed1a4f31e0e9eb289f5e6b412beff6",
+        "side": "left"
+      },
+      {
+        "hash": "3ce1486b550337fd6b6b1c9c49a23524615bc3387694922f2d72ac9af61fdd97",
+        "side": "right"
+      }
+    ]
+  },
+  "seal": {
+    "network": "near-testnet",
+    "contract": "record.envoi-pr302-20261106.testnet",
+    "txRef": "FdotSXv4W4DxazJiUf4o3VeCmjtDQ3Ag2vEWLaWALoro"
+  },
+  "chainEvent": {
+    "network": "near-testnet",
+    "txRef": "CJENrFVzbAJmmWF7RPwWSVNFEShc3hYzg5bVZxiEKfv6",
+    "contract": "spend.envoi-pr302-20261106.testnet"
+  }
+}

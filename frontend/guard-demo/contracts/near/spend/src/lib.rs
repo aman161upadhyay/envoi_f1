@@ -46,6 +46,22 @@ fn registration_approvals() -> LookupMap<AccountId, AccountId> {
     LookupMap::new(b"a")
 }
 
+#[near(serializers = [borsh])]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PaymentStatus {
+    Pending,
+    Paid,
+}
+
+fn payment_references() -> LookupMap<[u8; 32], PaymentStatus> {
+    LookupMap::new(b"r")
+}
+
+fn payment_reference(agent: &AccountId, case_ref: &str) -> [u8; 32] {
+    // Account IDs cannot contain NUL, so the account and reference have an unambiguous boundary.
+    env::sha256_array(format!("{agent}\0{case_ref}").as_bytes())
+}
+
 fn emit(event: &str, data: Value) {
     env::log_str(&format!("EVENT_JSON:{}", json!({
         "standard": "envoi_spend", "version": "1.0.0", "event": event, "data": [data]
@@ -151,6 +167,10 @@ impl Spend {
             PromiseOrValue::Value(data)
         };
         let Some(policy_ref) = &policy else { return refuse("not_registered"); };
+        let reference = payment_reference(&agent, &case_ref);
+        let mut references = payment_references();
+        // A duplicate transaction must not look like a final outcome for the original payment.
+        require!(!references.contains_key(&reference), "duplicate payment reference");
         if let Some(expected) = expected_policy_hash {
             require!(expected == policy_ref.policy_hash, "stale policy hash");
         }
@@ -161,17 +181,36 @@ impl Spend {
         let balance = self.vault_of(policy_ref.owner.clone()).0;
         if amount.0 > balance { return refuse("vault_low"); }
 
+        references.insert(reference, PaymentStatus::Pending);
         self.vaults.insert(policy_ref.owner.clone(), balance - amount.0);
         self.spent.insert(agent.clone(), (day, spent + amount.0));
         let transfer = Promise::new(to.clone()).transfer(NearToken::from_yoctonear(amount.0));
         let payment = Payment { agent, owner: policy_ref.owner.clone(), to, amount, case_ref, day,
             policy_hash: policy_ref.policy_hash.clone() };
         PromiseOrValue::Promise(transfer.then(Self::ext(env::current_account_id())
-            .with_static_gas(Gas::from_tgas(15)).on_paid(payment)))
+            .with_static_gas(Gas::from_tgas(15)).on_reserved_payment(payment)))
     }
 
     #[private]
+    pub fn on_reserved_payment(&mut self, payment: Payment, #[callback_result] result: Result<(), PromiseError>) -> Value {
+        let reference = payment_reference(&payment.agent, &payment.case_ref);
+        let mut references = payment_references();
+        require!(references.get(&reference) == Some(&PaymentStatus::Pending), "payment is not pending");
+        if result.is_ok() {
+            references.insert(reference, PaymentStatus::Paid);
+        } else {
+            references.remove(&reference);
+        }
+        self.complete_payment(payment, result)
+    }
+
+    // Earlier deployments scheduled this callback without a reference reservation.
+    #[private]
     pub fn on_paid(&mut self, payment: Payment, #[callback_result] result: Result<(), PromiseError>) -> Value {
+        self.complete_payment(payment, result)
+    }
+
+    fn complete_payment(&mut self, payment: Payment, result: Result<(), PromiseError>) -> Value {
         let event = if result.is_ok() { "paid" } else {
             self.credit(&payment.owner, payment.amount.0);
             if let Some((day, amount)) = self.spent.get(&payment.agent).copied() {
@@ -218,10 +257,96 @@ mod tests {
     use near_sdk::testing_env;
 
     fn call(who: usize) {
+        context(who, 1, 0);
+    }
+
+    fn context(who: usize, deposit: u128, day: u64) {
         testing_env!(VMContextBuilder::new()
             .predecessor_account_id(accounts(who))
-            .attached_deposit(NearToken::from_yoctonear(1))
+            .attached_deposit(NearToken::from_yoctonear(deposit))
+            .block_timestamp(day * 86_400_000_000_000)
             .build());
+    }
+
+    fn funded_contract() -> Spend {
+        call(1);
+        let mut contract = Spend::new();
+        contract.approve_registration(Some(accounts(0)));
+        call(2);
+        contract.approve_registration(Some(accounts(0)));
+        call(0);
+        let payees = vec![Payee { account: accounts(3), max_per_payment: U128(3) }];
+        for agent in [accounts(1), accounts(2)] {
+            contract.register_agent(agent.clone());
+            contract.set_policy(agent, payees.clone(), U128(10), "a".repeat(64), 0);
+        }
+        context(0, 10, 0);
+        contract.deposit();
+        contract
+    }
+
+    fn payment() -> Payment {
+        Payment { agent: accounts(1), owner: accounts(0), to: accounts(3), amount: U128(3),
+            case_ref: "payment-1".into(), day: 0, policy_hash: "a".repeat(64) }
+    }
+
+    fn pay_once(contract: &mut Spend, agent: usize, day: u64) {
+        context(agent, 0, day);
+        assert!(matches!(contract.pay(accounts(3), U128(3), "payment-1".into(), Some("a".repeat(64))),
+            PromiseOrValue::Promise(_)));
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate payment reference")]
+    fn rejects_duplicate_before_the_transfer_callback() {
+        let mut contract = funded_contract();
+        pay_once(&mut contract, 1, 0);
+        assert_eq!(contract.vault_of(accounts(0)).0, 7);
+        pay_once(&mut contract, 1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate payment reference")]
+    fn rejects_duplicate_after_settlement_even_on_a_new_day() {
+        let mut contract = funded_contract();
+        pay_once(&mut contract, 1, 0);
+        assert_eq!(contract.on_reserved_payment(payment(), Ok(()))["status"], "paid");
+        assert_eq!(contract.vault_of(accounts(0)).0, 7);
+        pay_once(&mut contract, 1, 1);
+    }
+
+    #[test]
+    fn failure_refunds_both_limits_and_allows_same_reference_to_retry() {
+        let mut contract = funded_contract();
+        pay_once(&mut contract, 1, 0);
+        assert_eq!(contract.on_reserved_payment(payment(), Err(PromiseError::Failed))["status"], "failed");
+        assert_eq!(contract.vault_of(accounts(0)).0, 10);
+        assert_eq!(contract.spent.get(&accounts(1)), Some(&(0, 0)));
+        pay_once(&mut contract, 1, 0);
+        assert_eq!(contract.on_reserved_payment(payment(), Ok(()))["status"], "paid");
+        assert_eq!(contract.vault_of(accounts(0)).0, 7);
+        assert_eq!(contract.spent.get(&accounts(1)), Some(&(0, 3)));
+    }
+
+    #[test]
+    fn refusal_does_not_consume_a_reference_and_agents_are_independent() {
+        let mut contract = funded_contract();
+        context(1, 0, 0);
+        let refusal = contract.pay(accounts(4), U128(3), "payment-1".into(), Some("a".repeat(64)));
+        assert!(matches!(refusal, PromiseOrValue::Value(value) if value["reason"] == "not_payee"));
+        pay_once(&mut contract, 1, 0);
+        pay_once(&mut contract, 2, 0);
+        assert_eq!(contract.vault_of(accounts(0)).0, 4);
+    }
+
+    #[test]
+    fn a_legacy_in_flight_failure_still_restores_the_vault() {
+        let mut contract = funded_contract();
+        contract.vaults.insert(accounts(0), 7);
+        contract.spent.insert(accounts(1), (0, 3));
+        assert_eq!(contract.on_paid(payment(), Err(PromiseError::Failed))["status"], "failed");
+        assert_eq!(contract.vault_of(accounts(0)).0, 10);
+        assert_eq!(contract.spent.get(&accounts(1)), Some(&(0, 0)));
     }
 
     #[test]

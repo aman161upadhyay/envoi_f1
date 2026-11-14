@@ -387,7 +387,7 @@ function renderRecords() {
 function showRecord(item) {
   const details = [make('p', item.summary), make('p', new Date(item.createdAtMs).toLocaleString())];
   if (item.sealState === 'blocked') details.push(make('p', 'This batch needs review before sealing can continue.'));
-  if (item.caseRef === 'invoice-1042') {
+  if (/^invoice-1042(?:-ev-[a-f0-9]{24})?$/.test(item.caseRef)) {
     details.push(make('a', 'Invoice 1042 from Ledger Co', { href: '/cases/invoice-1042' }));
   } else if (item.caseRef === 'acme-q4-review') {
     details.push(make('a', 'Acme Q4 review', { href: '/cases/acme-q4-review' }));

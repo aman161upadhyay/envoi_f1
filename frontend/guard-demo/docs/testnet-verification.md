@@ -15,7 +15,9 @@ Checked on November 11, 2026, from a separate machine with read-only RPC calls o
 
 The record code hash matches `docs/contracts.md` (source commit `be92054`). It is a locally compiled build; a reproducible container build and an independently rebuilt hash are still open.
 
-The submission branch contains the spending contract fix that requires agent approval for new registrations. The spending code hash in the table identifies the earlier deployed rehearsal build. The fix can be deployed to the same spending account without reinitializing its vaults or policies.
+The submission branch contains spending contract fixes that require agent approval for new registrations and reject duplicate payment references. The spending code hash in the table identifies the earlier deployed rehearsal build. The updated code preserves vaults, policies, and transfer callbacks from that build. The earlier build kept no on-chain reference history. When upgrading an existing account, reconcile prior transactions and retire instructions issued on the old build before submitting new payments.
+
+Use a unique `case_ref` for each payment. The spending contract reserves it for the paying agent before scheduling a transfer. A confirmed transfer permanently consumes the reference. A failed transfer restores the vault and releases the reference for retry. If a result is uncertain, look up the original transaction before retrying.
 
 ## Receipts
 

@@ -25,7 +25,6 @@ const recordContract = env.NEAR_RECORD_CONTRACT;
 const publisher = env.NEAR_PUBLISHER_ACCOUNT;
 const network = 'near-testnet';
 const rpcUrl = env.NEAR_RPC_URL || DEFAULT_RPC['near-testnet'];
-const caseRef = 'invoice-1042';
 const oneNear = 10n ** 24n;
 let evidenceStore;
 
@@ -64,13 +63,14 @@ async function main() {
 
   const evidenceKeys = await crypto.subtle.generateKey('Ed25519', false, ['sign', 'verify']);
   const keyId = 'ev-' + crypto.randomUUID().replaceAll('-', '').slice(0, 24);
+  const caseRef = 'invoice-1042-' + keyId;
   const evidencePublicKey = await publicHex(evidenceKeys.publicKey);
   const records = [];
   const out = env.NEAR_RUN_OUTPUT || 'testnet-run.json';
   let evidenceRegistration;
   let refusalVault;
   const output = extra => JSON.stringify({
-    network, permission: { ...ownerPermission, registry: { network, contract: recordContract } },
+    network, caseRef, permission: { ...ownerPermission, registry: { network, contract: recordContract } },
     evidenceKeys: { [keyId]: evidencePublicKey }, evidenceRegistration, records, refusalVault, ...extra
   }, null, 2);
   // Reserve output before registration or payment broadcasts.
@@ -110,7 +110,7 @@ async function main() {
     transactionRefs.push(txRef);
     await progress({ status: 'payment-final', transactionRefs });
     const outcome = await readers.spendGuard.readOutcome(txRef, agent);
-    if (outcome?.status !== expected || outcome.policyHash !== hash ||
+    if (outcome?.status !== expected || outcome.caseRef !== caseRef || outcome.policyHash !== hash ||
         (expected === 'refused' && outcome.reason !== 'not_payee')) {
       throw new Error('Unexpected testnet payment outcome: ' + txRef);
     }

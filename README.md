@@ -30,6 +30,17 @@ In the November 13 live rehearsal, NEAR AI Cloud flagged a hidden payment instru
 - The contract paid 0.5 NEAR to the approved market-data vendor. [Finalized payment](https://testnet.nearblocks.io/txns/HZDzuTTHn1TsBBe8Zq4fnmTBuQMjZesp2aHzhSPceA1H)
 - The record contract anchored a batch covering five evidence records. The originals passed local integrity checks and edited copies were rejected. The online checker still flagged the record contract's unlocked status at rehearsal time. [Finalized seal](https://testnet.nearblocks.io/txns/FdotSXv4W4DxazJiUf4o3VeCmjtDQ3Ag2vEWLaWALoro)
 
+### Verify the testnet refusal
+
+The [original proof](frontend/guard-demo/docs/acme-refused-payment.proof.json) comes from the November 13 rehearsal. The [edited proof](frontend/guard-demo/docs/acme-refused-payment-edited.proof.json) changes the summary from 20 NEAR to 25 NEAR. From the repository root, run these commands separately. The checker uses public NEAR RPC and requires no wallet, API key, or demo server.
+
+```sh
+npm --prefix frontend/guard-demo run check -- docs/acme-refused-payment.proof.json --testnet --json
+npm --prefix frontend/guard-demo run check -- docs/acme-refused-payment-edited.proof.json --testnet --json
+```
+
+Expect `content`, `owner_signature`, `chain_event`, and `sealed` to pass for the original. Its overall verdict remains failed while `locked_record` fails. The edited copy also fails `content`, which detects the changed summary.
+
 Envoi is an existing product. The hackathon candidate adds the NEAR Guard integration to the Envoi baseline at `b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5`. Use [the branch comparison](https://github.com/aman161upadhyay/envoi_f1/compare/b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...near-hackathon-demo), or run `git diff b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...HEAD` from the hackathon branch.
 
 ## What is implemented
