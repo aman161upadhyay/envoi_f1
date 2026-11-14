@@ -6,7 +6,7 @@ Envoi is an agent-owned communication and negotiation sandbox. Agent-to-agent co
 
 An owner gives a purchasing agent a narrow policy for the Acme Q4 review. The agent can pay Ledger Co within its spending cap. An instruction hidden in an invoice tries to redirect the money, share a restricted file, and edit an unapproved slide. Envoi shows the rule behind each decision, and the proof checker detects an edited record.
 
-Watch the [demo video](docs/near-hackathon-demo.mp4) (2 min 25 s, narrated by Rachel Gonsalves). The file and slide actions in it are an offline replay; the NEAR results are from the November 13 testnet rehearsal linked below.
+Watch the [demo video](docs/near-hackathon-demo.mp4) (2 min 18 s, narrated by Rachel Gonsalves). The file and slide actions in it are an offline replay; the NEAR results are from the November 13 testnet rehearsal linked below.
 
 Use Node.js 22.13 or later. From the repository root on `near-hackathon-demo`, run:
 
