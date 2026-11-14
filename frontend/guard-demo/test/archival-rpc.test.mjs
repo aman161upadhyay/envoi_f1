@@ -61,6 +61,51 @@ test('default endpoints come with their archival nodes; custom URLs do not', asy
   assert.deepEqual(calls, ['/testnet-rpc'], 'the browser proxy does its own archival lookups');
 });
 
+test('policy verification uses the archived block at the record time, even when a block height is skipped', async () => {
+  const network = 'near-testnet';
+  const recordContract = 'record.testnet';
+  const spendContract = 'spend.testnet';
+  const publisher = 'pub.testnet';
+  const txRef = 'FdotSXv4W4DxazJiUf4o3VeCmjtDQ3Ag2vEWLaWALoro';
+  const seal = { network, contract: recordContract, txRef };
+  const batch = { batchId: 1, root: 'root', previousRoot: 'previous', count: 1 };
+  const hash = letter => letter.repeat(44);
+  const headers = new Map([
+    [8, { height: 8, hash: hash('A'), prev_hash: hash('Z'), timestamp_nanosec: '100000000' }],
+    [10, { height: 10, hash: hash('B'), prev_hash: hash('A'), timestamp_nanosec: '102000000' }],
+    [11, { height: 11, hash: hash('C'), prev_hash: hash('B'), timestamp_nanosec: '103000000' }],
+    [12, { height: 12, hash: hash('D'), prev_hash: hash('C'), timestamp_nanosec: '104000000' }]
+  ]);
+  const args = Buffer.from(JSON.stringify({ batch_id: 1, root: 'root', previous_root: 'previous', count: 1 })).toString('base64');
+  const calls = [];
+  const readers = nearReaders({ recordContract, spendContract, publisher, fetcher: async (url, init) => {
+    const { method, params } = JSON.parse(init.body);
+    calls.push({ url, method, params });
+    if (method === 'tx') return json({ result: {
+      transaction: { hash: txRef, signer_id: publisher, receiver_id: recordContract,
+        actions: [{ FunctionCall: { method_name: 'seal', args } }] },
+      final_execution_status: 'FINAL', status: { SuccessValue: '' },
+      transaction_outcome: { outcome: { status: { SuccessReceiptId: 'seal-receipt' } } },
+      receipts_outcome: [{ id: 'seal-receipt', block_hash: hash('D'), outcome: { executor_id: recordContract, status: { SuccessValue: '' } } }]
+    } });
+    if (method === 'block') {
+      const header = headers.get(params.block_id) ?? [...headers.values()].find(item => item.hash === params.block_id);
+      return header ? json({ result: { header } }) : json({ error: { cause: { name: 'UNKNOWN_BLOCK' } } });
+    }
+    assert.equal(params.account_id, spendContract);
+    assert.equal(params.method_name, 'get_policy');
+    assert.equal(params.block_id, hash('A'));
+    assert.equal(params.finality, undefined);
+    return json({ result: { result: [...Buffer.from(JSON.stringify({ policy_hash: 'older-policy' }))] } });
+  } });
+  assert.deepEqual(await readers.spendGuard.getPolicyAt('agent.testnet', 101, { seal, batch }), { policyHash: 'older-policy' });
+  assert.equal(calls.at(-1).url, DEFAULT_ARCHIVAL_RPC[network][0]);
+  assert.equal(await readers.spendGuard.getPolicyAt('agent.testnet', 105, { seal, batch }), null);
+  assert.equal(await readers.spendGuard.getPolicyAt('agent.testnet', 101, { seal, batch: { ...batch, root: 'wrong' } }), null);
+  headers.get(10).prev_hash = hash('X');
+  await assert.rejects(readers.spendGuard.getPolicyAt('agent.testnet', 101, { seal, batch }), isNearUnavailable);
+});
+
 test('NEAR readers look transactions up without waiting, through archival nodes by default', async () => {
   const seen = [];
   const fetcher = async (url, init) => {

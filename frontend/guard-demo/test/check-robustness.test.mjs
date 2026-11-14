@@ -55,7 +55,7 @@ async function fixture({ registerAt = 100, revokeAt } = {}) {
   const permission = { document, ownerKey, signature: await sign(ownerKeys.privateKey, permissionHash), registry: { network: 'local', contract: 'local-record' } };
   const proof = { format: 'envoi.proof/v1', ...evidence, permission, batch, seal: { network: 'local', contract: 'local-record', txRef } };
   const trust = { evidenceKeys: { 'ev-1': evidence.envoi.publicKey }, ...adapters, recordContract: 'local-record', spendContract: 'local-spend' };
-  return { adapters, proof, trust };
+  return { adapters, proof, trust, setTime: time => { now = time; } };
 }
 
 const withFixture = async (options, fn) => {
@@ -69,6 +69,18 @@ test('the offline baseline is partial only because the contract lock is not chec
   assert.deepEqual(result.checks.filter(row => row.status !== 'PASS').map(row => [row.id, row.reason]), [['locked_record', 'not_configured']]);
   assert.equal(result.message, VERDICT_MESSAGES.partial);
   assert.ok(result.checks.every(row => typeof row.message === 'string' && row.message.length > 0));
+}));
+
+test('rotating a policy preserves verification of a genuine older record', () => withFixture({}, async ({ adapters, proof, trust, setTime }) => {
+  const oldPolicy = await adapters.spendGuard.getPolicy(agent);
+  const newHash = '3a'.repeat(32);
+  setTime(104);
+  await adapters.spendGuard.setPolicy(owner, agent, oldPolicy, newHash);
+  assert.equal((await adapters.spendGuard.getPolicy(agent)).policyHash, newHash);
+  assert.equal(statusOf(await checkProof(proof, trust), 'chain_policy'), 'PASS');
+  assert.equal(statusOf(await checkProof(proof, { ...trust, spendGuard: {
+    ...trust.spendGuard, getPolicyAt: async () => ({ policyHash: newHash })
+  } }), 'chain_policy'), 'FAIL');
 }));
 
 test('a proof naming a batch that was never sealed fails', () => withFixture({}, async ({ proof, trust }) => {

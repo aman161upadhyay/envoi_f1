@@ -80,8 +80,9 @@ export async function checkProof(proof, trust = {}) {
       const outcome = await trust.spendGuard.readOutcome(chainEvent.txRef, record.agent);
       return outcome?.policyHash === record.permissionHash;
     }
-    const policy = await trust.spendGuard.getPolicy(record.agent);
-    return policy?.policyHash === record.permissionHash;
+    if (!Number.isSafeInteger(record.createdAtMs) || record.createdAtMs < 0) return false;
+    const policy = await trust.spendGuard.getPolicyAt?.(record.agent, record.createdAtMs, { seal, batch });
+    return policy === undefined ? undefined : policy?.policyHash === record.permissionHash;
   });
   if (record?.chainRef || chainEvent) {
     await check('chain_event', async () => {

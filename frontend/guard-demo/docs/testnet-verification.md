@@ -15,6 +15,8 @@ Checked on November 11, 2026, from a separate machine with read-only RPC calls o
 
 The record code hash matches `docs/contracts.md` (source commit `be92054`). It is a locally compiled build; a reproducible container build and an independently rebuilt hash are still open.
 
+The submission branch contains the spending contract fix that requires agent approval for new registrations. The spending code hash in the table identifies the earlier deployed rehearsal build. The fix can be deployed to the same spending account without reinitializing its vaults or policies.
+
 ## Receipts
 
 | What | Transaction | Result |

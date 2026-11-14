@@ -12,9 +12,7 @@ export const DEFAULT_RPC = Object.freeze({
   'near-mainnet': Object.freeze(['https://free.rpc.fastnear.com', 'https://rpc.mainnet.near.org'])
 });
 
-// Regular RPC nodes keep only a few days of transactions (a 4-day-old seal already returns
-// UNKNOWN_TRANSACTION there), so transaction lookups go to archival nodes first. Without this,
-// a genuine proof stops verifying a few days after it was sealed, i.e. before judging.
+// Regular RPC nodes prune old transactions and block state, so historical reads use archival nodes first.
 export const DEFAULT_ARCHIVAL_RPC = Object.freeze({
   'near-testnet': Object.freeze(['https://archival-rpc.testnet.fastnear.com', 'https://archival-rpc.testnet.near.org']),
   'near-mainnet': Object.freeze(['https://archival-rpc.mainnet.fastnear.com', 'https://archival-rpc.mainnet.near.org'])
@@ -50,12 +48,11 @@ export function createRpc(url = DEFAULT_RPC['near-testnet'], fetcher = fetch, { 
   if (!urls.length) throw new TypeError('No NEAR RPC URL');
   const archival = archivalUrls.filter(Boolean);
   return async (method, params) => {
-    const history = HISTORY_METHODS.has(method);
+    const historicalBlock = (method === 'block' || method === 'query') && params?.block_id !== undefined;
+    const history = HISTORY_METHODS.has(method) || historicalBlock;
     const endpoints = history && archival.length ? [...archival, ...urls] : urls;
     let lastError;
-    // For transaction lookups, one node not knowing a transaction isn't the final word (an
-    // archival node can trail by a few blocks, a regular node forgets old ones). Ask the rest,
-    // and report UNKNOWN_TRANSACTION only if nobody has it.
+    // An archive can trail and regular nodes discard older transactions and blocks.
     let unknown = null;
     for (const endpoint of endpoints) {
       let response;
@@ -82,7 +79,11 @@ export function createRpc(url = DEFAULT_RPC['near-testnet'], fetcher = fetch, { 
       if (error) {
         const name = error.cause?.name ?? error.name ?? 'RPC_ERROR';
         if (TRANSIENT.has(name)) { lastError = new Error(name); continue; }
-        if (history && name === 'UNKNOWN_TRANSACTION') { unknown = new NearRpcError(name, error.data); continue; }
+        if ((HISTORY_METHODS.has(method) && name === 'UNKNOWN_TRANSACTION') ||
+            (historicalBlock && ['UNKNOWN_BLOCK', 'GARBAGE_COLLECTED_BLOCK'].includes(name))) {
+          unknown = new NearRpcError(name, error.data);
+          continue;
+        }
         throw new NearRpcError(name, error.data);
       }
       if (result === undefined) { lastError = new Error('Missing RPC result'); continue; }

@@ -11,7 +11,7 @@ const labels = {
   owner_signature: ['Rule signed by the owner', "The rule wasn't signed by the owner named."],
   registry: ["Owner's key is listed on NEAR", "This key isn't listed for this owner on NEAR, or was added later."],
   display: ['What was signed matches the rule', "What was signed doesn't match the rule."],
-  chain_policy: ['Same rule is set in the spending contract', 'The spending contract has a different rule.'],
+  chain_policy: ['Spending rule matches the record at the time', 'The spending rule at the time does not match this record.'],
   chain_event: ['The transaction matches this record', "The NEAR transaction doesn't match this record."],
   batch_path: ['Record matches its batch', "This record isn't in the batch it claims."],
   sealed: ["Sealed in envoi's record on NEAR", "This record isn't in the sealed batch it claims."],

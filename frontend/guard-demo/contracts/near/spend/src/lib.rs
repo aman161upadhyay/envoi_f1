@@ -41,6 +41,11 @@ pub struct Spend {
     spent: LookupMap<AccountId, (u64, u128)>,
 }
 
+// Keep approvals in a separate storage prefix so existing vaults and policies need no migration.
+fn registration_approvals() -> LookupMap<AccountId, AccountId> {
+    LookupMap::new(b"a")
+}
+
 fn emit(event: &str, data: Value) {
     env::log_str(&format!("EVENT_JSON:{}", json!({
         "standard": "envoi_spend", "version": "1.0.0", "event": event, "data": [data]
@@ -81,11 +86,28 @@ impl Spend {
     }
 
     #[payable]
+    pub fn approve_registration(&mut self, owner: Option<AccountId>) {
+        require!(env::attached_deposit().as_yoctonear() == 1, "agent must attach one yoctoNEAR");
+        let agent = env::predecessor_account_id();
+        require!(!self.policies.contains_key(&agent), "agent already registered");
+        let mut approvals = registration_approvals();
+        if let Some(owner) = owner {
+            approvals.insert(agent, owner);
+        } else {
+            approvals.remove(&agent);
+        }
+    }
+
+    #[payable]
     pub fn register_agent(&mut self, agent: AccountId) {
         require!(env::attached_deposit().as_yoctonear() == 1, "owner must attach one yoctoNEAR");
         require!(!self.policies.contains_key(&agent), "agent already registered");
+        let owner = env::predecessor_account_id();
+        let mut approvals = registration_approvals();
+        require!(approvals.get(&agent) == Some(&owner), "agent approval required");
+        approvals.remove(&agent);
         self.policies.insert(agent, Policy {
-            owner: env::predecessor_account_id(),
+            owner,
             payees: vec![],
             daily_cap: U128(0),
             paused: false,
@@ -186,5 +208,79 @@ impl Spend {
         policy.paused = paused;
         emit(if paused { "agent_paused" } else { "agent_resumed" }, json!({ "agent": agent }));
         self.policies.insert(agent, policy);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_sdk::test_utils::{accounts, VMContextBuilder};
+    use near_sdk::testing_env;
+
+    fn call(who: usize) {
+        testing_env!(VMContextBuilder::new()
+            .predecessor_account_id(accounts(who))
+            .attached_deposit(NearToken::from_yoctonear(1))
+            .build());
+    }
+
+    #[test]
+    #[should_panic(expected = "agent approval required")]
+    fn an_unapproved_owner_cannot_claim_an_agent() {
+        call(0);
+        let mut contract = Spend::new();
+        contract.register_agent(accounts(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "agent approval required")]
+    fn another_owner_cannot_use_the_agents_approval() {
+        call(1);
+        let mut contract = Spend::new();
+        contract.approve_registration(Some(accounts(0)));
+        call(2);
+        contract.register_agent(accounts(1));
+    }
+
+    #[test]
+    #[should_panic(expected = "agent approval required")]
+    fn an_agent_can_cancel_its_approval_before_registration() {
+        call(1);
+        let mut contract = Spend::new();
+        contract.approve_registration(Some(accounts(0)));
+        contract.approve_registration(None);
+        call(0);
+        contract.register_agent(accounts(1));
+    }
+
+    #[test]
+    fn approval_is_consumed_and_the_owners_vault_pays() {
+        call(1);
+        let mut contract = Spend::new();
+        contract.approve_registration(Some(accounts(0)));
+        call(0);
+        contract.register_agent(accounts(1));
+        assert_eq!(contract.get_policy(accounts(1)).unwrap().owner, accounts(0));
+        assert!(!registration_approvals().contains_key(&accounts(1)));
+
+        contract.deposit();
+        let hash = "a".repeat(64);
+        contract.set_policy(accounts(1), vec![Payee { account: accounts(2), max_per_payment: U128(1) }], U128(1), hash.clone(), 0);
+        call(1);
+        assert!(matches!(contract.pay(accounts(2), U128(1), "demo-case".into(), Some(hash)), PromiseOrValue::Promise(_)));
+        assert_eq!(contract.vault_of(accounts(0)).0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "agent already registered")]
+    fn approval_cannot_replace_an_existing_policy() {
+        call(1);
+        let mut contract = Spend::new();
+        // Simulate a policy loaded from the original deployment.
+        contract.policies.insert(accounts(1), Policy {
+            owner: accounts(0), payees: vec![], daily_cap: U128(0), paused: false,
+            policy_hash: "0".repeat(64), version: 0,
+        });
+        contract.approve_registration(Some(accounts(2)));
     }
 }

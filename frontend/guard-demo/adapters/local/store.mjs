@@ -14,6 +14,9 @@ export function createLocalAdapters(path = ':memory:', clock = Date.now) {
     CREATE TABLE IF NOT EXISTS evidence_keys (id TEXT PRIMARY KEY, payload TEXT);
     CREATE TABLE IF NOT EXISTS vaults (owner TEXT PRIMARY KEY, balance TEXT);
     CREATE TABLE IF NOT EXISTS policies (agent TEXT PRIMARY KEY, payload TEXT);
+    CREATE TABLE IF NOT EXISTS policy_history (
+      agent TEXT, version INTEGER, effective_ms INTEGER, hash TEXT, PRIMARY KEY(agent, version)
+    );
     CREATE TABLE IF NOT EXISTS daily (agent TEXT, day INTEGER, amount TEXT, PRIMARY KEY(agent, day));
     CREATE TABLE IF NOT EXISTS outcomes (tx TEXT PRIMARY KEY, payload TEXT);
     CREATE TABLE IF NOT EXISTS agent_keys (agent TEXT PRIMARY KEY, payload TEXT);
@@ -117,6 +120,10 @@ export function createLocalAdapters(path = ':memory:', clock = Date.now) {
         });
       },
       async getPolicy(agent) { return getPolicy(agent); },
+      async getPolicyAt(agent, timestamp) {
+        const entry = get('SELECT hash FROM policy_history WHERE agent = ? AND effective_ms <= ? ORDER BY version DESC LIMIT 1', agent, timestamp);
+        return entry ? { policyHash: entry.hash } : undefined;
+      },
       async setPolicy(owner, agent, { payees, dailyCap, paused }, policyHash) {
         return transaction(() => {
           const current = getPolicy(agent);
@@ -127,6 +134,7 @@ export function createLocalAdapters(path = ':memory:', clock = Date.now) {
               payees.some(payee => !validAccount(payee.account) || parseAmount(payee.maxPerPayment) === 0n || parseAmount(payee.maxPerPayment) > cap)) throw new Error('Invalid policy');
           const policy = { owner, payees, dailyCap, paused, policyHash, version: current.version + 1 };
           run('UPDATE policies SET payload = ? WHERE agent = ?', JSON.stringify(policy), agent);
+          run('INSERT INTO policy_history VALUES (?, ?, ?, ?)', agent, policy.version, clock(), policyHash);
           return { txRef: randomUUID() };
         });
       },

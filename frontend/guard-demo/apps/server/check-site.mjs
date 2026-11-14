@@ -38,7 +38,7 @@ export async function serveChecker(samples, port = 4173, evidenceProvider) {
           if (body.length > 65536) throw new Error('Request too large');
         }
         const { method, params } = JSON.parse(body);
-        if (!['query', 'send_tx', 'tx'].includes(method)) throw new Error('Unsupported RPC method');
+        if (!['block', 'query', 'send_tx', 'tx'].includes(method)) throw new Error('Unsupported RPC method');
         const result = await rpc(method, params);
         return res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ result }));
       } catch (error) {
