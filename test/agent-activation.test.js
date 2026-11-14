@@ -9,7 +9,7 @@ import { workosActivationFixture } from './workos-activation-harness.js';
 import { agentStatus, api, newRotationId, owner, pauseAgent, refresh } from './a3-harness.js';
 import {
   approveBody, approveRequest, assertCode, assertContract, backends, documents, launchRegistration, lookup, newAgentTarget,
-  PAST, poll, registered, registrationParts, rejectRequest, withdrawRequest
+  nearReplayCancellationFixture, PAST, poll, registered, registrationParts, rejectRequest, withdrawRequest
 } from './agent-registration-harness.js';
 
 const suffixes = { FileStore: '81', PostgreSQL: '82' };
@@ -104,6 +104,7 @@ for (const backend of backends) {
   test(`[${backend.name}] the local-helper journey: activate, connect, recover, replay, reconnect the same identity`, { timeout: 120000 }, async t => {
     let server = await launchRegistration(backend);
     t.after(() => server.stop());
+    const near = await nearReplayCancellationFixture(t);
     const owner1 = await owner(server.baseUrl, `${s}01`);
     // The owner's own agent uses one slot; the new agent takes the other.
     const { created, localPart } = await approvedNew(server.baseUrl, owner1);
@@ -144,15 +145,20 @@ for (const backend of backends) {
     assert.equal(recovered.status, 200, recovered.text);
     assert.deepEqual(recovered.payload, first.payload);
     await server.stop(true);
-    server = await launchRegistration(backend, {}, backend.name === 'FileStore' ? server.dataDir : null);
+    server = await launchRegistration(backend, {
+      ...near.env, ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS: JSON.stringify({ [agent.id]: 'milo.testnet' })
+    }, backend.name === 'FileStore' ? server.dataDir : null);
     const afterRestart = await activate(server.baseUrl, created, { activationId: id });
     assert.equal(afterRestart.status, 200, afterRestart.text);
     assert.deepEqual(afterRestart.payload, first.payload);
 
     // Row 7a: a second holder of the bootstrap token ends the installation, not the identity.
+    const docs = documents(t, backend, server);
+    const payment = await near.seed(docs, await docs.get(registrationParts(created.registrationId)));
     assertCode(await activate(server.baseUrl, created, { activationId: activationId() }), 'ACTIVATION_REPLAY');
     assertRevoked(await agentStatus(server.baseUrl, first.payload.agentApiToken), 'revoked');
-    const docs = documents(t, backend, server);
+    assert.deepEqual(await docs.get(payment.pending), payment.record);
+    near.recover();
     const stored = await docs.get(['inboxes', inboxId, 'agents', `${agent.id}.json`]);
     assert.deepEqual({ status: stored.status, onboardingStatus: stored.onboardingStatus }, { status: 'active', onboardingStatus: 'approved' });
     const ended = (await api(server.baseUrl, installationsRoute(inboxId, agent.id), { session: owner1.session })).payload.installations;
@@ -172,6 +178,7 @@ for (const backend of backends) {
     assert.equal(reattached.payload.inboxId, inboxId);
     assert.deepEqual(reattached.payload.effectivePermissions, ['receive_agent_messages'], 'permissions are decided again');
     assert.equal((await agentStatus(server.baseUrl, reattached.payload.agentApiToken)).status, 200);
+    await near.assertDrained(docs, payment);
   });
 
   test(`[${backend.name}] §6.1 rows: precedence before and after approval`, { timeout: 120000 }, async t => {

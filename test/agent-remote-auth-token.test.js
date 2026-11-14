@@ -5,14 +5,37 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { nearReplayCancellationFixture } from './agent-registration-harness.js';
 import {
   api, assertOAuthError, installationsRoute, launch, listFilesRecursive, assertRemote, assertStored, assertTokenResponse, backends, clientSecret, codeParams, confidentialClient, connect, documents, edit, exchange, familyParts, formPost, freshIp, installationView, freshOwner, owner,
-  publicClient, refreshParams, registrationParts, remoteFixture, remoteServer, retryApprove, revokePost, stored, tokenPost, withdrawRequest, accessParts, refreshParts, codeParts, sha256, PAST
+  publicClient, refreshParams, registrationParts, remoteFixture, remoteServer, restart, retryApprove, revokePost, stored, tokenPost, withdrawRequest, accessParts, refreshParts, codeParts, sha256, PAST
 } from './agent-remote-auth-token-harness.js';
 
 const newOwner = freshOwner;
 
 for (const backend of backends) {
+  test(`[${backend.name}] an OAuth code replay revokes the family during a NEAR outage`, { timeout: 120000 }, async t => {
+    const near = await nearReplayCancellationFixture(t);
+    let server = await remoteServer(t, backend);
+    const who = await newOwner(server);
+    const grant = await connect(server, who);
+    assertTokenResponse(await exchange(server, grant));
+    const { registration } = await stored(documents(t, server), grant.registrationId);
+    server = await restart(t, server, {
+      ...near.env, ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS: JSON.stringify({ [registration.agentId]: 'milo.testnet' })
+    });
+    const docs = documents(t, server);
+    const payment = await near.seed(docs, registration);
+    assertOAuthError(await exchange(server, grant), 'invalid_grant');
+    const { family } = await stored(docs, grant.registrationId);
+    assert.equal(family.revokedReason, 'revoked');
+    assert.deepEqual(await docs.get(payment.pending), payment.record);
+    const installation = await installationView(server, who, registration);
+    assert.deepEqual([installation.status, installation.endedReason], ['ended', 'activation_replay']);
+    near.recover();
+    await near.assertDrained(docs, payment);
+  });
+
   test(`[${backend.name}] the exchange issues oauth_ tokens, an audience-bound family and an on_demand installation`, { timeout: 120000 }, async t => {
     const server = await remoteServer(t, backend);
     const docs = documents(t, server);

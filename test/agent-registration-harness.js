@@ -5,11 +5,14 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createServer } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { api, launch, readData, writeData, deleteData } from './a3-harness.js';
 import { PostgresStore } from '../src/postgres-storage.js';
+import { semanticDigest } from '../src/idempotency.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const fixtureDir = path.join(here, 'contract-fixtures', 'agent-registration');
@@ -111,3 +114,45 @@ export function documents(t, backend, server) {
 }
 export const registrationParts = registrationId => ['auth', 'agent-registrations', `${registrationId}.json`];
 export const PAST = '2000-01-01T00:00:00.000Z';
+
+export async function nearReplayCancellationFixture(t) {
+  let available = false;
+  const rpc = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (!available) { res.writeHead(503).end(); return; }
+      // Once NEAR recovers, a finalized block shows the old approval has expired.
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ result: {
+        chain_id: 'testnet',
+        header: { timestamp_nanosec: (BigInt(Date.now() + 180_000) * 1_000_000n).toString() }
+      } }));
+    });
+  });
+  await new Promise(resolve => rpc.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => rpc.close(resolve)));
+  return {
+    env: {
+      ENVOI_NEAR_PAYMENT_RPC_URL: `http://127.0.0.1:${rpc.address().port}`,
+      ENVOI_NEAR_PAYMENT_CONTRACT: 'spend.testnet',
+      ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS: '{}',
+      ENVOI_NEAR_PAYMENT_APPROVAL_SIGNING_KEY: crypto.generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64')
+    },
+    async seed(docs, { agentInboxId: inboxId, agentId, credentialFamilyId: familyId }) {
+      const id = semanticDigest([inboxId, agentId, familyId]);
+      const pending = ['system', 'near-payment-cancellations', `${id}.json`];
+      const payment = ['inboxes', inboxId, 'near-case-payments', 'replay-payment.json'];
+      await docs.put(payment, { id: 'replay-payment', agentId, credentialFamilyId: familyId,
+        instruction: { expiresAt: new Date(Date.now() + 120_000).toISOString(), contract: 'spend.testnet',
+          agentAccount: 'milo.testnet', args: { case_ref: 'replay-payment' } } });
+      return { pending, payment, record: { id, inboxId, agentId, familyId } };
+    },
+    recover() { available = true; },
+    async assertDrained(docs, { pending, payment }) {
+      const deadline = Date.now() + 12_000;
+      while (await docs.get(pending) && Date.now() < deadline) await delay(100);
+      assert.equal(await docs.get(pending), null);
+      assert.ok((await docs.get(payment)).expiryVerifiedAt, 'the worker reconciled the approval');
+    }
+  };
+}

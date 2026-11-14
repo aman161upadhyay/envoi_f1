@@ -1329,11 +1329,12 @@ async function revokeAgentCredentialFamilies(inboxId, agentId, humanId, revokedA
 }
 
 // Ends one installation (agent-registration v1 §6.5) without freezing the identity.
-async function revokeCredentialFamily(inboxId, agentId, familyId, humanId, revokedAt = store.now(), revokedReason = 'revoked', writeAudit = null) {
+async function revokeCredentialFamily(inboxId, agentId, familyId, humanId, revokedAt = store.now(), revokedReason = 'revoked', writeAudit = null, { credentialReplay = false } = {}) {
   const familyPath = agentCredentialFamilyPath(inboxId, agentId, familyId);
   const family = await store.getJson(familyPath);
   if (!family || family.revokedAt) return null;
-  await cancelNearCasePayments(inboxId, { agentId, familyId });
+  if (credentialReplay) await revokeNearPaymentsAfterCredentialReplay(inboxId, agentId, familyId);
+  else await cancelNearCasePayments(inboxId, { agentId, familyId });
   const revoked = { ...family, revokedAt, revokedReason, revokedByHumanId: humanId, updatedAt: revokedAt };
   await store.putJson(familyPath, revoked);
   if (family.audience) await deleteOAuthRecoveries(family.id).catch(() => {});
@@ -3409,7 +3410,7 @@ async function commitActivation(rawToken, registration, body, activationIdHash, 
 // registration's lock.
 async function revokeReplayedActivation(current, writeAudit) {
   const at = store.now();
-  await revokeCredentialFamily(current.agentInboxId, current.agentId, current.credentialFamilyId, null, at, 'revoked', writeAudit);
+  await revokeCredentialFamily(current.agentInboxId, current.agentId, current.credentialFamilyId, null, at, 'revoked', writeAudit, { credentialReplay: true });
   const stored = await store.getJson(installationPath(current.agentInboxId, current.agentId, current.installationId));
   await store.putJson(installationPath(current.agentInboxId, current.agentId, current.installationId), { ...stored, replayDetectedAt: at });
   if (current.tokenHash) await store.deleteJson(activationRecoveryPath(current.tokenHash));
