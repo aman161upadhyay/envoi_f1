@@ -102,6 +102,7 @@ export function ruleFor(reasonCode: string | null | undefined, decision: 'allow'
   if (lower.includes('daily')) return { outcome: 'Refused by contract', rule: 'Over the daily limit.' };
   if (lower === 'vault_low') return { outcome: 'Refused by contract', rule: 'The vault balance was too low.' };
   if (lower === 'paused') return { outcome: 'Refused by contract', rule: 'The spending policy was paused.' };
+  if (lower === 'approval_cancelled') return { outcome: 'Refused by contract', rule: 'The payment approval was cancelled.' };
   if (lower === 'not_registered') return { outcome: 'Refused by contract', rule: 'The agent was not registered with the spending contract.' };
   return { outcome: base, rule: code ? `${humanize(code)}.` : 'No reason was recorded.' };
 }

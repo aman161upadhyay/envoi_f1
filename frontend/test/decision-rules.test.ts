@@ -70,6 +70,9 @@ describe('ruleFor', () => {
     expect(ruleFor('payee_not_allowed', 'deny', null, context)).toEqual({ outcome: 'Refused by contract', rule: "The spending contract only pays payees on Dana's signed list." });
     expect(ruleFor('over_per_payment_limit', 'deny', null, context).rule).toBe('Over the per-payment limit.');
     expect(ruleFor('over_max', 'deny', null, context).rule).toBe('Over the per-payment limit.');
+    expect(ruleFor('approval_cancelled', 'deny', null, context)).toEqual({
+      outcome: 'Refused by contract', rule: 'The payment approval was cancelled.'
+    });
     expect(ruleFor('dailyCapExceeded', 'deny', null, context).rule).toBe('Over the daily limit.');
     expect(ruleFor('somethingNew', 'deny', null, context).rule).toBe('Something New.');
   });

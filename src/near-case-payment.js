@@ -9,6 +9,25 @@ const accountPattern = /^(?=.{2,64}$)[a-z0-9]+(?:[._-][a-z0-9]+)*\.testnet$/;
 const digestPattern = /^[0-9a-f]{64}$/;
 export const nearTransactionRef = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
+const cancelMethod = 'cancel_payments';
+const cancellationGas = 100_000_000_000_000n;
+const cancellationBatchSize = 32;
+// Current NEAR protocol minimum prepaid gas purchase price, in yoctoNEAR per gas.
+const minGasPurchasePrice = 1_000_000_000n;
+
+function cancellationBudget(gasPrice, runtime) {
+  const { action_receipt_creation_config: receipt, action_creation_config: actions } = runtime.transaction_costs;
+  const gasFor = fee => BigInt(fee.send_not_sir) + BigInt(fee.execution);
+  // The contract accepts up to 32 references of 128 bytes. Include JSON escaping,
+  // the other arguments and the method name in the transaction's byte fee.
+  const maxCallBytes = BigInt(cancellationBatchSize * (128 * 6 + 3) + 512);
+  const gas = cancellationGas + gasFor(receipt) + gasFor(actions.function_call_cost)
+    + maxCallBytes * gasFor(actions.function_call_cost_per_byte);
+  const price = BigInt(gasPrice);
+  if (price <= 0n || gas < cancellationGas) throw new Error('Invalid NEAR gas configuration.');
+  return gas * (price > minGasPurchasePrice ? price : minGasPurchasePrice);
+}
+
 function failure(code, message, statusCode = 409) {
   return Object.assign(new Error(message), { code, statusCode });
 }
@@ -36,15 +55,24 @@ export function createNearCasePayment({ rpcUrl, contract, agentAccounts, approva
   const assertNetwork = async () => {
     if ((await rpc('status', [])).chain_id !== 'testnet') throw failure('NEAR_PAYMENT_NETWORK_INVALID', 'The payment RPC is outside NEAR testnet.', 503);
   };
-  const cancelMethod = 'cancel_payments';
-  async function cancellationKey() {
+  async function checkCancellationRelay() {
     const { account, publicKey, privateKey } = cancellationRelay;
-    const key = await rpc('query', { request_type: 'view_access_key', finality: 'final', account_id: account, public_key: publicKey });
+    const [key, relay, price, config] = await Promise.all([
+      rpc('query', { request_type: 'view_access_key', finality: 'final', account_id: account, public_key: publicKey }),
+      rpc('query', { request_type: 'view_account', finality: 'final', account_id: account }),
+      rpc('gas_price', [null]),
+      rpc('EXPERIMENTAL_protocol_config', { finality: 'final' })
+    ]);
     const permission = key.permission?.FunctionCall;
     if (permission?.receiver_id !== contract || permission.method_names?.length !== 1 || permission.method_names[0] !== cancelMethod) {
       throw new Error('A cancellation-only NEAR access key is required.');
     }
-    return loadScopedKey(privateKey, publicKey);
+    const cost = cancellationBudget(price.gas_price, config.runtime_config);
+    const available = BigInt(relay.amount) - BigInt(relay.storage_usage) * BigInt(config.runtime_config.storage_amount_per_byte);
+    if (available < cost || (permission.allowance !== null && BigInt(permission.allowance) < cost)) {
+      throw new Error('The NEAR cancellation relay cannot fund a cancellation.');
+    }
+    await loadScopedKey(privateKey, publicKey);
   }
   return {
     async readScope({ agentId, ownerAccount }) {
@@ -88,7 +116,7 @@ export function createNearCasePayment({ rpcUrl, contract, agentAccounts, approva
         throw failure('NEAR_PAYMENT_APPROVER_UNCONFIGURED', 'The owner must register the payment approval key for this agent.', 503);
       }
       try {
-        const [supported] = await Promise.all([readSpend('payment_cancellation_supported', agentAccount), cancellationKey()]);
+        const [supported] = await Promise.all([readSpend('payment_cancellation_supported', agentAccount), checkCancellationRelay()]);
         if (supported !== true) throw new Error('The spending contract does not support cancellation.');
       } catch {
         throw failure('NEAR_PAYMENT_CANCELLATION_UNAVAILABLE', 'The deployed contract and relay must support cancellation before issuing a payment.', 503);
@@ -134,11 +162,11 @@ export function createNearCasePayment({ rpcUrl, contract, agentAccounts, approva
         }
         const policy = await readSpend('get_policy', agent);
         const keys = await loadScopedKey(cancellationRelay.privateKey, cancellationRelay.publicKey);
-        for (let start = 0; start < references.length; start += 32) {
-          const case_refs = references.slice(start, start + 32);
+        for (let start = 0; start < references.length; start += cancellationBatchSize) {
+          const case_refs = references.slice(start, start + cancellationBatchSize);
           const signature = approver.cancel({ contract, owner: policy.owner, agent, references: case_refs });
           await callWithScopedKey({ rpc: cancellationRpc, keys, sender: cancellationRelay.account, receiver: contract,
-            method: cancelMethod, args: { agent, case_refs, signature } });
+            method: cancelMethod, gas: String(cancellationGas), args: { agent, case_refs, signature } });
         }
         return expired;
       });

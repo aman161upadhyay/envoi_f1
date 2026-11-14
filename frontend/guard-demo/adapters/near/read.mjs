@@ -4,6 +4,8 @@ import { parseAmount } from '../../packages/core/policy.mjs';
 const TX_HASH = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const decode = value => JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value), char => char.charCodeAt(0))));
 const missingBlock = error => ['UNKNOWN_BLOCK', 'GARBAGE_COLLECTED_BLOCK'].includes(error?.rpcError);
+const cancelledApproval = failure => failure?.ActionError?.index === 0 &&
+  failure.ActionError.kind?.FunctionCallError?.ExecutionError === 'Smart contract panicked: payment approval cancelled';
 
 export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, recordCodeHash, network = 'near-testnet', fetcher = fetch }) {
   if (!['near-testnet', 'near-mainnet'].includes(network)) throw new TypeError('Unsupported NEAR network');
@@ -23,7 +25,7 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
     return JSON.parse(new TextDecoder().decode(Uint8Array.from(result.result)));
   }
 
-  async function transaction(txRef, sender, contract, method) {
+  async function transaction(txRef, sender, contract, method, { allowFailure = false } = {}) {
     if (!TX_HASH.test(txRef) || !sender) return null;
     // NONE answers at once: a known transaction reports its status, an unknown one returns
     // UNKNOWN_TRANSACTION. Waiting for FINAL would instead time out on a made-up hash, and a
@@ -33,7 +35,7 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
     const call = tx?.actions?.[0]?.FunctionCall;
     if (result.final_execution_status !== 'FINAL' || tx?.hash !== txRef || tx.signer_id !== sender ||
         tx.receiver_id !== contract || tx.actions.length !== 1 || call?.method_name !== method ||
-        !Object.hasOwn(status ?? {}, 'SuccessValue')) return null;
+        !(Object.hasOwn(status ?? {}, 'SuccessValue') || allowFailure && Object.hasOwn(status ?? {}, 'Failure'))) return null;
     return { result, args: decode(call.args) };
   }
 
@@ -157,10 +159,20 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
       }
     },
     async readOutcome(txRef, agent, approval) {
-      const tx = await transaction(txRef, agent, spendContract, 'pay');
+      const tx = await transaction(txRef, agent, spendContract, 'pay', { allowFailure: Boolean(approval) });
       if (!tx) return null;
       if (approval && (tx.args.approval?.expires_at_ms !== approval.expires_at_ms ||
           tx.args.approval?.signature !== approval.signature)) return null;
+      if (tx.result.status.Failure) {
+        // Only the direct contract's cancellation rejection is an app receipt. Other
+        // panics and failed historical proof transactions keep their original semantics.
+        if (!cancelledApproval(tx.result.status.Failure)) return null;
+        const id = tx.result.transaction_outcome?.outcome?.status?.SuccessReceiptId;
+        const receipt = id && tx.result.receipts_outcome?.find(entry => entry.id === id && entry.outcome?.executor_id === spendContract);
+        if (!cancelledApproval(receipt?.outcome?.status?.Failure)) return null;
+        return { status: 'refused', reason: 'approval_cancelled', txRef, agent, to: tx.args.to,
+          amount: tx.args.amount, caseRef: tx.args.case_ref, policyHash: tx.args.expected_policy_hash };
+      }
       const outcome = decode(tx.result.status.SuccessValue);
       const statuses = approval ? ['refused', 'paid', 'failed'] : ['refused', 'paid'];
       if (!statuses.includes(outcome.status) || outcome.agent !== agent || outcome.to !== tx.args.to ||

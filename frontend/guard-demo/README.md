@@ -29,7 +29,9 @@ For cancellation, deploy the current spending contract and configure `ENVOI_NEAR
 
 After case authorization, the agent can reserve one instruction using `POST /api/inboxes/:inboxId/cases/:caseId/near-payments` with its policy evaluation ID. Envoi signs the exact contract, owner, agent, payee, amount, payment reference, spending policy digest and version, and expiry. The approval lasts up to two minutes and cannot outlast the case authorization. The contract checks the signature and expiry using NEAR block time before debiting the vault.
 
-The agent submits the returned call. It or a workspace administrator can record the finalized transaction with `POST /api/inboxes/:inboxId/cases/:caseId/near-payments/:paymentId/confirm` and `txRef`. Each finalized attempt appears once. Refused or refunded attempts can be retried using the same valid approval. A paid receipt remains the final payment outcome. Reconcile the existing reference before issuing a replacement.
+Approvals require enough relay balance and key allowance to cover a cancellation transaction at the current gas price.
+
+The agent submits the returned call. It or a workspace administrator can record the finalized transaction with `POST /api/inboxes/:inboxId/cases/:caseId/near-payments/:paymentId/confirm` and `txRef`. Each finalized attempt appears once, including a rejection for a cancelled approval. Transient refusals and refunded attempts can be retried while the approval is valid. A paid receipt remains the final payment outcome. Reconcile the existing reference before issuing a replacement.
 
 Envoi waits for on-chain cancellation of outstanding references when pausing or revoking their case or agent, or when replacing the signed case policy. If cancellation cannot be confirmed, retry the control operation. A transfer reserved before cancellation can still settle. A workspace administrator can record that receipt even after the agent loses access.
 

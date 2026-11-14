@@ -55,6 +55,11 @@ test('signed policy and one-time owner approval narrow the existing case action 
   const paidTxRef = '5'.repeat(44);
   const failedTxRef = '6'.repeat(44);
   const lateRefusalTxRef = '7'.repeat(44);
+  const cancelledTxRef = '8'.repeat(44);
+  const unrelatedFailureTxRef = '9'.repeat(44);
+  const wrongExecutorTxRef = 'A'.repeat(44);
+  const wrongApprovalTxRef = 'B'.repeat(44);
+  const cancelledFirstTxRef = 'C'.repeat(44);
   const relayKeys = crypto.generateKeyPairSync('ed25519');
   const relayPublicBytes = Buffer.from(relayKeys.publicKey.export({ format: 'jwk' }).x, 'base64url');
   const relayPublicKey = 'ed25519:' + base58Encode(relayPublicBytes);
@@ -63,6 +68,8 @@ test('signed policy and one-time owner approval narrow the existing case action 
   let chainOwner = 'dana.testnet';
   let fullAccess = false;
   let relayAvailable = true;
+  let relayAllowance = '250000000000000000000000';
+  let relayBalance = '2000000000000000000000000';
   let cancellationSupported = true;
   let finalizedBlockTime;
   const cancellations = [];
@@ -73,6 +80,13 @@ test('signed policy and one-time owner approval narrow the existing case action 
     let result;
     if (input.method === 'status') result = { chain_id: 'testnet' };
     else if (input.method === 'block') result = { header: { timestamp_nanosec: String(BigInt(finalizedBlockTime ?? Date.now()) * 1_000_000n) } };
+    else if (input.method === 'gas_price') result = { gas_price: '100000000' };
+    else if (input.method === 'EXPERIMENTAL_protocol_config') {
+      const fee = { execution: 1, send_not_sir: 1 };
+      result = { runtime_config: { storage_amount_per_byte: '10000000000000000000', transaction_costs: {
+        action_receipt_creation_config: fee, action_creation_config: { function_call_cost: fee, function_call_cost_per_byte: fee }
+      } } };
+    }
     else if (input.method === 'send_tx') {
       const transaction = Buffer.from(input.params.signed_tx_base64, 'base64');
       const digest = crypto.createHash('sha256').update(transaction.subarray(0, -65)).digest();
@@ -83,7 +97,10 @@ test('signed policy and one-time owner approval narrow the existing case action 
       result = { final_execution_status: 'FINAL', transaction: { hash: base58Encode(digest) }, status: { SuccessValue: '' } };
     }
     else if (input.method === 'tx') {
-      const args = input.params.tx_hash === otherTxRef ? { ...authorizedCall, case_ref: 'other-payment' } : authorizedCall;
+      const requestedHash = input.params.tx_hash;
+      let args = authorizedCall;
+      if (requestedHash === otherTxRef) args = { ...args, case_ref: 'other-payment' };
+      if (requestedHash === wrongApprovalTxRef) args = { ...args, approval: { ...args.approval, signature: 'a'.repeat(128) } };
       const encoded = value => Buffer.from(JSON.stringify(value)).toString('base64');
       const status = input.params.tx_hash === paidTxRef ? 'paid' : input.params.tx_hash === failedTxRef ? 'failed' : 'refused';
       result = { final_execution_status: 'FINAL', transaction: { hash: input.params.tx_hash,
@@ -91,10 +108,21 @@ test('signed policy and one-time owner approval narrow the existing case action 
       status: { SuccessValue: encoded({ status, agent: 'milo.testnet', to: args.to,
         amount: args.amount, case_ref: args.case_ref, policy_hash: spendingPolicyHash,
         ...(status === 'refused' ? { reason: 'over_daily_cap' } : {}) }) } };
+      if ([cancelledTxRef, cancelledFirstTxRef, unrelatedFailureTxRef, wrongExecutorTxRef, wrongApprovalTxRef].includes(requestedHash)) {
+        const rejection = requestedHash === unrelatedFailureTxRef ? 'payment approval expired' : 'payment approval cancelled';
+        const outcome = { Failure: { ActionError: { index: 0, kind: { FunctionCallError: { ExecutionError: 'Smart contract panicked: ' + rejection } } } } };
+        result.status = outcome;
+        result.transaction_outcome = { outcome: { status: { SuccessReceiptId: 'initial-payment-receipt' } } };
+        result.receipts_outcome = [{ id: 'initial-payment-receipt', outcome: {
+          executor_id: requestedHash === wrongExecutorTxRef ? 'other.testnet' : 'spend.testnet', status: outcome
+        } }];
+      }
     } else if (input.params.request_type === 'view_access_key') {
       result = { nonce: cancellations.length, block_hash: '1'.repeat(32), permission: relayAvailable
-        ? { FunctionCall: { receiver_id: 'spend.testnet', method_names: ['cancel_payments'] } }
+        ? { FunctionCall: { receiver_id: 'spend.testnet', method_names: ['cancel_payments'], allowance: relayAllowance } }
         : 'FullAccess' };
+    } else if (input.params.request_type === 'view_account') {
+      result = { amount: relayBalance, storage_usage: 100 };
     } else if (input.params.request_type === 'view_access_key_list') {
       result = { keys: [{ public_key: 'ed25519:fixture', access_key: { permission: {
         FunctionCall: { receiver_id: 'spend.testnet', method_names: ['pay'], allowance: '250000000000000000000000' }
@@ -239,7 +267,19 @@ test('signed policy and one-time owner approval narrow the existing case action 
   const unavailable = await call(payments, { token, body: reserve, status: 503 });
   assert.equal(unavailable.code, 'NEAR_PAYMENT_CANCELLATION_UNAVAILABLE');
   cancellationSupported = true;
+  for (const allowance of ['0', '50000000000000000000000']) {
+    relayAllowance = allowance;
+    const exhausted = await call(payments, { token, body: reserve, status: 503 });
+    assert.equal(exhausted.code, 'NEAR_PAYMENT_CANCELLATION_UNAVAILABLE');
+    assert.equal(exhausted.instruction, undefined);
+  }
+  relayAllowance = null;
+  relayBalance = '1000000000000000000000'; // Fully reserved for storage.
+  const unfunded = await call(payments, { token, body: reserve, status: 503 });
+  assert.equal(unfunded.code, 'NEAR_PAYMENT_CANCELLATION_UNAVAILABLE');
+  relayBalance = '2000000000000000000000000';
   const issued = await call(payments, { token, body: reserve, status: 201 });
+  relayAllowance = '250000000000000000000000';
   authorizedCall = issued.instruction.args;
   assert.deepEqual(authorizedCall, { to: paymentTarget.payee, amount: paymentTarget.amount.units,
     case_ref: issued.id, expected_policy_hash: spendingPolicyHash, approval: approver.approve({
@@ -300,6 +340,24 @@ test('signed policy and one-time owner approval narrow the existing case action 
   const paid = await call(`${payments}/${nextIssued.id}/confirm`, { body: { txRef: paidTxRef }, status: 200 });
   assert.equal(paid.outcome.status, 'paid');
   assert.ok(paid.cancelledAt);
+  const rejectedConfirm = `${payments}/${nextIssued.id}/confirm`;
+  for (const invalid of [unrelatedFailureTxRef, wrongExecutorTxRef, wrongApprovalTxRef]) {
+    assert.equal((await call(rejectedConfirm, { body: { txRef: invalid }, status: 409 })).code, 'NEAR_PAYMENT_MISMATCH');
+  }
+  const cancelled = await call(rejectedConfirm, { body: { txRef: cancelledTxRef }, status: 200 });
+  assert.equal(cancelled.outcome.status, 'paid', 'a later rejected attempt does not overwrite an earlier settlement');
+  assert.deepEqual(cancelled.attempts.map(({ status, reason }) => [status, reason]), [['paid', undefined], ['refused', 'approval_cancelled']]);
+  await call(rejectedConfirm, { body: { txRef: cancelledTxRef }, status: 200 });
+  const afterCancellation = await call(`/api/inboxes/${inbox.id}/human-view`, { status: 200 });
+  const rejectedEvents = afterCancellation.caseQueue.find(item => item.id === value.id).timeline
+    .filter(event => event.type === 'receipt' && event.payload.txRef === cancelledTxRef);
+  assert.equal(rejectedEvents.length, 1);
+  assert.equal(rejectedEvents[0].payload.outcome, 'refused');
+  assert.equal(rejectedEvents[0].payload.reasonCode, 'approval_cancelled');
+  const cancellationTrace = (await call(`${route}/signed-trace`, { status: 200 })).steps
+    .filter(step => step.record.details.txRef === cancelledTxRef);
+  assert.equal(cancellationTrace.length, 1);
+  assert.equal(cancellationTrace[0].record.details.receiptId, rejectedEvents[0].id);
   await call(`${route}/actions`, { key: 'resume-after-payment', body: { actionKey: 'resume' }, status: 201 });
   const policyIssued = await issueAnotherPayment('payment-before-policy-update');
   const edit = await call(`${route}/signed-policy/preview`, { body: {
@@ -307,6 +365,10 @@ test('signed policy and one-time owner approval narrow the existing case action 
   }, status: 200 });
   await call(`${route}/signed-policy`, { body: signed(edit.document), status: 200 });
   assert.deepEqual(cancellations.at(-1).case_refs, [policyIssued.id]);
+  authorizedCall = policyIssued.instruction.args;
+  const cancelledFirst = await call(`${payments}/${policyIssued.id}/confirm`, { body: { txRef: cancelledFirstTxRef }, status: 200 });
+  assert.equal(cancelledFirst.outcome.status, 'refused');
+  assert.equal(cancelledFirst.outcome.reason, 'approval_cancelled');
   const revokeIssued = await issueAnotherPayment('payment-before-agent-revocation');
   registryKey.revoked_at_ms = Date.now();
   const revoked = await call(`${route}/policy-evaluations`, { token, body: {
