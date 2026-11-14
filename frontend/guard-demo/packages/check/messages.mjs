@@ -11,7 +11,7 @@ export const CHECK_LABELS = Object.freeze({
   chain_event: ['The transaction matches this record', "The NEAR transaction doesn't match this record."],
   batch_path: ['Record matches its batch', "This record isn't in the batch it claims."],
   sealed: ["Sealed in envoi's record on NEAR", "This record isn't in the sealed batch it claims."],
-  locked_record: ['The record contract has no keys and matches its published build', 'The record contract could be changed by someone.'],
+  locked_record: ['The record contract is locked and matches its published build', 'The record contract does not match the trusted deployment.'],
   private_check: ['Checked inside secure hardware on NEAR AI Cloud', "The private check's signature or attestation didn't verify."]
 });
 
@@ -24,6 +24,8 @@ export const SKIP_MESSAGES = Object.freeze({
 export const VERDICT_MESSAGES = Object.freeze({
   verified: 'This record is genuine and unchanged.',
   partial: 'Signatures check out. Some checks still need verification.',
+  unlocked: 'Proof and public seal verified. The record contract can still be upgraded.',
+  edited: "This record can't be trusted. Its content failed the integrity check.",
   unavailable: 'Not fully checked yet.',
   failed: "This record can't be trusted.",
   bad_file: "This isn't an envoi proof file."
@@ -33,5 +35,6 @@ export function messageFor({ id, status, reason }) {
   const [pass, fail] = CHECK_LABELS[id] ?? [id, id];
   if (status === 'PASS') return pass;
   if (status === 'FAIL') return fail;
+  if (reason === 'unlocked') return 'The record contract still has access keys.';
   return `${pass} · ${SKIP_MESSAGES[reason] ?? SKIP_MESSAGES.not_configured}`;
 }

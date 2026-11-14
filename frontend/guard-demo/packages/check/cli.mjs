@@ -80,7 +80,7 @@ async function main(argv) {
   const exit = result.reason === 'bad_file' ? 3 : EXIT[result.verdict] ?? 1;
   if (json) return { exit, output: result };
   const icon = { PASS: '✓', FAIL: '✗', SKIP: '·' };
-  const lines = result.checks.map(row => `${icon[row.status] ?? '?'} ${row.message}`);
+  const lines = result.checks.map(row => `${row.reason === 'unlocked' ? '!' : icon[row.status] ?? '?'} ${row.message}`);
   return { exit, output: [...lines, '-'.repeat(60), result.message].join('\n') };
 }
 

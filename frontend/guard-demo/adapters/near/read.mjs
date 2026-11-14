@@ -156,9 +156,11 @@ export function nearReaders({ rpcUrl, recordContract, spendContract, publisher, 
         throw error;
       }
     },
-    async readOutcome(txRef, agent) {
+    async readOutcome(txRef, agent, approval) {
       const tx = await transaction(txRef, agent, spendContract, 'pay');
       if (!tx) return null;
+      if (approval && (tx.args.approval?.expires_at_ms !== approval.expires_at_ms ||
+          tx.args.approval?.signature !== approval.signature)) return null;
       const outcome = decode(tx.result.status.SuccessValue);
       if (!['refused', 'paid'].includes(outcome.status) || outcome.agent !== agent || outcome.to !== tx.args.to ||
           outcome.amount !== tx.args.amount || outcome.case_ref !== tx.args.case_ref) return null;

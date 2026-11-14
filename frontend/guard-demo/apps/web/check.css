@@ -26,3 +26,5 @@ li { padding: 10px 0; border-bottom: 1px solid var(--line); }
 li[data-status=PASS] { color: var(--green); }
 li[data-status=FAIL] { color: var(--red); }
 li[data-status=SKIP] { color: var(--ink2); }
+li[data-status=WARN] { color: #82590e; }
+button[aria-pressed=true] { border-color: var(--accent); background: var(--side); }

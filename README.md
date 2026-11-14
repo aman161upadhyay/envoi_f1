@@ -32,6 +32,8 @@ In the November 13 live rehearsal, NEAR AI Cloud flagged a hidden payment instru
 
 ### Verify the testnet refusal
 
+[Open the browser proof checker](https://envoi-near-proof-check.elven-lark-0181.chatgpt.site/) and choose **Check original proof** or **Check edited proof**.
+
 The [original proof](frontend/guard-demo/docs/acme-refused-payment.proof.json) comes from the November 13 rehearsal. The [edited proof](frontend/guard-demo/docs/acme-refused-payment-edited.proof.json) changes the summary from 20 NEAR to 25 NEAR. From the repository root, run these commands separately. The checker uses public NEAR RPC and requires no wallet, API key, or demo server.
 
 ```sh
@@ -39,7 +41,7 @@ npm --prefix frontend/guard-demo run check -- docs/acme-refused-payment.proof.js
 npm --prefix frontend/guard-demo run check -- docs/acme-refused-payment-edited.proof.json --testnet --json
 ```
 
-Expect `content`, `owner_signature`, `chain_event`, and `sealed` to pass for the original. Its overall verdict remains failed while `locked_record` fails. The edited copy also fails `content`, which detects the changed summary.
+The original verifies its signatures, transaction, and public seal. The checker returns exit 2 with a warning because the record contract can still be upgraded. The edited copy fails the content check and returns exit 1.
 
 Envoi is an existing product. The hackathon candidate adds the NEAR Guard integration to the Envoi baseline at `b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5`. Use [the branch comparison](https://github.com/aman161upadhyay/envoi_f1/compare/b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...near-hackathon-demo), or run `git diff b8ed560a5ac69e2bf95d13409c402ec60bf6c5f5...HEAD` from the hackathon branch.
 

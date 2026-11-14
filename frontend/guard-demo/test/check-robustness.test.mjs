@@ -71,6 +71,33 @@ test('the offline baseline is partial only because the contract lock is not chec
   assert.ok(result.checks.every(row => typeof row.message === 'string' && row.message.length > 0));
 }));
 
+test('a genuine proof with an upgradeable record is distinct from edited content and wrong deployment code', () => withFixture({}, async ({ proof, trust }) => {
+  const network = 'near-testnet';
+  const codeHash = 'published-build';
+  proof.seal.network = network;
+  const publicRecord = { ...trust.publicRecord, network,
+    describeContract: async () => ({ address: trust.recordContract, locked: false, codeHash }) };
+  const online = { ...trust, publicRecord, recordCodeHash: codeHash };
+
+  const genuine = await checkProof(proof, online);
+  assert.equal(genuine.verdict, 'partial');
+  assert.equal(genuine.reason, 'unlocked');
+  assert.equal(genuine.message, VERDICT_MESSAGES.unlocked);
+  assert.equal(statusOf(genuine, 'sealed'), 'PASS');
+  assert.equal(statusOf(genuine, 'locked_record'), 'SKIP');
+
+  const edited = structuredClone(proof);
+  edited.record.summary += ' edited';
+  const rejected = await checkProof(edited, online);
+  assert.equal(rejected.verdict, 'failed');
+  assert.equal(rejected.reason, 'edited');
+  assert.equal(statusOf(rejected, 'content'), 'FAIL');
+
+  const mismatch = await checkProof(proof, { ...online, recordCodeHash: 'different-build' });
+  assert.equal(mismatch.verdict, 'failed');
+  assert.equal(statusOf(mismatch, 'locked_record'), 'FAIL');
+}));
+
 test('rotating a policy preserves verification of a genuine older record', () => withFixture({}, async ({ adapters, proof, trust, setTime }) => {
   const oldPolicy = await adapters.spendGuard.getPolicy(agent);
   const newHash = '3a'.repeat(32);

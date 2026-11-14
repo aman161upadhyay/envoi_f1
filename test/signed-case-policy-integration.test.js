@@ -9,6 +9,7 @@ import test from 'node:test';
 import { generateSync } from 'otplib';
 import { valueDigest } from '../src/policy-engine.js';
 import { BrowserSession } from './browser-session.js';
+import { paymentApprover } from '../frontend/guard-demo/packages/core/payment-approval.mjs';
 
 async function launch(dataDir, config = {}) {
   const child = spawn(process.execPath, ['src/server.js'], {
@@ -43,6 +44,8 @@ test('signed policy and one-time owner approval narrow the existing case action 
   const session = new BrowserSession();
   let server;
   const keys = crypto.generateKeyPairSync('ed25519');
+  const paymentSigningKey = crypto.generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64');
+  const approver = paymentApprover(paymentSigningKey);
   const publicKey = Buffer.from(keys.publicKey.export({ format: 'jwk' }).x, 'base64url').toString('hex');
   const registryKey = { public_key: publicKey, key_type: 'demo_device', registered_at_ms: Date.now() - 60_000, revoked_at_ms: null };
   const spendingPolicyHash = 'a'.repeat(64);
@@ -74,9 +77,10 @@ test('signed policy and one-time owner approval narrow the existing case action 
     } else {
       const { owner, agent } = JSON.parse(Buffer.from(input.params.args_base64, 'base64').toString());
       const data = input.params.method_name === 'get_policy' && agent === 'milo.testnet'
-        ? { owner: chainOwner, policy_hash: spendingPolicyHash, paused: false,
+        ? { owner: chainOwner, policy_hash: spendingPolicyHash, paused: false, version: 2,
           daily_cap: '2000000000000000000000000', payees: [{ account: 'ledger.testnet', max_per_payment: '1000000000000000000000000' }] }
-        : input.params.method_name === 'owner_keys' && owner === 'dana.testnet' ? [registryKey] : [];
+        : input.params.method_name === 'get_payment_approval_key' ? approver.publicKey
+          : input.params.method_name === 'owner_keys' && owner === 'dana.testnet' ? [registryKey] : [];
       result = { result: [...Buffer.from(JSON.stringify(data))] };
     }
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -120,6 +124,7 @@ test('signed policy and one-time owner approval narrow the existing case action 
     ENVOI_SIGNED_POLICY_OWNER_ACCOUNTS: JSON.stringify({ [human.id]: 'dana.testnet' }),
     ENVOI_NEAR_PAYMENT_RPC_URL: `http://127.0.0.1:${rpc.address().port}`,
     ENVOI_NEAR_PAYMENT_CONTRACT: 'spend.testnet',
+    ENVOI_NEAR_PAYMENT_APPROVAL_SIGNING_KEY: paymentSigningKey,
     ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS: JSON.stringify({ [agent.id]: 'milo.testnet' }),
     ENVOI_CASE_TRACE_SIGNING_KEY: keys.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
     ENVOI_ENABLE_CONSEQUENTIAL_ACTIONS: 'true'
@@ -204,7 +209,11 @@ test('signed policy and one-time owner approval narrow the existing case action 
   const issued = await call(payments, { token, body: reserve, status: 201 });
   authorizedCall = issued.instruction.args;
   assert.deepEqual(authorizedCall, { to: paymentTarget.payee, amount: paymentTarget.amount.units,
-    case_ref: issued.id, expected_policy_hash: spendingPolicyHash });
+    case_ref: issued.id, expected_policy_hash: spendingPolicyHash, approval: approver.approve({
+      contract: 'spend.testnet', owner: 'dana.testnet', agent: 'milo.testnet', to: paymentTarget.payee,
+      amount: paymentTarget.amount.units, caseRef: issued.id, policyHash: spendingPolicyHash,
+      policyVersion: 2, expiresAtMs: Date.parse(issued.instruction.expiresAt)
+    }) });
   await call(payments, { token, body: reserve, status: 409 });
   const confirm = `${payments}/${issued.id}/confirm`;
   await call(confirm, { token, body: { txRef: otherTxRef }, status: 409 });

@@ -13,6 +13,7 @@ import { callWithScopedKey } from '../adapters/near/sign.mjs';
 import { loadScopedKey } from '../adapters/near/key-file.mjs';
 import { publicHex } from '../packages/core/crypto.mjs';
 import { formatNear, validAccount } from '../packages/core/policy.mjs';
+import { paymentApprover } from '../packages/core/payment-approval.mjs';
 
 
 const env = process.env;
@@ -45,6 +46,7 @@ async function main() {
       document.rules.share_files.default !== 'off' || document.rules.share_files.allow.length) {
     throw new Error('The confirmed testnet policy does not match the required demo rules.');
   }
+  const approver = paymentApprover(env.NEAR_DEMO_PAYMENT_APPROVAL_SIGNING_KEY || '');
 
   const [keys, publisherKeys] = await Promise.all([
     loadScopedKey(env.NEAR_AGENT_PRIVATE_KEY, env.NEAR_AGENT_PUBLIC_KEY),
@@ -52,6 +54,9 @@ async function main() {
   ]);
   const rpc = createRpc(rpcUrl);
   if ((await rpc('status', [])).chain_id !== 'testnet') throw new Error('The configured RPC is not NEAR testnet.');
+  const approvalKey = await rpc('query', { request_type: 'call_function', finality: 'final', account_id: spendContract,
+    method_name: 'get_payment_approval_key', args_base64: Buffer.from(JSON.stringify({ agent })).toString('base64') });
+  if (JSON.parse(Buffer.from(approvalKey.result)) !== approver.publicKey) throw new Error('The owner must register the demo approval key.');
   const contract = await readers.publicRecord.describeContract();
   if (!env.NEAR_RECORD_CODE_HASH || contract.codeHash !== env.NEAR_RECORD_CODE_HASH) {
     throw new Error('The record contract does not match the published hash.');
@@ -105,8 +110,12 @@ async function main() {
     { flaggedText: check.quote, redacted: check.redacted, checks: check.checks }, undefined, check.evidence);
   const transactionRefs = [];
   async function pay(to, amount, expected) {
+    const approval = expected === 'paid' ? approver.approve({
+      contract: spendContract, owner, agent, to, amount, caseRef, policyHash: hash,
+      policyVersion: policy.version, expiresAtMs: Date.now() + 120_000
+    }) : undefined;
     const txRef = await callWithScopedKey({ rpc, keys, sender: agent, receiver: spendContract, method: 'pay',
-      args: { to, amount, case_ref: caseRef, expected_policy_hash: hash } });
+      args: { to, amount, case_ref: caseRef, expected_policy_hash: hash, ...(approval && { approval }) } });
     transactionRefs.push(txRef);
     await progress({ status: 'payment-final', transactionRefs });
     const outcome = await readers.spendGuard.readOutcome(txRef, agent);

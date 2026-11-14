@@ -141,6 +141,7 @@ const signedPolicyRpId = process.env.ENVOI_SIGNED_POLICY_RP_ID || null;
 const signedPolicyOrigins = (process.env.ENVOI_SIGNED_POLICY_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
 const nearCasePayment = createNearCasePayment({
   rpcUrl: process.env.ENVOI_NEAR_PAYMENT_RPC_URL, contract: process.env.ENVOI_NEAR_PAYMENT_CONTRACT,
+  approvalSigningKey: process.env.ENVOI_NEAR_PAYMENT_APPROVAL_SIGNING_KEY,
   agentAccounts: process.env.ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS ? JSON.parse(process.env.ENVOI_NEAR_PAYMENT_AGENT_ACCOUNTS) : null
 });
 const emailTransport = createEmailTransport();
@@ -6718,8 +6719,9 @@ async function route(req, res) {
         requestedAction: 'payment.near', actionPayload: binding.actionPayload, executionId: id, writeAudit
       });
       const ownerAccount = Object.hasOwn(signedPolicyOwnerAccounts, inbox.ownerHumanId) ? signedPolicyOwnerAccounts[inbox.ownerHumanId] : null;
+      const expiresAt = new Date(Math.min(Date.parse(binding.expiresAt), Date.parse(authorization.refreshed.expiresAt))).toISOString();
       const instruction = await nearCasePayment.prepare({ agentId: principal.id, ownerAccount, payload: binding.actionPayload,
-        paymentId: id, expiresAt: authorization.refreshed.expiresAt });
+        paymentId: id, expiresAt });
       const payment = { id, caseId, agentId: principal.id, policyEvaluationId: evaluationId, instruction, issuedAt: store.now() };
       await store.putJson(location, payment);
       return { status: 201, payment };

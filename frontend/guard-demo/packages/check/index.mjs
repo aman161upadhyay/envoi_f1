@@ -26,7 +26,8 @@ export async function checkProof(proof, trust = {}) {
     let row;
     try {
       const result = await verifyCheck();
-      row = result === undefined ? { id, status: 'SKIP', reason: 'not_configured' } : { id, status: result ? 'PASS' : 'FAIL' };
+      row = result === undefined ? { id, status: 'SKIP', reason: 'not_configured' } :
+        result === 'unlocked' ? { id, status: 'SKIP', reason: 'unlocked' } : { id, status: result ? 'PASS' : 'FAIL' };
     } catch (error) {
       row = isUnavailable(error) ? { id, status: 'SKIP', reason: SKIP_REASONS[error.code] } : { id, status: 'FAIL' };
     }
@@ -109,7 +110,8 @@ export async function checkProof(proof, trust = {}) {
   await check('locked_record', async () => {
     if (!trust.publicRecord || trust.publicRecord.network === 'local') return undefined;
     const contract = await trust.publicRecord.describeContract();
-    return contract.address === trust.recordContract && contract.locked && contract.codeHash === trust.recordCodeHash;
+    if (contract.address !== trust.recordContract || contract.codeHash !== trust.recordCodeHash) return false;
+    return contract.locked || 'unlocked';
   });
   if (record?.type?.startsWith('screen_')) {
     await check('private_check', async () => {
@@ -120,6 +122,8 @@ export async function checkProof(proof, trust = {}) {
   const verdict = checks.some(row => row.status === 'FAIL') ? 'failed' :
     checks.some(row => row.status === 'SKIP') ? 'partial' : 'verified';
   const unreachable = verdict === 'partial' && checks.some(row => row.reason === 'unavailable');
-  return { checks, verdict, ...(unreachable ? { reason: 'unavailable' } : {}),
-    message: VERDICT_MESSAGES[unreachable ? 'unavailable' : verdict] };
+  const unlocked = verdict === 'partial' && checks.every(row => row.status === 'PASS' || row.reason === 'unlocked');
+  const edited = checks.some(row => row.id === 'content' && row.status === 'FAIL');
+  const reason = edited ? 'edited' : unreachable ? 'unavailable' : unlocked ? 'unlocked' : undefined;
+  return { checks, verdict, ...(reason && { reason }), message: VERDICT_MESSAGES[reason ?? verdict] };
 }

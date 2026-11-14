@@ -40,7 +40,7 @@ async function show(read) {
       const [pass, fail] = labels[check] ?? [check, check];
       const fallback = status === 'PASS' ? pass : status === 'FAIL' ? fail :
         pass + (reason === 'unavailable' ? " - Couldn't reach the public record. Try again later." : ' - Not checked');
-      const marker = { PASS: 'Pass', FAIL: 'Failed', SKIP: 'Skipped' }[status];
+      const marker = reason === 'unlocked' ? 'Warning' : { PASS: 'Pass', FAIL: 'Failed', SKIP: 'Skipped' }[status];
       row.textContent = (marker ? marker + ': ' : '') + (message ?? fallback);
       results.append(row);
       if (check === 'display' && status === 'PASS') {

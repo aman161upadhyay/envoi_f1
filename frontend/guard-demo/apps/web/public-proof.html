@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Verify the original Envoi testnet payment refusal and compare it with an edited proof.">
+  <title>Verify a NEAR proof · Envoi</title>
+  <link rel="stylesheet" href="./apps/web/check.css">
+</head>
+<body>
+  <header><a href="https://github.com/aman161upadhyay/envoi_f1/tree/near-hackathon-demo">envoi</a></header>
+  <main>
+    <h1>Verify a NEAR proof</h1>
+    <p>Envoi recorded a refused 20 NEAR transfer during the Acme Q4 rehearsal. Compare the original testnet proof with a copy whose summary says 25 NEAR.</p>
+    <section aria-label="Proof samples">
+      <button type="button" id="original" aria-pressed="false">Check original proof</button>
+      <button type="button" id="edited" aria-pressed="false">Check edited proof</button>
+    </section>
+    <section aria-label="Verification result">
+      <h2 id="verdict" role="status">Choose a proof to check</h2>
+      <ul id="checks"></ul>
+    </section>
+    <p><a href="./docs/acme-refused-payment.proof.json" download>Download original proof</a> ·
+      <a href="./docs/acme-refused-payment-edited.proof.json" download>Download edited proof</a></p>
+    <p><a href="https://testnet.nearblocks.io/txns/CJENrFVzbAJmmWF7RPwWSVNFEShc3hYzg5bVZxiEKfv6">Refusal transaction</a> ·
+      <a href="https://testnet.nearblocks.io/txns/FdotSXv4W4DxazJiUf4o3VeCmjtDQ3Ag2vEWLaWALoro">Public seal transaction</a></p>
+  </main>
+  <script type="module" src="./apps/web/public-proof.mjs"></script>
+</body>
+</html>

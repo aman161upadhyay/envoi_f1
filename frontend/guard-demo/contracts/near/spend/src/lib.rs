@@ -33,6 +33,12 @@ pub struct Payment {
     policy_hash: String,
 }
 
+#[near(serializers = [json])]
+pub struct PaymentApproval {
+    expires_at_ms: u64,
+    signature: String,
+}
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct Spend {
@@ -55,6 +61,21 @@ enum PaymentStatus {
 
 fn payment_references() -> LookupMap<[u8; 32], PaymentStatus> {
     LookupMap::new(b"r")
+}
+
+fn approval_keys() -> LookupMap<AccountId, [u8; 32]> {
+    LookupMap::new(b"k")
+}
+
+fn decode_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
+    if value.len() != N * 2 || !value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    let mut decoded = [0; N];
+    for (index, byte) in decoded.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(decoded)
 }
 
 fn payment_reference(agent: &AccountId, case_ref: &str) -> [u8; 32] {
@@ -154,7 +175,25 @@ impl Spend {
 
     pub fn resume(&mut self, agent: AccountId) { self.set_paused(agent, false); }
 
-    pub fn pay(&mut self, to: AccountId, amount: U128, case_ref: String, expected_policy_hash: Option<String>) -> PromiseOrValue<Value> {
+    #[payable]
+    pub fn set_payment_approval_key(&mut self, agent: AccountId, public_key: Option<String>) {
+        require!(env::attached_deposit().as_yoctonear() == 1, "owner must attach one yoctoNEAR");
+        self.owned_policy(&agent);
+        let mut keys = approval_keys();
+        if let Some(public_key) = public_key {
+            let key = decode_hex(&public_key).unwrap_or_else(|| env::panic_str("invalid approval key"));
+            keys.insert(agent, key);
+        } else {
+            keys.remove(&agent);
+        }
+    }
+
+    pub fn get_payment_approval_key(&self, agent: AccountId) -> Option<String> {
+        approval_keys().get(&agent).map(|key| key.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    pub fn pay(&mut self, to: AccountId, amount: U128, case_ref: String, expected_policy_hash: Option<String>,
+        approval: Option<PaymentApproval>) -> PromiseOrValue<Value> {
         require!(amount.0 > 0 && !case_ref.is_empty() && case_ref.len() <= 128, "invalid payment");
         let agent = env::predecessor_account_id();
         let policy = self.get_policy(agent.clone());
@@ -181,12 +220,19 @@ impl Spend {
         let balance = self.vault_of(policy_ref.owner.clone()).0;
         if amount.0 > balance { return refuse("vault_low"); }
 
-        references.insert(reference, PaymentStatus::Pending);
-        self.vaults.insert(policy_ref.owner.clone(), balance - amount.0);
-        self.spent.insert(agent.clone(), (day, spent + amount.0));
-        let transfer = Promise::new(to.clone()).transfer(NearToken::from_yoctonear(amount.0));
+        let approval = approval.unwrap_or_else(|| env::panic_str("payment approval required"));
+        require!(env::block_timestamp_ms() < approval.expires_at_ms, "payment approval expired");
+        let key = approval_keys().get(&agent).copied().unwrap_or_else(|| env::panic_str("payment approval key missing"));
+        let signature = decode_hex(&approval.signature).unwrap_or_else(|| env::panic_str("invalid payment approval signature"));
         let payment = Payment { agent, owner: policy_ref.owner.clone(), to, amount, case_ref, day,
             policy_hash: policy_ref.policy_hash.clone() };
+        let digest = approval_digest(&payment, policy_ref.version, approval.expires_at_ms);
+        require!(env::ed25519_verify(&signature, &digest, &key), "invalid payment approval signature");
+
+        references.insert(reference, PaymentStatus::Pending);
+        self.vaults.insert(policy_ref.owner.clone(), balance - amount.0);
+        self.spent.insert(payment.agent.clone(), (day, spent + amount.0));
+        let transfer = Promise::new(payment.to.clone()).transfer(NearToken::from_yoctonear(amount.0));
         PromiseOrValue::Promise(transfer.then(Self::ext(env::current_account_id())
             .with_static_gas(Gas::from_tgas(15)).on_reserved_payment(payment)))
     }
@@ -250,9 +296,16 @@ impl Spend {
     }
 }
 
+fn approval_digest(payment: &Payment, version: u32, expires_at_ms: u64) -> [u8; 32] {
+    env::sha256_array(json!(["envoi.near.payment/v1", env::current_account_id(), payment.owner,
+        payment.agent, payment.to, payment.amount, payment.case_ref, payment.policy_hash,
+        version, expires_at_ms]).to_string().as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use near_sdk::test_utils::{accounts, VMContextBuilder};
     use near_sdk::testing_env;
 
@@ -278,11 +331,29 @@ mod tests {
         let payees = vec![Payee { account: accounts(3), max_per_payment: U128(3) }];
         for agent in [accounts(1), accounts(2)] {
             contract.register_agent(agent.clone());
-            contract.set_policy(agent, payees.clone(), U128(10), "a".repeat(64), 0);
+            contract.set_policy(agent.clone(), payees.clone(), U128(10), "a".repeat(64), 0);
+            set_approval_key(&mut contract, agent);
         }
         context(0, 10, 0);
         contract.deposit();
         contract
+    }
+
+    fn as_hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn signer() -> SigningKey {
+        SigningKey::from_bytes(&[7; 32])
+    }
+
+    fn set_approval_key(contract: &mut Spend, agent: AccountId) {
+        contract.set_payment_approval_key(agent, Some(as_hex(signer().verifying_key().as_bytes())));
+    }
+
+    fn approve(payment: &Payment, version: u32, expires_at_ms: u64) -> PaymentApproval {
+        let signature = signer().sign(&approval_digest(payment, version, expires_at_ms));
+        PaymentApproval { expires_at_ms, signature: as_hex(&signature.to_bytes()) }
     }
 
     fn payment() -> Payment {
@@ -292,8 +363,49 @@ mod tests {
 
     fn pay_once(contract: &mut Spend, agent: usize, day: u64) {
         context(agent, 0, day);
-        assert!(matches!(contract.pay(accounts(3), U128(3), "payment-1".into(), Some("a".repeat(64))),
+        let payment = Payment { agent: accounts(agent), ..payment() };
+        let approval = approve(&payment, 1, day * 86_400_000 + 1000);
+        assert!(matches!(contract.pay(accounts(3), U128(3), "payment-1".into(), Some("a".repeat(64)), Some(approval)),
             PromiseOrValue::Promise(_)));
+    }
+
+    #[test]
+    #[should_panic(expected = "payment approval required")]
+    fn a_pay_only_key_cannot_bypass_exact_approval() {
+        let mut contract = funded_contract();
+        context(1, 0, 0);
+        contract.pay(accounts(3), U128(3), "payment-1".into(), None, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "payment approval expired")]
+    fn rejects_approval_at_the_expiry_boundary() {
+        let mut contract = funded_contract();
+        context(1, 0, 1);
+        let approval = approve(&payment(), 1, 86_400_000);
+        contract.pay(accounts(3), U128(3), "payment-1".into(), None, Some(approval));
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid payment approval signature")]
+    fn rejects_change_to_an_approved_amount_within_the_cap() {
+        let mut contract = funded_contract();
+        context(1, 0, 0);
+        let approval = approve(&payment(), 1, 1000);
+        contract.pay(accounts(3), U128(2), "payment-1".into(), None, Some(approval));
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid payment approval signature")]
+    fn rejects_approval_after_rotation_even_if_the_policy_hash_matches() {
+        let mut contract = funded_contract();
+        context(1, 0, 0);
+        let approval = approve(&payment(), 1, 1000);
+        call(0);
+        let policy = contract.get_policy(accounts(1)).unwrap();
+        contract.set_policy(accounts(1), policy.payees, policy.daily_cap, policy.policy_hash, policy.version);
+        context(1, 0, 0);
+        contract.pay(accounts(3), U128(3), "payment-1".into(), None, Some(approval));
     }
 
     #[test]
@@ -332,7 +444,7 @@ mod tests {
     fn refusal_does_not_consume_a_reference_and_agents_are_independent() {
         let mut contract = funded_contract();
         context(1, 0, 0);
-        let refusal = contract.pay(accounts(4), U128(3), "payment-1".into(), Some("a".repeat(64)));
+        let refusal = contract.pay(accounts(4), U128(3), "payment-1".into(), Some("a".repeat(64)), None);
         assert!(matches!(refusal, PromiseOrValue::Value(value) if value["reason"] == "not_payee"));
         pay_once(&mut contract, 1, 0);
         pay_once(&mut contract, 2, 0);
@@ -391,8 +503,11 @@ mod tests {
         contract.deposit();
         let hash = "a".repeat(64);
         contract.set_policy(accounts(1), vec![Payee { account: accounts(2), max_per_payment: U128(1) }], U128(1), hash.clone(), 0);
+        set_approval_key(&mut contract, accounts(1));
         call(1);
-        assert!(matches!(contract.pay(accounts(2), U128(1), "demo-case".into(), Some(hash)), PromiseOrValue::Promise(_)));
+        let payment = Payment { to: accounts(2), amount: U128(1), case_ref: "demo-case".into(), ..payment() };
+        let approval = approve(&payment, 1, 1000);
+        assert!(matches!(contract.pay(accounts(2), U128(1), "demo-case".into(), Some(hash), Some(approval)), PromiseOrValue::Promise(_)));
         assert_eq!(contract.vault_of(accounts(0)).0, 0);
     }
 
